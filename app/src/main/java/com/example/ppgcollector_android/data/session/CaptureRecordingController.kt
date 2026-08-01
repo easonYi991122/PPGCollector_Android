@@ -7,6 +7,12 @@ import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.signal.StreamFreshness
+import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
+import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
+import com.example.ppgcollector_android.core.signal.LiveMetricWindowScheduler
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
@@ -21,6 +27,16 @@ enum class CaptureRecordingState {
     FINALIZED,
     FAILED,
 }
+
+enum class CaptureAnalysisState { IDLE, WARMING, ANALYZING, READY, FAILED, STOPPED }
+
+data class CaptureAnalysisSnapshot(
+    val state: CaptureAnalysisState = CaptureAnalysisState.IDLE,
+    val generation: Long = 0,
+    val processedSampleCount: Long = 0,
+    val lastResult: LiveMetricAnalysisResult? = null,
+    val error: String? = null,
+)
 
 data class CaptureRecordingSnapshot(
     val state: CaptureRecordingState = CaptureRecordingState.IDLE,
@@ -64,6 +80,7 @@ class CaptureRecordingController(
 
     private val lock = Any()
     private val queue = ArrayBlockingQueue<QueuedChunk>(queueCapacity)
+    private val analysisQueue = ArrayBlockingQueue<AnalysisInput>(queueCapacity)
     private var writer: CaptureSessionWriter? = null
     private var activeGeneration: Long? = null
     private var stopReason: CaptureStopReason? = null
@@ -72,12 +89,24 @@ class CaptureRecordingController(
     private var lastError: String? = null
     private var finalSummary: CaptureSessionSummary? = null
     private var worker: Thread? = null
+    private var analysisWorker: Thread? = null
+    private var analysisStopRequested = false
+    private var analysisScheduler = LiveMetricWindowScheduler()
+    private val _analysisSnapshot = MutableStateFlow(CaptureAnalysisSnapshot())
+
+    private data class AnalysisInput(
+        val frames: List<CupDecodedFrameEvent>,
+        val acceptedSampleStartIndex: Long,
+        val measuredAt: Instant,
+    )
 
     @Volatile
     private var snapshotValue = CaptureRecordingSnapshot()
 
     val snapshot: CaptureRecordingSnapshot
         get() = snapshotValue
+
+    val analysisSnapshot: StateFlow<CaptureAnalysisSnapshot> = _analysisSnapshot.asStateFlow()
 
     fun start(
         configuration: CaptureSessionConfiguration,
@@ -107,8 +136,17 @@ class CaptureRecordingController(
                 stopReason = null
                 stopRequested = false
                 queue.clear()
+                analysisQueue.clear()
+                analysisStopRequested = false
+                analysisScheduler = LiveMetricWindowScheduler()
+                _analysisSnapshot.value = CaptureAnalysisSnapshot(
+                    state = CaptureAnalysisState.WARMING,
+                )
                 finalSummary = null
                 lastError = null
+                analysisWorker = thread(start = true, name = "ppg-capture-analysis") {
+                    analysisLoop()
+                }
                 worker = thread(start = true, name = "ppg-capture-writer") { workerLoop() }
                 publish(CaptureRecordingState.RECORDING)
                 CaptureRecordingStartResult.Started
@@ -208,12 +246,23 @@ class CaptureRecordingController(
                     events.filter { it.isAccepted }.forEach {
                         acceptedSampleIndex += it.frame.samples.size
                     }
+                    if (events.any { it.isAccepted } &&
+                        !analysisQueue.offer(
+                            AnalysisInput(events, acceptedBefore, Instant.now()),
+                        )
+                    ) {
+                        _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                            state = CaptureAnalysisState.FAILED,
+                            error = "analysis queue overflow; raw recording preserved",
+                        )
+                    }
                     synchronized(lock) { publish(snapshotValue.state) }
                 }
                 synchronized(lock) {
                     if (stopRequested && queue.isEmpty()) break
                 }
             }
+            finishAnalysis()
             finalizeWriter()
         } catch (error: Throwable) {
             synchronized(lock) {
@@ -221,8 +270,65 @@ class CaptureRecordingController(
                 if (lastError == null) lastError = error.message ?: error::class.simpleName
                 stopRequested = true
             }
+            finishAnalysis()
             finalizeWriter()
         }
+    }
+
+    private fun analysisLoop() {
+        try {
+            while (true) {
+                val input = analysisQueue.poll(100, TimeUnit.MILLISECONDS)
+                if (input != null) {
+                    try {
+                        val request = analysisScheduler.ingest(
+                            decodedFrames = input.frames,
+                            measuredAt = input.measuredAt,
+                            acceptedSampleStartIndex = input.acceptedSampleStartIndex,
+                        )
+                        _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                            state = if (request == null) CaptureAnalysisState.WARMING
+                            else CaptureAnalysisState.ANALYZING,
+                            generation = analysisScheduler.generation,
+                            processedSampleCount = analysisScheduler.continuousSamples.toLong(),
+                            error = null,
+                        )
+                        if (request != null) {
+                            val result = LiveMetricAnalyzer.analyze(request)
+                            _analysisSnapshot.value = CaptureAnalysisSnapshot(
+                                state = CaptureAnalysisState.READY,
+                                generation = request.generation,
+                                processedSampleCount = analysisScheduler.continuousSamples.toLong(),
+                                lastResult = result,
+                                error = null,
+                            )
+                        }
+                    } catch (error: Throwable) {
+                        _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                            state = CaptureAnalysisState.FAILED,
+                            error = error.message ?: error::class.simpleName,
+                        )
+                    }
+                }
+                synchronized(lock) {
+                    if (analysisStopRequested && analysisQueue.isEmpty()) return
+                }
+            }
+        } finally {
+            if (_analysisSnapshot.value.state != CaptureAnalysisState.FAILED) {
+                _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                    state = CaptureAnalysisState.STOPPED,
+                )
+            }
+        }
+    }
+
+    private fun finishAnalysis() {
+        synchronized(lock) {
+            analysisStopRequested = true
+        }
+        analysisWorker?.join(5_000)
+        analysisWorker = null
     }
 
     private fun finalizeWriter() {

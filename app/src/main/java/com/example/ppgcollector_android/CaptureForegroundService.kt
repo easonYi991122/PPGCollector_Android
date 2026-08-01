@@ -17,6 +17,8 @@ import com.example.ppgcollector_android.core.ble.CupBleDeviceProfile
 import com.example.ppgcollector_android.data.session.CaptureDeviceContext
 import com.example.ppgcollector_android.data.session.CaptureRecordingController
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
+import kotlinx.coroutines.flow.StateFlow
 import com.example.ppgcollector_android.data.session.CaptureRecordingStartResult
 import com.example.ppgcollector_android.data.session.CaptureSessionConfiguration
 import com.example.ppgcollector_android.data.session.CaptureStorageCapacityProvider
@@ -39,6 +41,10 @@ class CaptureForegroundService : Service() {
     inner class LocalBinder : Binder() {
         fun service(): CaptureForegroundService = this@CaptureForegroundService
         fun snapshot(): CaptureRecordingSnapshot = this@CaptureForegroundService.snapshot()
+        fun analysisSnapshot(): CaptureAnalysisSnapshot =
+            this@CaptureForegroundService.analysisSnapshot()
+        fun analysisFlow(): StateFlow<CaptureAnalysisSnapshot> =
+            this@CaptureForegroundService.analysisFlow()
         fun stop(): Unit = this@CaptureForegroundService.stopRecording(CaptureStopReason.USER)
     }
 
@@ -76,6 +82,10 @@ class CaptureForegroundService : Service() {
     }
 
     fun snapshot(): CaptureRecordingSnapshot = recordingController.snapshot
+
+    fun analysisSnapshot(): CaptureAnalysisSnapshot = recordingController.analysisSnapshot.value
+
+    fun analysisFlow(): StateFlow<CaptureAnalysisSnapshot> = recordingController.analysisSnapshot
 
     fun stopRecording(reason: CaptureStopReason) {
         recordingController.stop(reason)

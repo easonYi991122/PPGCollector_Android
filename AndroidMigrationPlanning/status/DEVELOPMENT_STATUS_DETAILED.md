@@ -273,7 +273,7 @@
 
 - `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`31 tests completed`，`BUILD SUCCESSFUL`。
 - `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
-- `git diff --check`：待提交前执行。
+- `git diff --check`：通过。
 - 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
 
 ### 风险与决策变化
@@ -917,6 +917,43 @@
 ### 下一轮
 
 进入 M4 前的连接切片：将 `LiveMetricWindowScheduler` 作为 bounded worker 的异步分析 seam，输出 StateFlow 可观察 snapshot，再接正式 Capture/Sessions Compose 页面和 Activity Result export flow。
+
+## 2026-08-02 · M3/M4 boundary · Bounded asynchronous live-analysis seam
+
+### 本轮目标
+
+将既有 `LiveMetricWindowScheduler`/`LiveMetricAnalyzer` 接入 recording worker 的 accepted stream：分析在独立有界队列/线程运行，raw/CSV writer 不等待 DFT/指标计算；通过 StateFlow 和 FGS binder 暴露可观察分析结果。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-005/UI-007、CAP-001、REL-003；800 samples/8 s、100-sample cadence、指标 source index/time、分析不阻塞 raw、生命周期可观察。
+- Primary source: `docs/01_ANDROID_MIGRATION_MASTER_PLAN.md` §3/§8、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §7.2/§10、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` Phase 4/long-stability guidance、`LiveMetricWindowScheduler`/`LiveMetricAnalyzer` Swift/Python parity references。
+- Android targets: `data/session/CaptureRecordingController.kt`、`CaptureForegroundService.kt` 与 `CaptureRecordingControllerTest.kt`。
+- Non-goals: metrics 回填既有 CSV rows、正式 Compose waveform/metrics/capture/history pages、real lifecycle/device test、SpO2/BP calibration。
+
+### 实现事实
+
+- controller 新增独立 bounded analysis queue（与 raw queue 同为 256 上限）和 analysis worker；raw writer worker 在 raw ack/CSV 派生后提交 accepted frame event，分析失败/分析队列溢出只更新 diagnostic snapshot，不丢 raw。
+- analysis worker 每会话重置 `LiveMetricWindowScheduler`，保持 fixed 800/100 generation/cadence 语义，调用既有 `LiveMetricAnalyzer`；结果包含原 request 的 source sample/time、metric validity/reason/version/provisional 信息。
+- `CaptureAnalysisSnapshot` 通过 `StateFlow` 暴露 `WARMING/ANALYZING/READY/FAILED/STOPPED`、generation、processed sample count 和 last result；FGS local binder 同时提供 snapshot 与 StateFlow，供后续 lifecycle-aware Activity/ViewModel 观察。
+- 16 个 50-sample frame 的 JVM 集成测试证明首个分析 window end index 为 799、window 长度 800，且 raw writer/controller finalization 正常完成。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机/后台/Activity 重建/FGS bind-rebind、长稳和指标 UI：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 live metrics 仍未写回已生成 CSV row；需要后续明确 snapshot timing/metric source 与 writer acknowledgement 的 policy，不能用异步结果覆盖历史行或伪装同步有效值。
+- SQI 仍 provisional，ratio-of-ratios 仍 diagnostic，SpO2/BP 继续 unavailable；分析 StateFlow 不是产品临床结果。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+进入 M4 UI/lifecycle slice：建立 Activity/ViewModel 对 FGS binder StateFlow 的 bind/rebind 观察、录制 gate/停止状态和 Sessions catalog；保持 writer/analysis ownership 在 service/controller 内。
 
 ## 后续记录模板（复制后追加到文件末尾）
 

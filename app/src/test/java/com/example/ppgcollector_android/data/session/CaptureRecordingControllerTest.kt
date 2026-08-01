@@ -88,6 +88,49 @@ class CaptureRecordingControllerTest {
         }
     }
 
+    @Test
+    fun acceptedEightSecondWindowProducesObservableAnalysisResultWithoutBlockingRawFinalize() {
+        val root = Files.createTempDirectory("capture-analysis")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration(),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 11,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            repeat(16) { frameIndex ->
+                assertTrue(
+                    controller.onRawChunk(
+                        BleRawNotificationChunk(
+                            11,
+                            frameIndex.toLong() * 500_000_000L,
+                            encodeCupBatchFrame(analysisFrame(frameIndex)),
+                        ),
+                    ),
+                )
+            }
+            controller.stop(CaptureStopReason.USER)
+            assertNotNull(controller.awaitFinalized(10, TimeUnit.SECONDS))
+            val analysis = controller.analysisSnapshot.value
+            assertNotNull(analysis.lastResult)
+            assertEquals(799L, analysis.lastResult!!.request.windowEndSampleIndex)
+            assertEquals(800, analysis.lastResult!!.request.rawIr.size)
+            assertTrue(
+                analysis.lastResult!!.snapshot.heartRateBpm.algorithmVersion.isNotEmpty(),
+            )
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "controller-session-id",
         baseName = "controller_001",
@@ -103,6 +146,15 @@ class CaptureRecordingControllerTest {
     private fun frame() = CupBatchFrame(
         sequence = 1u,
         samples = List(50) { CupPpgSample(100u + it.toUInt(), 200u + it.toUInt()) },
+    )
+
+    private fun analysisFrame(frameIndex: Int) = CupBatchFrame(
+        sequence = frameIndex.toUByte(),
+        samples = List(50) { sampleInFrame ->
+            val index = frameIndex * 50 + sampleInFrame
+            val pulse = (kotlin.math.sin(index * 2.0 * Math.PI / 25.0) * 120.0).toUInt()
+            CupPpgSample(10_000u + pulse, 20_000u + pulse)
+        },
     )
 }
 
