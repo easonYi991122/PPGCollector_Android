@@ -1341,6 +1341,42 @@
 
 运行 instrumentation 后完成 M4 acceptance audit；本地可继续补 SAF cancel/permission-return state coverage，但不提前宣称 M4 runtime 门禁通过。
 
+## 2026-08-02 · M5 preflight · Release artifact smoke and privacy scan
+
+### 本轮目标
+
+完成 Phase 5 §8.3 的最小 release artifact 预检：确认 release 构建可产出，并检查测试/fixture/原始 PPG 资源是否被打入 APK；本轮不把预检结果表述为 M5 发布硬化完成。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-005`；Phase 5 §8.3 release hardening/privacy preflight。
+- Primary source: `AndroidMigrationPlanning/docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.3、`docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` 的 REL-005，以及 `app/build.gradle.kts` release 配置。
+- Tests/golden: release APK ZIP/resource scan；既有 JVM、debug 和 androidTest compile gate。
+- Android target: `app/build/outputs/apk/release/app-release-unsigned.apk`。
+- Non-goals: 签名/最终包名与分发、R8/resource shrink 开启与 keep 规则、API/厂商矩阵、隐私保留/加密决策、emulator/真机运行。
+
+### 实现事实
+
+- `assembleRelease` 成功，产出 unsigned APK，大小 `8,124,516 bytes`。
+- APK ZIP 未发现 `androidTest`、fixture、`heart_rate`、`sqi_vectors`、`golden_seq` 或 raw/CSV/session JSON 测试资源条目；DEX 中仅见通用依赖/debug 符号字符串，未发现应用测试 fixture 数据。
+- 当前 release 配置仍为 `optimization.enable = false`，因此本轮是 artifact smoke/privacy scan，不是完整的 R8、资源压缩、签名或发布硬化验收。
+- 构建仍报告 `libandroidx.graphics.path.so` 无法 strip（按原样打包）及 Android BLE deprecated API 警告；均记录为后续发布门禁事项。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleRelease --no-daemon` → `BUILD SUCCESSFUL`。
+- release APK ZIP/DEX 静态扫描通过；此前 `test assembleDebug assembleDebugAndroidTest` → `BUILD SUCCESSFUL`，89 JVM tests，androidTest 仅完成编译。
+- Hardware validation: pending；本轮不进行 emulator/真机测试。
+
+### 风险与决策变化
+
+- `D-004` 签名/包名/分发、`D-005` 数据保留/导出/加密、`D-002` API/厂商矩阵仍开放；还需 privacy log audit、release lint/permissions 和长稳/功耗证据。
+- 下一步应在决策明确后启用并验证 R8/resource shrink、签名 artifact 和 keep 规则，再执行 emulator/目标设备矩阵；不因 unsigned APK 构建成功而关闭 M5。
+
+### 下一轮
+
+继续 M5 release hardening 前置：明确签名/包名/隐私策略，评估 R8/resource shrink 与 release lint/权限门禁；有 emulator/设备后运行 instrumentation 和长稳门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
