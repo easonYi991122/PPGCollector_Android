@@ -102,9 +102,12 @@ class CaptureRecordingController(
 
     @Volatile
     private var snapshotValue = CaptureRecordingSnapshot()
+    private val _snapshotFlow = MutableStateFlow(snapshotValue)
 
     val snapshot: CaptureRecordingSnapshot
         get() = snapshotValue
+
+    val snapshotFlow: StateFlow<CaptureRecordingSnapshot> = _snapshotFlow.asStateFlow()
 
     val analysisSnapshot: StateFlow<CaptureAnalysisSnapshot> = _analysisSnapshot.asStateFlow()
 
@@ -346,7 +349,7 @@ class CaptureRecordingController(
     }
 
     private fun publish(state: CaptureRecordingState) {
-        snapshotValue = CaptureRecordingSnapshot(
+        val next = CaptureRecordingSnapshot(
             state = state,
             connectionGeneration = activeGeneration,
             pendingWriteCount = queue.size,
@@ -354,5 +357,7 @@ class CaptureRecordingController(
             lastError = lastError,
             summary = finalSummary,
         )
+        snapshotValue = next
+        _snapshotFlow.value = next
     }
 }

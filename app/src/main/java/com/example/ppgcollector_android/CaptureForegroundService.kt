@@ -41,6 +41,8 @@ class CaptureForegroundService : Service() {
     inner class LocalBinder : Binder() {
         fun service(): CaptureForegroundService = this@CaptureForegroundService
         fun snapshot(): CaptureRecordingSnapshot = this@CaptureForegroundService.snapshot()
+        fun recordingFlow(): StateFlow<CaptureRecordingSnapshot> =
+            this@CaptureForegroundService.recordingFlow()
         fun analysisSnapshot(): CaptureAnalysisSnapshot =
             this@CaptureForegroundService.analysisSnapshot()
         fun analysisFlow(): StateFlow<CaptureAnalysisSnapshot> =
@@ -82,6 +84,8 @@ class CaptureForegroundService : Service() {
     }
 
     fun snapshot(): CaptureRecordingSnapshot = recordingController.snapshot
+
+    fun recordingFlow(): StateFlow<CaptureRecordingSnapshot> = recordingController.snapshotFlow
 
     fun analysisSnapshot(): CaptureAnalysisSnapshot = recordingController.analysisSnapshot.value
 

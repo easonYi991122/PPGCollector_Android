@@ -23,11 +23,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.viewModels
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 
 class MainActivity : ComponentActivity() {
+    private val captureViewModel: CaptureViewModel by viewModels()
+
     private val bleCoordinator
         get() = (application as PpgCollectorApplication).bleCoordinator
 
@@ -46,9 +50,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             PPGCollector_AndroidTheme {
                 val snapshot by bleCoordinator.snapshotFlow.collectAsStateWithLifecycle()
+                val capture by captureViewModel.serviceState.collectAsStateWithLifecycle()
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     BleHome(
                         snapshot = snapshot,
+                        capture = capture,
+                        onStopCapture = captureViewModel::stopRecording,
                         onScan = ::requestScan,
                         onStopScan = bleCoordinator::stopScanning,
                         onConnect = bleCoordinator::connect,
@@ -57,6 +64,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        captureViewModel.onStart()
+    }
+
+    override fun onStop() {
+        captureViewModel.onStop()
+        super.onStop()
     }
 
     private fun requestScan() {
@@ -72,6 +89,8 @@ class MainActivity : ComponentActivity() {
 @androidx.compose.runtime.Composable
 private fun BleHome(
     snapshot: BleCoordinatorSnapshot,
+    capture: CaptureServiceObservation,
+    onStopCapture: () -> Unit,
     onScan: () -> Unit,
     onStopScan: () -> Unit,
     onConnect: (String) -> BleCoordinatorAction,
@@ -89,6 +108,15 @@ private fun BleHome(
         Text("蓝牙：${snapshot.availability.title}")
         Text("连接：${snapshot.phase}")
         Text("数据流：${snapshot.freshness}")
+        Text("录制服务：${capture.binding}")
+        Text("录制：${capture.recording.state}")
+        Text("分析：${capture.analysis.state}")
+        if (capture.recording.state == CaptureRecordingState.RECORDING ||
+            capture.recording.state == CaptureRecordingState.STOPPING
+        ) {
+            Button(onClick = onStopCapture) { Text("停止并保存") }
+        }
+        capture.error?.let { Text("服务：$it", color = MaterialTheme.colorScheme.error) }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onScan, enabled = !snapshot.isScanning) {

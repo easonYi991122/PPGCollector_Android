@@ -119,6 +119,7 @@ class CaptureRecordingControllerTest {
             }
             controller.stop(CaptureStopReason.USER)
             assertNotNull(controller.awaitFinalized(10, TimeUnit.SECONDS))
+            assertEquals(CaptureRecordingState.FINALIZED, controller.snapshotFlow.value.state)
             val analysis = controller.analysisSnapshot.value
             assertNotNull(analysis.lastResult)
             assertEquals(799L, analysis.lastResult!!.request.windowEndSampleIndex)

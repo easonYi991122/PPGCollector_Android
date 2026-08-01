@@ -955,6 +955,43 @@
 
 进入 M4 UI/lifecycle slice：建立 Activity/ViewModel 对 FGS binder StateFlow 的 bind/rebind 观察、录制 gate/停止状态和 Sessions catalog；保持 writer/analysis ownership 在 service/controller 内。
 
+## 2026-08-02 · M4 · Lifecycle-aware capture service observation seam
+
+### 本轮目标
+
+建立 Activity/ViewModel 对 `connectedDevice` FGS 的可重复 bind/unbind 观察链路：Activity 生命周期只管理订阅，service/controller 继续是 recording、raw、CSV 和 analysis 的唯一所有者。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-005/UI-007、CAP-001、REL-003/004；旋转/Activity 重建不创建第二 writer，停止入口继续调用 service finalizer，录制/分析状态以不可变 `StateFlow` 观察。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-005/UI-007、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§8/§9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` Phase 4 §7.1/§7.2、`docs/01_ANDROID_MIGRATION_MASTER_PLAN.md` §8。
+- Android targets: `CaptureServiceViewModel.kt`、`MainActivity.kt`、`CaptureForegroundService.kt`、`CaptureRecordingController.kt`、`CaptureRecordingControllerTest.kt`、lifecycle-viewmodel dependency。
+- Non-goals: 完整 capture/name gate 页面、Canvas waveform/metrics、Sessions/detail/replay UI、SAF Activity Result、真实 Activity 重建/FGS system instrumentation、real-device validation、metrics CSV backfill。
+
+### 实现事实
+
+- `CaptureRecordingController` 新增只读 `snapshotFlow`；finalizer 发布 `FINALIZED/FAILED` 快照，和既有 analysis `StateFlow` 一起形成 service 观察契约。
+- `CaptureForegroundService.LocalBinder` 暴露 recording/analysis snapshot 与 flow；没有把 writer、GATT 或文件 I/O 移到 Activity。
+- `CaptureServiceClient` 使用 `ServiceConnection` 做绑定、断连/空 binder/绑定失败状态分类；`CaptureViewModel` 持有 `viewModelScope`，`MainActivity.onStart/onStop` 对应 bind/unbind，Activity 重建时可重新建立观察而不创建第二 recording controller。
+- 最小 Compose surface 只展示 binding、recording、analysis 状态并提供 service stop action；不把 provisional SQI、diagnostic ratio 或 unavailable SpO2/BP 渲染成临床结果。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- JVM recording integration assertion：`snapshotFlow.value.state == FINALIZED`；既有协议/raw/CSV/session/signal/recovery/export/800-sample analysis tests 继续通过。
+- `git diff --check`：通过。
+- 真实 Activity 重建、系统 bind/rebind、后台/锁屏、FGS stop、SAF/provider、真机和长稳：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 client 在 Activity stop 时解除观察；service 若由 `startForegroundService` 启动仍独立存活，下一次 Activity start 再绑定。异常 binding 只报告可行动状态，不私自新建 writer/GATT；系统重建行为仍需 instrumentation 证据。
+- 正式 capture name/gate/elapsed UI、waveform/metrics presentation、Sessions catalog/detail/export/recovery 页面尚未实现。
+- live metrics 仍不回填既有 CSV row；SQI provisional、ratio diagnostic、SpO2/BP unavailable 语义保持不变。`D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+实现 M4 formal capture surface：复用 `CaptureStartGate` 展示名称/连接/fresh/storage 原因、显式 start/stop intent 和 elapsed/status；随后接 waveform/metric presentation，保持 service/controller ownership。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
