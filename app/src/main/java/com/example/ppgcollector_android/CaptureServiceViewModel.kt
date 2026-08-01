@@ -1,5 +1,6 @@
 package com.example.ppgcollector_android
 
+import android.os.Build
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -10,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
 import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
+import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
 import com.example.ppgcollector_android.data.session.CaptureStartContext
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import com.example.ppgcollector_android.data.session.CaptureStartGate
@@ -59,6 +61,8 @@ private fun CaptureStartFailure.message(): String = when (this) {
     CaptureStartFailure.DeviceNotReady -> "设备尚未进入接收状态"
     CaptureStartFailure.ForegroundServiceStartRejected ->
         "系统拒绝启动录制服务，请从前台页面重试并检查服务权限"
+    CaptureStartFailure.NotificationPermissionDenied ->
+        "通知权限未授予，请允许通知后再开始录制，否则持续采集状态可能无法显示"
     CaptureStartFailure.SessionAlreadyExists -> "会话名已存在"
     CaptureStartFailure.InsufficientStorage -> "可用存储不足"
 }
@@ -225,6 +229,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private val serviceClient = CaptureServiceClient(application, viewModelScope)
     private val _sessionName = MutableStateFlow("")
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
+    private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
@@ -237,10 +242,11 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 _sessionName,
                 collectorApplication.bleCoordinator.snapshotFlow,
                 serviceClient.state,
-            ) { name, ble, service ->
+                _notificationPermissionFailure,
+            ) { name, ble, service, notificationFailure ->
                 CaptureGateUiState(
                     sessionName = name,
-                    failure = evaluateGate(name, ble, service.recording),
+                    failure = evaluateGate(name, ble, service.recording) ?: notificationFailure,
                 )
             }.collect { _captureGate.value = it }
         }
@@ -256,9 +262,19 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     fun stopRecording() = serviceClient.stopRecording()
 
-    fun startRecording() {
+    fun setNotificationPermissionResult(granted: Boolean) {
+        _notificationPermissionFailure.value = CaptureNotificationPermissionPolicy.failureFor(
+            Build.VERSION.SDK_INT,
+            granted,
+        )
+    }
+
+    fun startRecording(notificationPermissionGranted: Boolean = false) {
         val gate = _captureGate.value
-        if (!gate.canStart) return
+        if (!gate.canStart &&
+            !(notificationPermissionGranted &&
+                gate.failure == CaptureStartFailure.NotificationPermissionDenied)
+        ) return
         val ble = collectorApplication.bleCoordinator.snapshot
         val deviceName = ble.phase.deviceId?.let { id ->
             ble.discoveredDevices.firstOrNull { it.id == id }?.name

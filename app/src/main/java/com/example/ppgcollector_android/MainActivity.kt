@@ -1,5 +1,8 @@
 package com.example.ppgcollector_android
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,6 +45,7 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
+import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
 import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
@@ -60,6 +64,13 @@ class MainActivity : ComponentActivity() {
         if (bleCoordinator.snapshot.permission.canUseBle) {
             bleCoordinator.startScanning(clearPreviousResults = true)
         }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        captureViewModel.setNotificationPermissionResult(granted)
+        if (granted) captureViewModel.startRecording(notificationPermissionGranted = true)
     }
 
     private val exportLauncher = registerForActivityResult(
@@ -100,7 +111,7 @@ class MainActivity : ComponentActivity() {
                         sessionName = sessionName,
                         captureGate = captureGate,
                         onSessionNameChange = captureViewModel::setSessionName,
-                        onStartCapture = captureViewModel::startRecording,
+                        onStartCapture = ::requestCaptureStart,
                         onStopCapture = captureViewModel::stopRecording,
                         onScan = ::requestScan,
                         onStopScan = bleCoordinator::stopScanning,
@@ -129,6 +140,20 @@ class MainActivity : ComponentActivity() {
             bleCoordinator.startScanning(clearPreviousResults = true)
         } else {
             permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun requestCaptureStart() {
+        val requiresNotificationPermission =
+            CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(Build.VERSION.SDK_INT)
+        if (!requiresNotificationPermission ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            captureViewModel.setNotificationPermissionResult(granted = true)
+            captureViewModel.startRecording()
+        } else {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android
 
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
+import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -51,6 +52,27 @@ class CaptureGateUiStateTest {
         assertEquals(
             CaptureStartFailure.DeviceNotReady,
             mapCaptureServiceStartFailure(IllegalStateException("not connected")),
+        )
+    }
+
+    @Test
+    fun notificationPermissionIsOnlyAStartGateFromApi33() {
+        assertFalse(CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(32))
+        assertTrue(CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(33))
+        assertEquals(
+            null,
+            CaptureNotificationPermissionPolicy.failureFor(32, granted = false),
+        )
+        assertEquals(
+            CaptureStartFailure.NotificationPermissionDenied,
+            CaptureNotificationPermissionPolicy.failureFor(33, granted = false),
+        )
+        assertEquals(
+            "通知权限未授予，请允许通知后再开始录制，否则持续采集状态可能无法显示",
+            CaptureGateUiState(
+                "session_001",
+                CaptureStartFailure.NotificationPermissionDenied,
+            ).message,
         )
     }
 }

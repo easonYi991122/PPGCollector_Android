@@ -1582,6 +1582,40 @@
 
 继续 M5 API/厂商矩阵与真实生命周期门禁准备；本地优先完善 notification/FGS/permission contract 和可注入的系统 stop/断连报告，再等待设备执行 instrumentation 与真实 2 h 记录。
 
+## 2026-08-02 · M5 · REL-007 API 33 notification permission gate
+
+### 本轮目标
+
+补齐 API 33+ `POST_NOTIFICATIONS` 被拒绝时的可解释录制 gate：开始录制前由可见 Activity 请求权限，拒绝后不启动 FGS，并在 UI 说明通知是持续采集状态的必要可见性；API 32 及以下不引入该 runtime gate。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-007`、`REL-003`、`REL-004`；Phase 3 §6.2、Phase 5 §8.3；风险 `R-003`，决策 `D-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-007、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.2/§8.3；Android 官方 [notification runtime permission](https://developer.android.com/develop/ui/compose/notifications/notification-permission)（API 33+，FGS notification 也受可见性影响）。
+- Android target: `CaptureStartGate.kt`/`CaptureServiceViewModel.kt` notification policy and gate、`MainActivity.kt` `RequestPermission` launcher、`CaptureGateUiStateTest.kt`。
+- Non-goals: actual permission dialog/device notification drawer, API 26/30/31/34/36 runtime matrix, OEM behavior, FGS process survival and real BLE.
+
+### 实现事实
+
+- 新增 `NotificationPermissionDenied` 与纯 Kotlin `CaptureNotificationPermissionPolicy`；仅 API 33+ 且未授权时返回该 failure，API 32 及以下返回 no gate。
+- `MainActivity` 在开始录制前请求 `POST_NOTIFICATIONS`；授权后重试 start，拒绝后不调用 `startForegroundService`，gate 展示“允许通知后再开始录制”的行动建议。
+- `CaptureViewModel` 将通知权限结果纳入 gate StateFlow，同时保留 FGS `SecurityException`/background-start rejection 的独立映射；未修改 raw、CSV、session schema 或 FGS ownership。
+
+### 验证
+
+- targeted: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.CaptureGateUiStateTest --no-daemon` → `BUILD SUCCESSFUL`。
+- full local gate: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；94 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- Hardware validation: pending；本轮不执行权限对话框、通知抽屉、FGS runtime、emulator/真机或 OEM 测试。
+
+### 风险与决策变化
+
+- 静态/JVM 证据证明 API 分支、gate reducer 和请求回调 wiring，但不能证明用户在系统设置撤销权限、通知渠道状态、Task Manager 或厂商后台策略下的实际表现；这些仍是 REL-006/REL-007 硬件门禁。
+- `D-002` API/厂商矩阵、`D-003` 后台策略、`D-004` 签名/分发、`D-005` 隐私/保留/加密和真实 CUP 证据仍开放。
+
+### 下一轮
+
+继续 M5 API/厂商矩阵准备与 notification/FGS lifecycle static contract；设备可用后运行 API 33/34/36 权限、通知拒绝、FGS start/stop、后台/锁屏和真实 2 h 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

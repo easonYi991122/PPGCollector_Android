@@ -11,8 +11,20 @@ sealed interface CaptureStartFailure {
     data object StreamNotFresh : CaptureStartFailure
     data object DeviceNotReady : CaptureStartFailure
     data object ForegroundServiceStartRejected : CaptureStartFailure
+    data object NotificationPermissionDenied : CaptureStartFailure
     data object SessionAlreadyExists : CaptureStartFailure
     data object InsufficientStorage : CaptureStartFailure
+}
+
+object CaptureNotificationPermissionPolicy {
+    fun isRuntimePermissionRequired(apiLevel: Int): Boolean = apiLevel >= 33
+
+    fun failureFor(apiLevel: Int, granted: Boolean): CaptureStartFailure? =
+        if (isRuntimePermissionRequired(apiLevel) && !granted) {
+            CaptureStartFailure.NotificationPermissionDenied
+        } else {
+            null
+        }
 }
 
 data class CaptureStartContext(
