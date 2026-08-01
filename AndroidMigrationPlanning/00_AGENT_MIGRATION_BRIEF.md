@@ -2,7 +2,7 @@
 
 版本：1.1（agent 执行基线）
 日期：2026-08-01
-当前迭代：`M0.1`（规划与 agent 工作流基线）
+当前迭代：`M4`（Compose UI acceptance 可达性切片）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -36,7 +36,7 @@
 - Android UI 用 Compose/StateFlow/生命周期感知收集；BLE callback 不做磁盘 I/O、DFT 或 Compose 更新；先实现纯 Kotlin core，再实现 Android BLE/服务/UI。
 
 工作方式：
-1. 从当前 status 和 MigrationPlanning 阶段选择一个最小、可验收的切片，不跨越未完成的前置契约。
+1. 从当前 status 和 MigrationPlanning 阶段选择一个最近的未完成的任务，理想状态下，一轮次内完成一个M版本的开发再做相应的验证，不跨越未完成的前置契约。
 2. 在改动前列出本轮的版本号（M0/M1/...）、需求 ID、主参考符号、Android 目标文件、非目标范围和验收命令。
 3. 先实现/验证最小正确路径，再补错误路径和边界；不为方便而改变 schema、算法阈值、时间轴、序号语义、后台所有权或有效性模型。
 4. 优先写纯 Kotlin/JVM 测试，复用 golden frame 和 preprocessing/HR/SQI fixtures；需要 Android API 的部分用 fake clock/fake GATT/instrumented test 隔离。若无法运行 Gradle，记录具体环境原因，不伪造测试通过。
@@ -95,12 +95,12 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 
 | Migration 版本 | 对应规划阶段 | 目标交付 | 当前状态 |
 |---|---|---|---|
-| `M0` | Phase 0 | 契约冻结、工程基础、ADR、测试/CI 基线 | `M0.1` 规划基线已建立；其余待做 |
-| `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | 未开始 |
-| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | 未开始 |
-| `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | 未开始 |
-| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 未开始 |
-| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | 未开始 |
+| `M0` | Phase 0 | 契约冻结、工程基础、ADR、测试/CI 基线 | `M0.1/M0.2` 文档、基线 ADR 和 JVM/build 门禁已建立；证据决策仍开放 |
+| `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
+| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、permission/Compose seam 已实现；真机运行门禁未过 |
+| `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
+| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、bounded waveform/metrics、Sessions/replay、scroll/accessibility 和 instrumentation seam 已实现；runtime/SAF/可访问性仍待验收 |
+| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 未开始 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |
 

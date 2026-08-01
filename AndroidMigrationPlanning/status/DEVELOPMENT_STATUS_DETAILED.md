@@ -1977,6 +1977,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续 M5 本地发布/生命周期硬化；有 emulator/device 后运行权限撤销、CCCD/断连、API/厂商和 FGS 生命周期门禁，不以 fake failure path 替代真实设备证据。
 
+## 2026-08-02 · M4 · Scrollable Compose acceptance surface
+
+### 本轮目标
+
+补齐 Phase 4 §7.2 的页面可达性切片：Live/Capture/Sessions/详情共用的主页在小屏和较大字号下必须可滚动，Activity recreation instrumentation 不能只断言节点存在，还要把屏外的 Sessions 与卸载提示滚入视口后再断言。保持本轮不运行 emulator/真机 runtime 门禁。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-002`、`UI-003`、`UI-007`、`UI-009`、`REL-003`；Phase 4 §7.1/§7.2 的动态字号、关键状态可达和 Activity recreation 门禁。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-002/UI-003/UI-007/UI-009、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §7.1/§7.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` Compose/lifecycle boundary、`MainActivity.kt`/`MainActivitySystemTest.kt`。
+- Tests/golden: existing Compose instrumentation recreation seam；JVM protocol/raw/CSV/signal golden suites remain unchanged。
+- Android target: `MainActivity.kt` `BleHome` root scroll container；`MainActivitySystemTest.kt` `performScrollTo` landing-surface assertions。
+- Non-goals: changing CUP protocol, raw/CSV/session schema, analysis algorithm, FGS/GATT ownership, TalkBack runtime claims, screenshot/performance evidence, SAF provider execution or real-device validation。
+
+### 实现事实
+
+- `BleHome` now uses a remembered `verticalScroll` state on the root content column. The existing fixed-height session list remains bounded, while the complete page can reach capture, Sessions and detail content under small-screen or larger-font layout pressure.
+- `MainActivitySystemTest` now asserts `CUPCollector`, scan and start-capture entry points, then calls `performScrollTo()` before checking the Sessions heading and uninstall/ZIP disclosure both before and after `ActivityScenario.recreate()`.
+- No raw, CSV, metadata, algorithm, BLE, FGS or session ownership behavior changed. User-owned `AGENTS.md`, the pre-existing brief edit and untracked `.idea/` remain outside this round’s commit.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --no-daemon` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon --console=plain` → `BUILD SUCCESSFUL`；99 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 instrumentation APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon --console=plain` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-002 transport、REL-003/004 lifecycle 和 REL-006/007 merged-manifest/API contracts 均保持通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不运行 emulator/device instrumentation、动态字号/TalkBack、系统重建、后台/锁屏、SAF provider、BLE 或真机测试。
+
+### 风险与决策变化
+
+- The scroll container and test scroll-to prove source/test wiring for content reachability, not runtime font-scale layout, screen-reader announcements, OEM window behavior or actual Activity recreation. Those Phase 4/5 runtime gates remain open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变任何 schema/profile/algorithm version。
+
+### 下一轮
+
+在 emulator/device 可用时执行本轮 instrumentation，重点覆盖 Activity recreation、动态字号/TalkBack、SAF/FileProvider provider 和 FGS bind/rebind；本地继续 M5 API/厂商/发布门禁，但不把编译结果替代 runtime/hardware evidence。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
