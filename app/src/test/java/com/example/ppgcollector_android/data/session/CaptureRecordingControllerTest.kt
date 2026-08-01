@@ -209,7 +209,8 @@ class CaptureRecordingControllerTest {
                 )
             }
             controller.stop(CaptureStopReason.USER)
-            assertNotNull(controller.awaitFinalized(10, TimeUnit.SECONDS))
+            val summary = controller.awaitFinalized(10, TimeUnit.SECONDS)
+            assertNotNull(summary)
             assertEquals(CaptureRecordingState.FINALIZED, controller.snapshotFlow.value.state)
             val analysis = controller.analysisSnapshot.value
             assertNotNull(analysis.lastResult)
@@ -217,6 +218,13 @@ class CaptureRecordingControllerTest {
             assertEquals(800, analysis.lastResult!!.request.rawIr.size)
             assertEquals(800, controller.waveformSnapshot.value.red.size)
             assertEquals(800, controller.waveformSnapshot.value.ir.size)
+            val csvRows = Files.readAllLines(summary!!.directory.resolve("controller_001.csv"))
+                .drop(1)
+                .map(CaptureCsvParser::parseRow)
+            assertEquals(800, csvRows.size)
+            assertTrue(csvRows.all { !it.heartRateBpm.isValid })
+            assertTrue(csvRows.all { !it.signalQuality.isValid })
+            assertTrue(csvRows.all { !it.ratioOfRatios.isValid })
             assertTrue(
                 analysis.lastResult!!.snapshot.heartRateBpm.algorithmVersion.isNotEmpty(),
             )

@@ -215,6 +215,8 @@ ratio_of_ratios,ratio_of_ratios_valid,ratio_of_ratios_time_s
 
 `device_time_s = sample_index / 100.0`，从第一条 accepted sample 开始；frame host time 可在该帧全部样本复用。首个 8 s live 指标对应 window end index 799、时间 `7.99`。数字使用 `Locale.ROOT` 和固定格式，禁止设备地区把小数点写成逗号。字符串字段虽然当前受控，writer 仍实现 RFC 4180 转义。
 
+CSV 中的指标列是 raw notification 写入时携带的 point-in-time snapshot，不是异步分析结果的回填目标：writer 已经确认的行不可被后续 HR/SQI/R 计算改写，metric 的 `*_time_s` 必须继续来自真实 `sourceSampleIndex`。录制中的分析结果通过 StateFlow/UI 观察；离线分析使用独立、版本化的结果文件，不能反向修改源 CSV。
+
 ### 6.4 Metadata
 
 保留现有 snake_case 字段：schema/session/name/UTC、soft/alg/preprocess/protocol/transport、sample rate/frame size、device、complete/stop reason、frame/sample/raw chunk 与 sequence/invalid/discard 计数、writer、files、recovery。Kotlin 使用 kotlinx.serialization 自定义 ISO-8601 `Instant` 序列化，并测试与 Swift JSON 双向读取。

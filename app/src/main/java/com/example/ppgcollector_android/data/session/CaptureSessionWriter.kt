@@ -173,6 +173,8 @@ class CaptureSessionWriter(
         hostMonotonicNanoseconds: ULong,
         data: ByteArray,
         acceptedSampleStartIndex: Long? = null,
+        // This is a point-in-time snapshot at raw acknowledgement. Async
+        // analysis results must never mutate rows already emitted to CSV.
         metrics: LiveMetricSnapshot = LiveMetricSnapshot.unavailable(
             hasConnectedDevice = true,
             freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH,

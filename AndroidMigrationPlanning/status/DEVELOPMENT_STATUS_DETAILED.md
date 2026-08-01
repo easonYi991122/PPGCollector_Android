@@ -1720,6 +1720,41 @@ Add the static merged-manifest/API target report requested by the M5 release che
 
 When an emulator/device is available, run the API 26/30/31/33/34/35/36/37 permission and FGS matrix; locally continue the remaining M5 release checks without claiming runtime coverage from this static report.
 
+## 2026-08-02 · M5 · live metrics CSV snapshot policy
+
+### 本轮目标
+
+明确并验证 live metrics 与 raw-first CSV 的边界：metrics 只能作为 raw notification 写入时的 point-in-time snapshot，异步 HR/SQI/R 结果不得回填已经写出的 CSV 行；离线分析结果另行版本化且不修改源 CSV。
+
+### 需求/参考/Android 目标
+
+- Requirement: `CAP-002`、`SIG-002`、`REL-001`；架构 §6.3/§7.2/§7.3/§10；风险 `R-015`。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.3/§7.3；Swift `CaptureSessionWriter.swift` uses the chunk's `metrics` snapshot and does not perform asynchronous CSV backfill.
+- Android targets: `CaptureSessionWriter.kt` and `CaptureRecordingControllerTest.kt`。
+- Non-goals: changing the 25-column schema, adding an offline analysis sidecar, calibrating SpO2/BP, or claiming runtime/device evidence.
+
+### 实现事实
+
+- Architecture contract now states that emitted CSV rows are immutable with respect to later analysis; metric `*_time_s` remains derived from the real `sourceSampleIndex`.
+- Writer documentation labels the `metrics` parameter as the snapshot captured at raw acknowledgement and explicitly prohibits async mutation of emitted rows.
+- The 8-second controller integration test waits for a real analysis result (`windowEndSampleIndex=799`) and then parses all 800 CSV rows, asserting HR/SQI/R remain invalid rather than being backfilled by the later analysis worker.
+- Existing valid metric formatter behavior is unchanged: callers that provide a valid snapshot at write time still preserve value, validity, and source time.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.data.session.CaptureRecordingControllerTest --no-daemon` → `BUILD SUCCESSFUL`；24 JVM tests completed。
+- `git diff --check` → passed。
+- Hardware validation: pending; this round does not run emulator/device, background, or real BLE tests.
+
+### 风险与决策变化
+
+- CSV now has an explicit no-backfill policy, but a separately versioned offline analysis result artifact remains a future M6 scope; live SQI remains provisional, ratio remains diagnostic, and SpO2/BP remain unavailable.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open。
+
+### 下一轮
+
+Continue M5 local hardening and, when an emulator/device is available, run the pending lifecycle/API/vendor matrix; do not reinterpret this JVM assertion as runtime coverage.
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
