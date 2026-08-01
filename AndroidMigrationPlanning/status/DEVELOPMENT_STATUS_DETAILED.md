@@ -403,6 +403,42 @@
 
 进入 M1 SQI fixture slice：移植周期 peak/template/Pearson/grade 与 provisional validity，复用同一 peak detector；ratio-of-ratios 另行切片。
 
+## 2026-08-02 · M1 · SQI template matching parity JVM fixture slice
+
+### 本轮目标
+
+按 SIG-005 移植周期对齐、mean template、Pearson SQI、0–1 display clamp、Good/Fair/Poor grade 与 provisional validity；复用 SIG-004 peak primitive，不进入 ratio-of-ratios、live scheduler 或 UI。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-005；路线 §4.3、§4.4；架构文档 §7.1；风险 R-004/R-012。
+- Primary source: `reference_sources/ios_current/PPGCollector/SignalProcessing/SQI/TemplateMatchSQI.swift`、对应 Swift tests。
+- Tests/golden: `reference_sources/signal_fixtures/sqi/sqi_vectors.json`；覆盖 8 cases 的 final SQI/reason/grade、primary/fallback peak trace、cycle/template/Pearson/quality trace。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/TemplateMatchSqi.kt`、`app/src/test/java/com/example/ppgcollector_android/core/signal/Sqi/TemplateMatchSqiTest.kt`。
+- Non-goals: ratio-of-ratios、MetricResult/source time、live scheduler、BLE/FGS/UI、真机测试；SQI 不代表临床有效性。
+
+### 实现事实
+
+- 固化 `ppg-ios-sqi-0.1` baseline 配置与 100 Hz 周期窗口；primary/fallback peak pass、最小两峰约束、bankers rounding 的 pre/post 对齐和完整周期过滤与 Swift 对齐。
+- 实现 mean template、逐周期 Pearson、quality trace、raw/display clamp、阈值 grade 及 invalid reason；所有可用 SQI 标记为 provisional，不能外推 SpO2/BP。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`45 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- fixture 是 synthetic numerical parity；SQI 仍是 provisional algorithm core，不是生理有效性或真实设备验证。
+- D-001、D-005、D-006、D-007 仍开放；ratio-of-ratios、MetricResult validity/source time、BLE/FGS/UI 仍未实现。
+- `00_AGENT_MIGRATION_BRIEF.md` 的既有用户修改和 `.idea/` 均未纳入本轮提交。
+
+### 下一轮
+
+进入 M1 ratio-of-ratios / MetricResult validity slice，继续保持 provisional 与 invalid 语义；live scheduler 另行切片。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
