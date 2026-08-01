@@ -1,6 +1,9 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.signal.StreamFreshness
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class BlePermissionGateState {
     UNKNOWN,
@@ -101,6 +104,9 @@ class BleCoordinator(
     var snapshot: BleCoordinatorSnapshot = snapshotNow()
         private set
 
+    private val _snapshotFlow = MutableStateFlow(snapshot)
+    val snapshotFlow: StateFlow<BleCoordinatorSnapshot> = _snapshotFlow.asStateFlow()
+
     var onRawChunk: ((BleRawNotificationChunk) -> Unit)? = null
         set(value) {
             field = value
@@ -178,6 +184,7 @@ class BleCoordinator(
 
     private fun publish() {
         snapshot = snapshotNow()
+        _snapshotFlow.value = snapshot
     }
 
     private fun snapshotNow() = BleCoordinatorSnapshot(

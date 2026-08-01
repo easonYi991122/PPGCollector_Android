@@ -661,6 +661,43 @@
 
 接入 Activity Result permission launcher 与 Compose/StateFlow 只读观察，随后把 coordinator 绑定到 app scope；不创建第二 GATT owner，不把 UI 写操作混入 callback。
 
+## 2026-08-02 · M2 · Activity Result permission and lifecycle-aware BLE snapshot wiring
+
+### 本轮目标
+
+按 BLE-001、UI-001 与架构 ownership 规则将 permission seam/coordinator 接到 Android app scope：Application 持有唯一 coordinator，Activity 只注册 Activity Result launcher 并回传结果，Compose 使用 lifecycle-aware StateFlow 观察 immutable snapshot；不接录制 writer/FGS，不做真机。
+
+### 需求/参考/Android 目标
+
+- Requirements: BLE-001、UI-001/UI-006 gate 部分、REL-003 ownership；架构 §1/§2/§8。
+- Primary sources: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` ownership/UI rules、`BlePermissionResultSeam`/`BleCoordinator` 与 Android Activity Result contract。
+- Tests/golden: existing 64 JVM tests retain permission deny/recover and coordinator gates; Android compile/build validates `RequestMultiplePermissions`, lifecycle-aware collection, Application manifest wiring and API 26-compatible packaging。
+- Android targets: `app/src/main/java/com/example/ppgcollector_android/PpgCollectorApplication.kt`、`MainActivity.kt`、`core/ble/BleCoordinator.kt`、`gradle/libs.versions.toml`、`app/build.gradle.kts`、`app/src/main/AndroidManifest.xml`。
+- Non-goals: real permission dialog/GATT/device validation、recording FGS/raw writer、formal product UI/navigation、SpO2/BP。
+
+### 实现事实
+
+- `PpgCollectorApplication` app-scope lazy owns `BleCoordinator(AndroidBleTransport(...))`; Activity recreation does not create a second GATT owner within the process.
+- `BleCoordinator` now exposes `StateFlow<BleCoordinatorSnapshot>`; `MainActivity` uses `RequestMultiplePermissions` and `collectAsStateWithLifecycle`, and scan/connect actions remain coordinator calls.
+- Minimal Compose device screen shows permission/availability/phase/freshness, CUP discovery, scan controls and connect buttons; it does not write the control characteristic or perform disk/algorithm work in callbacks.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`64 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`；包含 Activity Result/lifecycle-compose 依赖、Manifest/Application wiring。
+- `git diff --check`：待提交前执行。
+- 真机权限弹窗/扫描/GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 Compose 页面是最小设备/连接状态 seam，不是 V1 正式实时/录制 UI；Activity Result 编译通过不等于用户设备权限行为已验证。
+- Application scope 只覆盖当前进程；进程死亡恢复、FGS ownership、raw-first recording 尚未实现。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+进入 M3 raw-first writer/session start gate：在 accepted raw chunk 前置写入、CSV/metadata validity 追踪和 single finalizer 之前，先保持 coordinator/FGS ownership seam。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
