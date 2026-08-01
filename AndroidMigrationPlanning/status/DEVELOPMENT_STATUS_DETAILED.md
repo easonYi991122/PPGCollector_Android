@@ -587,6 +587,43 @@
 
 继续 M2 Android `BluetoothLeScanner`/`BluetoothGatt` adapter 与 runtime permission result seam；将系统 callback 转为上述 event、使用 `elapsedRealtimeNanos`、保持单一 owner、CCCD success gate 和 raw-first 投递。
 
+## 2026-08-02 · M2 · Android scanner/GATT adapter and raw timestamp seam
+
+### 本轮目标
+
+按 BLE-003/005 将纯 Kotlin GATT owner 接到 Android platform adapter：扫描结果进入统一 event、GATT callback 串行化、notification bytes 在 callback 内复制并附带 `elapsedRealtime` 等价 monotonic nanos、service/characteristic discovery、CCCD 写入成功回调和单一 active GATT identity；不在本轮接 Compose/permission UI 或真机。
+
+### 需求/参考/Android 目标
+
+- Requirements: BLE-003、BLE-005；Phase 2 路线与架构 §1/§2；风险 R-002/R-003/R-004。
+- Primary sources: `reference_sources/ios_current/PPGCollector/Infrastructure/Bluetooth/BLETransport.swift`、`BLECentralService.swift`；Android platform contract uses `BluetoothLeScanner`/`BluetoothGatt` callback APIs.
+- Tests/golden: existing fake GATT path plus event contract; JVM test asserts callback timestamp survives into `BleRawNotificationChunk`; build verifies API 26-compatible adapter and Manifest merge.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt` and `FakeBleTransport.kt` event timestamp extension.
+- Non-goals: runtime permission request UI, Activity/ViewModel/FGS wiring, MTU optimization, real scanner/GATT/CCCD/device validation, raw file persistence。
+
+### 实现事实
+
+- `AndroidBleTransport` uses one main-handler event queue, keeps one active GATT per device generation, filters only at the owner layer while scanner itself remains unfiltered, and converts availability/scan/connect/discovery/CCCD/value callbacks to the pure event contract.
+- API 33 descriptor write overload and API <33 compatibility path are both represented; CCCD completion emits `NotificationStateChanged` only after the descriptor callback, and no CUP control characteristic write is issued.
+- Notification bytes are copied before posting; `ValueReceived.hostMonotonicNanos` preserves callback-time monotonic timestamp for raw-first consumers. Security/permission failures are surfaced as typed failure/availability events.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`61 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`；包含 Android adapter 编译和 Manifest merge。
+- `git diff --check`：待提交前执行。
+- 真机扫描/GATT/CCCD/MTU/权限弹窗/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 adapter 尚未由 Activity/ViewModel 注入，也未实际调用系统权限请求；编译通过不等于真实 BluetoothGatt receiving 成功。
+- `connectGatt`、CCCD 行为、设备 address/name、API 厂商差异仍需硬件矩阵；NUS/passive/408-byte profile 仍是 bring-up draft。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+接入 runtime permission result seam 与 app-scope BLE coordinator；保持 Activity 不直接持有 GATT、单一 owner、freshness/generation 和 raw-first 事件边界。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

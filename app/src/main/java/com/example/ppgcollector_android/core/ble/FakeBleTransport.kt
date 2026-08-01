@@ -45,13 +45,16 @@ sealed interface BleTransportEvent {
         val characteristicUuid: String,
         val data: ByteArray?,
         val errorMessage: String?,
+        val hostMonotonicNanos: Long? = null,
     ) : BleTransportEvent {
         override fun equals(other: Any?): Boolean = other is ValueReceived &&
             deviceId == other.deviceId && characteristicUuid == other.characteristicUuid &&
-            data.contentEquals(other.data) && errorMessage == other.errorMessage
+            data.contentEquals(other.data) && errorMessage == other.errorMessage &&
+            hostMonotonicNanos == other.hostMonotonicNanos
 
         override fun hashCode(): Int = 31 * (31 * deviceId.hashCode() + characteristicUuid.hashCode()) +
-            (data?.contentHashCode() ?: 0) + (errorMessage?.hashCode() ?: 0)
+            (data?.contentHashCode() ?: 0) + (errorMessage?.hashCode() ?: 0) +
+            (hostMonotonicNanos?.hashCode() ?: 0)
     }
 }
 

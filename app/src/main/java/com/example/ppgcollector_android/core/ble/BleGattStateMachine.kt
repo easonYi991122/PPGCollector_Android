@@ -335,7 +335,13 @@ class CupBleGattStateMachine(
             receivedNotificationCount = diagnostics.receivedNotificationCount + 1,
             rawChunkCount = diagnostics.rawChunkCount + 1,
         )
-        onRawChunk?.invoke(BleRawNotificationChunk(connectionGeneration, hostNanos, data.copyOf()))
+        onRawChunk?.invoke(
+            BleRawNotificationChunk(
+                connectionGeneration = connectionGeneration,
+                hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
+                bytes = data.copyOf(),
+            ),
+        )
         phase = BleConnectionPhase.Receiving(event.deviceId)
         refreshFreshness(now)
     }

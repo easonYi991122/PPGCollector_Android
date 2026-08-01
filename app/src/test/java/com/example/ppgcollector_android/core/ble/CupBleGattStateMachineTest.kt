@@ -57,12 +57,21 @@ class CupBleGattStateMachineTest {
         assertEquals(StreamFreshness.WAITING, owner.freshness)
 
         val original = byteArrayOf(1, 2, 3)
-        transport.emit(BleTransportEvent.ValueReceived(deviceId, profile.notifyCharacteristicUuid, original, null))
+        transport.emit(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                original,
+                null,
+                hostMonotonicNanos = 123_456L,
+            ),
+        )
         original[0] = 99
         assertEquals(BleConnectionPhase.Receiving(deviceId), owner.phase)
         assertEquals(1, chunks.size)
         assertEquals(1, chunks.single().bytes[0].toInt())
         assertEquals(generation, chunks.single().connectionGeneration)
+        assertEquals(123_456L, chunks.single().hostMonotonicNanos)
         assertEquals(StreamFreshness.WAITING, owner.freshness)
         owner.markValidFrame(2.0)
         assertEquals(StreamFreshness.FRESH, owner.freshness)
