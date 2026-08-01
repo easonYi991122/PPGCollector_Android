@@ -1755,6 +1755,43 @@ When an emulator/device is available, run the API 26/30/31/33/34/35/36/37 permis
 
 Continue M5 local hardening and, when an emulator/device is available, run the pending lifecycle/API/vendor matrix; do not reinterpret this JVM assertion as runtime coverage.
 
+## 2026-08-02 · M5 · REL-003/REL-004 service lifecycle contract report
+
+### 本轮目标
+
+为 connectedDevice 前台服务补充发布构建级 lifecycle/failure 静态报告，确保系统重建策略、终止观察和通知停止入口在没有 emulator 时也有可审计的源码契约；不把静态检查冒充运行时证明。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-003`、`REL-004`、`UI-008`；Phase 3 §6.2、Phase 5 §8.1；架构 §9；风险 `R-003`/`R-015`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-003/REL-004、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.1；`CaptureForegroundService.kt`。
+- Android target: `app/build.gradle.kts` `verifyReleaseLifecycleContract` and `release-lifecycle-contract.txt` report.
+- Non-goals: process death, background/lock-screen survival, notification drawer behavior, API/OEM runtime behavior, real BLE, and signing.
+
+### 实现事实
+
+- Added a release task that compiles the release source and checks the service lifecycle fragments: `START_NOT_STICKY`, terminal `FINALIZED/FAILED` observation, observer cancellation, controller close, foreground removal, and immutable stop action.
+- The task emits `app/build/reports/release-lifecycle-contract.txt` and is included by `verifyReleasePrivacy` beside the merged-manifest/API and privacy checks.
+- The contract also checks the relative `onDestroy()` order: cancel the pending observer, cancel the service scope, close the controller, then remove the foreground notification.
+- No recording ownership, raw/CSV/session schema, stop-reason precedence, or service implementation behavior changed in this slice.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleaseLifecycleContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；report status passed。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；95 JVM tests、release lint 0 errors、R8/resource shrinking and androidTest APK compilation passed。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；REL-005、REL-006/007 API and REL-003/004 lifecycle reports passed。
+- `git diff --check` → passed。
+- Hardware validation: pending; this round does not run emulator/device, process recreation, background/lock-screen, or vendor tests.
+
+### 风险与决策变化
+
+- Static source evidence reduces release regression risk but does not prove Android callback ordering after process kill or OEM service survival; REL-003/REL-004 runtime gates remain open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open。
+
+### 下一轮
+
+Continue local release hardening; when an emulator/device is available, execute process recreation, FGS stop, API matrix, and vendor lifecycle tests without closing the runtime gate from static evidence alone.
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

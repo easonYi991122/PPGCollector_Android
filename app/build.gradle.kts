@@ -68,6 +68,12 @@ val releaseMergedManifest = layout.buildDirectory.file(
     "intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml",
 )
 val releaseApiContractReport = layout.buildDirectory.file("reports/release-api-contract.txt")
+val captureServiceSource = layout.projectDirectory.file(
+    "src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt",
+)
+val releaseLifecycleContractReport = layout.buildDirectory.file(
+    "reports/release-lifecycle-contract.txt",
+)
 
 /**
  * Release REL-006/REL-007 report: validate the merged manifest and the declared
@@ -183,6 +189,68 @@ tasks.register("verifyReleaseApiContract") {
 }
 
 /**
+ * Release REL-003/REL-004 lifecycle report: keep the service's source-level
+ * ownership and terminal-state contract visible even before an emulator is
+ * available for runtime lifecycle tests.
+ */
+tasks.register("verifyReleaseLifecycleContract") {
+    dependsOn("compileReleaseKotlin")
+    inputs.file(captureServiceSource)
+    outputs.file(releaseLifecycleContractReport)
+
+    doLast {
+        val source = captureServiceSource.asFile.readText()
+        val requiredFragments = listOf(
+            "return START_NOT_STICKY",
+            "stopJob?.cancel()",
+            "serviceScope.cancel()",
+            "recordingController.close()",
+            "snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED",
+            "snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FAILED",
+            "stopForeground(STOP_FOREGROUND_REMOVE)",
+            "PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE",
+        )
+        val missing = requiredFragments.filterNot(source::contains)
+        check(missing.isEmpty()) {
+            "REL-003/REL-004 service lifecycle contract missing fragments: ${missing.joinToString()}"
+        }
+        val onDestroyStart = source.indexOf("override fun onDestroy()")
+        val onDestroyEnd = source.indexOf("fun snapshot()", onDestroyStart)
+        check(onDestroyStart >= 0 && onDestroyEnd > onDestroyStart) {
+            "REL-003/REL-004 onDestroy body is missing"
+        }
+        val onDestroy = source.substring(onDestroyStart, onDestroyEnd)
+        val cleanupOrder = listOf(
+            "stopJob?.cancel()",
+            "serviceScope.cancel()",
+            "recordingController.close()",
+            "stopForeground(STOP_FOREGROUND_REMOVE)",
+        ).map(onDestroy::indexOf)
+        check(cleanupOrder.zipWithNext().all { (first, second) -> first >= 0 && first < second }) {
+            "REL-003/REL-004 onDestroy cleanup order changed: $cleanupOrder"
+        }
+
+        val report = buildString {
+            appendLine("REL-003/REL-004 release lifecycle contract")
+            appendLine("service=CaptureForegroundService")
+            appendLine("start_mode=START_NOT_STICKY")
+            appendLine("terminal_states=FINALIZED,FAILED")
+            appendLine("stop_observer=capture_recording_snapshot_flow")
+            appendLine("notification_action=immutable_stop_and_save")
+            appendLine("on_destroy=cancel_observer_then_close_controller_then_remove_foreground")
+            appendLine("status=passed")
+        }
+        releaseLifecycleContractReport.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(report)
+        }
+        logger.lifecycle(
+            "REL-003/REL-004 release lifecycle contract passed: ${releaseLifecycleContractReport.get().asFile}",
+        )
+    }
+}
+
+/**
  * Release-only REL-005 audit: production code must not emit raw PPG, device
  * identity, filesystem paths, or stack traces through ad-hoc logging, and the
  * compressed APK must not carry test/session fixtures.
@@ -190,6 +258,7 @@ tasks.register("verifyReleaseApiContract") {
 tasks.register("verifyReleasePrivacy") {
     dependsOn("assembleRelease")
     dependsOn("verifyReleaseApiContract")
+    dependsOn("verifyReleaseLifecycleContract")
     notCompatibleWithConfigurationCache("uses a streaming APK/source audit action")
     inputs.dir(releasePrivacySourceDir)
     inputs.file(releasePrivacyApk)
