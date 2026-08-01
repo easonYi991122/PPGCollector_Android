@@ -36,6 +36,26 @@ class BleCoreTest {
     }
 
     @Test
+    fun permissionPolicyCoversAllReleaseApiBoundaries() {
+        val legacy = setOf(BlePermission.ACCESS_FINE_LOCATION)
+        val nearby = setOf(BlePermission.BLUETOOTH_SCAN, BlePermission.BLUETOOTH_CONNECT)
+
+        listOf(26, 30).forEach { apiLevel ->
+            assertEquals(legacy, BlePermissionPolicy.runtimePermissions(apiLevel))
+            assertTrue(BlePermissionPolicy.needsLocationForScan(apiLevel))
+        }
+        listOf(31, 33, 34, 35, 36, 37, 38).forEach { apiLevel ->
+            assertEquals(nearby, BlePermissionPolicy.runtimePermissions(apiLevel))
+            assertFalse(BlePermissionPolicy.needsLocationForScan(apiLevel))
+            assertEquals(
+                nearby + BlePermission.ACCESS_FINE_LOCATION,
+                BlePermissionPolicy.runtimePermissions(apiLevel, neverForLocation = false),
+            )
+            assertTrue(BlePermissionPolicy.needsLocationForScan(apiLevel, neverForLocation = false))
+        }
+    }
+
+    @Test
     fun freshnessWaitsForFirstValidFrameAndUsesInclusiveTwoSecondBoundary() {
         val tracker = CupStreamFreshnessTracker(2.0)
         assertEquals(StreamFreshness.UNAVAILABLE, tracker.freshness(10.0))

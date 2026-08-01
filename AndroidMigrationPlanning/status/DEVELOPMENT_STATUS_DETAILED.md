@@ -1616,6 +1616,39 @@
 
 继续 M5 API/厂商矩阵准备与 notification/FGS lifecycle static contract；设备可用后运行 API 33/34/36 权限、通知拒绝、FGS start/stop、后台/锁屏和真实 2 h 门禁。
 
+## 2026-08-02 · M5 · REL-006 BLE permission API boundary matrix
+
+### 本轮目标
+
+补齐 BLE runtime permission policy 的发布 API 边界证据：覆盖规划要求的 API 26/30/31/33/34/35/36/37，并验证 API 33+ `neverForLocation` 分支与未来更高 API 不回退到 legacy location-only 逻辑；不把 JVM policy test 误称为 emulator/厂商运行矩阵。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-006`、`BLE-001`；Phase 2 §5.1、Phase 5 §8.1；风险 `R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-006/BLE-001、`docs/01_ANDROID_MIGRATION_MASTER_PLAN.md` API boundary list、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.1/§8.1、`BlePermissionPolicy`。
+- Android target: `app/src/test/java/com/example/ppgcollector_android/core/ble/BleCoreTest.kt`。
+- Non-goals: emulator boot, runtime permission dialogs, real Bluetooth stack, OEM battery/background behavior, FGS/notification runtime and target-device reports.
+
+### 实现事实
+
+- 新增 matrix test：API 26/30 只需 legacy `ACCESS_FINE_LOCATION`；API 31/33/34/35/36/37 需要 `BLUETOOTH_SCAN` + `BLUETOOTH_CONNECT`；`neverForLocation=false` 时 API 31+ 额外需要 location；API 38 future branch 保持 nearby-device policy。
+- 该测试与既有 Manifest `ACCESS_FINE_LOCATION maxSdk=30`、`BLUETOOTH_SCAN neverForLocation` 和 API 30/31/33 permission-result seam 共同形成静态/JVM boundary evidence，不改变权限或数据契约。
+
+### 验证
+
+- targeted: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.BleCoreTest --no-daemon` → `BUILD SUCCESSFUL`。
+- full local gate: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；95 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- Hardware validation: pending；本轮不运行 API emulator、权限对话框、真实 BLE 或厂商设备。
+
+### 风险与决策变化
+
+- JVM policy coverage 不能证明 API 34/36 的系统权限行为、扫描限制、FGS policy、蓝牙关闭/撤权或厂商后台存活；REL-006 仍未完成。
+- `D-002` 目标设备矩阵、`D-003` 后台策略、`D-004` 签名/分发、`D-005` 隐私/保留/加密和真实 CUP 证据仍开放。
+
+### 下一轮
+
+继续 API/厂商矩阵的本地准备：补静态 merged-manifest/API target report 和服务生命周期 failure contract；设备可用后运行 API 26/30/31/33/34/35/36/37 emulator 与至少两类厂商门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
