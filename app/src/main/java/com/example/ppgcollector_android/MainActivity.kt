@@ -23,6 +23,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -38,6 +41,7 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
+import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 
 class MainActivity : ComponentActivity() {
@@ -403,18 +407,62 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
         Text("host 帧跨度：${"%.3f".format(java.util.Locale.ROOT, it)} s", style = MaterialTheme.typography.bodySmall)
     }
     if (replay.recentSamples.isNotEmpty()) {
-        Text("最近样本波形（${replay.recentSamples.size}/800）", style = MaterialTheme.typography.bodySmall)
-        WaveformPanel(
-            label = "REPLAY RED",
-            color = Color(0xFFD32F2F),
-            values = replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray(),
-        )
-        WaveformPanel(
-            label = "REPLAY IR",
-            color = Color(0xFF1565C0),
-            values = replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray(),
+        ReplayWaveformPanel(replay)
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun ReplayWaveformPanel(replay: CupRawReplayReport) {
+    val red = replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray()
+    val ir = replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray()
+    var viewport by remember(replay.recentSamples.size) {
+        mutableStateOf(ReplayWaveformViewport())
+    }
+    val visibleRange = viewport.visibleRange(red.size)
+    fun updateViewport(update: ReplayWaveformViewport.() -> Unit) {
+        val next = ReplayWaveformViewport(viewport.zoomScale, viewport.visibleStart)
+        next.update()
+        viewport = next
+    }
+
+    Text("最近样本波形（${replay.recentSamples.size}/800）", style = MaterialTheme.typography.bodySmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Button(onClick = {
+            updateViewport { setZoom(zoomScale * 2.0, red.size) }
+        }) { Text("放大") }
+        Button(onClick = {
+            updateViewport { setZoom(zoomScale / 2.0, red.size) }
+        }) { Text("缩小") }
+        Button(onClick = { updateViewport { reset() } }) { Text("重置") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Button(onClick = {
+            updateViewport { pan(-maxOf(1, visibleSampleCount(red.size) / 2).toDouble(), red.size) }
+        }) { Text("← 平移") }
+        Button(onClick = {
+            updateViewport { pan(maxOf(1, visibleSampleCount(red.size) / 2).toDouble(), red.size) }
+        }) { Text("平移 →") }
+        Text(
+            "视窗 ${visibleRange.first}–${visibleRange.last} / ${red.size}",
+            modifier = Modifier.padding(top = 12.dp),
+            style = MaterialTheme.typography.bodySmall,
         )
     }
+    WaveformPanel(
+        label = "REPLAY RED",
+        color = Color(0xFFD32F2F),
+        values = red.sliceVisible(visibleRange),
+    )
+    WaveformPanel(
+        label = "REPLAY IR",
+        color = Color(0xFF1565C0),
+        values = ir.sliceVisible(visibleRange),
+    )
+}
+
+private fun DoubleArray.sliceVisible(range: IntRange): DoubleArray {
+    if (range.isEmpty()) return doubleArrayOf()
+    return copyOfRange(range.first, range.last + 1)
 }
 
 @androidx.compose.runtime.Composable

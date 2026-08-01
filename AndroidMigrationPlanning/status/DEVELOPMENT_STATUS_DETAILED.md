@@ -1207,6 +1207,40 @@
 
 推进 M4 系统生命周期/可访问性与 SAF/FileProvider instrumentation seam，随后再评估 replay viewport 的纯数学 zoom/pan 组件；不提前进入 V1.1 分析工作台。
 
+## 2026-08-02 · M4 · Replay viewport pure math and controls
+
+### 本轮目标
+
+迁移 Swift `CUPWaveformViewport` 的 zoom/pan/clamp 语义，并将其接入 bounded replay 波形：zoom 1–80、锚点保持、水平平移边界、样本数量变化保留 zoom、reset；Canvas 只绘制当前可视切片。
+
+### 需求/参考/Android 目标
+
+- Requirements: Phase 4 §7.1 Detail、§7.2、waveform/viewport pure math JVM gate；不改变 raw replay 的 accepted sample 或时间轴。
+- Primary source: `docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §7.1/验证矩阵、`docs/05_SOURCE_REFERENCE_INDEX.md` `CUPWaveformViewport.swift`、Swift `CUPWaveformViewportTests.swift`。
+- Android targets: `data/session/ReplayWaveformViewport.kt`、`ReplayWaveformViewportTest.kt`、`MainActivity.kt` replay controls。
+- Non-goals: raw file mutation, full-session unbounded rendering, preprocessed replay, offline analysis/workbench, screenshot/performance and real-device/system validation。
+
+### 实现事实
+
+- `ReplayWaveformViewport` is Android/core-independent pure Kotlin with Swift-compatible visible-count/range, anchor-centered zoom, pan/clamp, sample-refresh clamp and reset semantics; zoom is bounded to 1–80 and non-finite input is made deterministic.
+- Four JVM tests port the Swift behaviors: center-stable zoom, pan boundary clamps, sample-count shrink without zoom reset, and zoom bounds/reset.
+- Replay detail now exposes zoom/缩小/重置 and half-window horizontal pan controls. The selected range is sliced before RED/IR Canvas bucketing, so rendering work remains bounded by the retained replay samples and current viewport.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon` → `BUILD SUCCESSFUL`；debug compile includes viewport controls。
+- Full JVM suite passed (87 tests), including the four new `ReplayWaveformViewportTest` cases and all existing protocol/raw/CSV/session/signal/inspection/export/recovery tests。
+- `git diff --check`：pass。Compose screenshot/accessibility, large-session timing/heap, Activity recreation, background/lock-screen, SAF/FileProvider provider and hardware validation remain pending；本轮不进行真机测试。
+
+### 风险与决策变化
+
+- The viewport is intentionally a recent bounded replay view; it must not be described as full-session or preprocessed analysis. Gesture support and richer replay navigation can build on this pure model later without changing data contracts.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+推进本地 system/accessibility/provider test seam（Activity recreation、screen state、SAF/FileProvider contract），然后再评估 M4 阶段收口与 M5 硬化前置条件。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
