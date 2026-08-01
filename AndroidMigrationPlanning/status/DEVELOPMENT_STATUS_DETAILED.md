@@ -2051,6 +2051,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续 M4 本地 acceptance audit 的 permission-return/重复 start-stop 状态覆盖，或在 emulator/device 可用时运行 SAF/FileProvider/Activity recreation 门禁；不把 JVM cancellation 结果替代真实 provider 证据。
 
+## 2026-08-02 · M2 · Merge incremental BLE permission callbacks
+
+### 本轮目标
+
+修复 `BLE-001` 权限恢复边界：Android `RequestMultiplePermissions` 回调只包含本次请求项时，不能清除此前已授予的 nearby-device/location 权限；显式 `false` 必须仍能撤销并保持可恢复的 `DENIED` 状态。
+
+### 需求/参考/Android 目标
+
+- Requirement: `BLE-001`、`BLE-003`、`REL-006`；Phase 2 §5.1/§5.2、Phase 5 §8.1 的 permission denial/revocation/recovery matrix。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` BLE-001/REL-006、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.1/§5.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §3/§9、`BlePermissionResultSeam`/`MainActivity` Activity Result callback。
+- Tests/golden: `BleCoordinatorTest.permissionResultSeamPreservesEarlierGrantWhenCallbackOnlyContainsMissingPermission` plus existing API 30/31/33 permission and revocation tests。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt` `BlePermissionResultSeam.applyResult`。
+- Non-goals: changing manifest permissions, `neverForLocation`, scan/GATT/raw/CSV/session behavior, system permission dialogs, API/OEM runtime or real-device validation。
+
+### 实现事实
+
+- `applyResult` snapshots `previouslyGranted`; a missing map entry preserves that permission, while an explicit `false` removes it. The gate therefore supports a partial SCAN grant followed by a CONNECT-only callback and still honors revocation.
+- Added JVM coverage for API 33 partial SCAN→CONNECT recovery; existing full-map grants and explicit API 30 revocation remain covered.
+- No protocol, raw, CSV, algorithm, session or FGS contract changed. This is a reducer correctness fix, not evidence that Android system permission dialogs or vendor behavior are validated.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.BleCoordinatorTest :app:compileDebugKotlin --no-daemon --console=plain` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon --console=plain` → `BUILD SUCCESSFUL`；JVM suite 通过，release lint 0 errors，R8/resource shrinking、release APK 和 instrumentation APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon --console=plain` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-002 transport、REL-003/004 lifecycle 和 REL-006/007 merged-manifest/API contracts 均保持通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不运行 runtime permission dialog、API/OEM matrix、BLE stack、emulator 或真机测试。
+
+### 风险与决策变化
+
+- The reducer now matches partial callback semantics, but Android framework grant maps, “don’t ask again” settings return, adapter state timing and OEM permission behavior remain runtime evidence requirements.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变 schema/profile/algorithm version。
+
+### 下一轮
+
+继续本地 M5 release/API contract 与 M4 acceptance seam，或在 emulator/device 可用时运行 BLE permission/API/FGS/Activity recreation 矩阵；不以 JVM reducer 结果关闭真实设备门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

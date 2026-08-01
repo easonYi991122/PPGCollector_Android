@@ -45,8 +45,9 @@ class BlePermissionResultSeam(
     }
 
     fun applyResult(grantsByManifestName: Map<String, Boolean>): BlePermissionSnapshot {
+        val previouslyGranted = grantedPermissions
         grantedPermissions = requiredPermissions.filter { permission ->
-            grantsByManifestName[permission.manifestName] == true
+            grantsByManifestName[permission.manifestName] ?: (permission in previouslyGranted)
         }.toSet()
         gateState = if (grantedPermissions.containsAll(requiredPermissions)) {
             BlePermissionGateState.GRANTED

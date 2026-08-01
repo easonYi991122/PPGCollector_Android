@@ -32,6 +32,25 @@ class BleCoordinatorTest {
     }
 
     @Test
+    fun permissionResultSeamPreservesEarlierGrantWhenCallbackOnlyContainsMissingPermission() {
+        val seam = BlePermissionResultSeam(apiLevel = 33)
+        seam.permissionsToRequest()
+
+        val firstGrant = seam.applyResult(
+            mapOf("android.permission.BLUETOOTH_SCAN" to true),
+        )
+        assertEquals(setOf(BlePermission.BLUETOOTH_CONNECT), firstGrant.missing)
+        assertFalse(firstGrant.canUseBle)
+
+        val recovered = seam.applyResult(
+            mapOf("android.permission.BLUETOOTH_CONNECT" to true),
+        )
+        assertEquals(BlePermissionGateState.GRANTED, recovered.gateState)
+        assertTrue(recovered.canUseBle)
+        assertTrue(recovered.missing.isEmpty())
+    }
+
+    @Test
     fun coordinatorGatesScanningAndConnectionAndPublishesOwnerSnapshot() {
         val transport = FakeBleTransport()
         val coordinator = BleCoordinator(transport, apiLevel = 33)
