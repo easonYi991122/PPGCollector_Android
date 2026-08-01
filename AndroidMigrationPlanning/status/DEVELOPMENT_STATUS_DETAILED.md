@@ -1241,6 +1241,40 @@
 
 推进本地 system/accessibility/provider test seam（Activity recreation、screen state、SAF/FileProvider contract），然后再评估 M4 阶段收口与 M5 硬化前置条件。
 
+## 2026-08-02 · M4 · System/accessibility/provider test seam
+
+### 本轮目标
+
+为 M4 详情/实时页面建立可执行的 Android instrumentation 门禁：Activity 重建后关键 Live/Sessions surface 仍可访问，以及 FileProvider 保持 private、仅允许显式 URI grant；本轮只完成测试契约和编译，不把无 emulator 的状态伪装为运行通过。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-009、CAP-010、REL-003、Phase 4 §7.2；screen state、Activity recreation、TalkBack 可发现文本和 FileProvider share boundary。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-009/CAP-010/REL-003、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §7.2、`AndroidManifest.xml` provider declaration、`capture_file_paths.xml`。
+- Android targets: `MainActivitySystemTest.kt` Compose rule/recreation test、`FileProviderContractTest.kt` provider metadata contract、`app/build.gradle.kts` existing instrumentation dependencies。
+- Non-goals: claiming emulator/device execution, BLE/FGS hardware lifecycle, real SAF provider cancellation, screenshot golden/performance, or release accessibility audit。
+
+### 实现事实
+
+- `MainActivitySystemTest` asserts the primary `CUPCollector`, `扫描 CUP` and `已保存会话` surfaces, recreates the Activity through `ActivityScenario`, waits for Compose idle, and asserts the key surfaces remain displayed.
+- `FileProviderContractTest` resolves `${applicationId}.fileprovider` from the installed manifest and asserts it is not exported while explicit URI grants remain enabled; this matches cache-only staging in `capture_file_paths.xml`.
+- Tests use the already-configured `AndroidJUnit4`, `createAndroidComposeRule`, Compose UI test and instrumentation dependencies; no production raw/session ownership changes were needed.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；JVM tests and debug/androidTest APK compilation passed (87 JVM tests)。
+- Instrumentation test execution on emulator/device、Activity recreation runtime behavior、TalkBack/dynamic font/screenshot checks、SAF/FileProvider provider behavior and hardware lifecycle remain pending by project policy;本轮不进行真机测试。
+- `git diff --check`：pass。
+
+### 风险与决策变化
+
+- Compilation proves test/API wiring only; it does not prove provider implementation behavior on every Android API/provider implementation or runtime accessibility. Those remain explicit gates rather than being inferred from source.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+在有 emulator/设备条件时运行本轮 instrumentation；在本地继续做 M4 acceptance audit（生命周期状态、权限返回、重复 start/stop、SAF cancel）并整理进入 M5 前的未决门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
