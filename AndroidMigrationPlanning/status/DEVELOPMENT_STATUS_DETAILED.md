@@ -1829,6 +1829,40 @@ Continue local release hardening; when an emulator/device is available, execute 
 
 Run the integrated release gate, then use an emulator/device when available to verify API 34/36 FGS rejection, permission revocation, notification visibility, process recreation, and vendor lifecycle behavior.
 
+## 2026-08-02 · M5 · REL-002 fake GATT 20-cycle lifecycle gate
+
+### 本轮目标
+
+补齐 REL-002 的可重复 fake GATT 验收切片：20 次 scan/connect/subscribe/receiving/disconnect 循环中，每轮 generation 单调、receiver 阶段和 freshness 归零、晚到 callback 被丢弃、CCCD 命令不重复且保持 passive control 边界。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-002`；Phase 2 BLE owner/fake GATT 方案、Phase 5 §8.2 reliability gate；风险 `R-002`/`R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-002、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` BLE ownership/data boundary、Swift BLE integration lifecycle semantics。
+- Tests/golden: fake transport event path plus existing GATT state-machine happy/error/generation tests；本轮新增 20-cycle loop assertions。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/BleGattStateMachine.kt` 的现有 owner seam、`FakeBleTransport`、`CupBleGattStateMachineTest.kt`。
+- Non-goals: concrete device script、BluetoothGatt/OEM behavior、emulator or real-device execution、raw/session/CSV changes。
+
+### 实现事实
+
+- 新增 `twentyFakeGattLifecycleLoopsResetReceiverAndRejectLateCallbacks`：每轮完成 discovery/notify/receiving 后显式 disconnect，验证 `Idle` 与 `UNAVAILABLE` reset，并以旧 generation 注入 late value callback，确认 diagnostics 增量且状态不被污染。
+- 20 轮累计断言 connect/disconnect、CCCD enable/disable 各恰好一次；control characteristic 没有 notification write，保留 passive stream 语义；generation 从 1 到 20 单调递增。
+- 测试只依赖既有 fake event seam，不改变生产 raw、CSV、协议或 session 数据路径。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.CupBleGattStateMachineTest --no-daemon` → `BUILD SUCCESSFUL`。
+- Hardware validation: pending；本轮不运行真机/模拟器、BluetoothGatt/OEM、后台或服务重建测试。
+
+### 风险与决策变化
+
+- fake loop 证明 owner 的 generation/phase/freshness/reset 语义和命令边界，不证明真实 BluetoothGatt callback 排序、系统资源回收或厂商行为；REL-002 真机脚本门禁仍开放。
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；用户修改的 `00_AGENT_MIGRATION_BRIEF.md` 与 `.idea/` 未纳入提交。
+
+### 下一轮
+
+继续 M5 release/API/厂商矩阵硬化；有 emulator/device 后执行 REL-002 真机循环及 REL-003/004 生命周期门禁，不以 fake 结果关闭真实设备风险。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

@@ -123,6 +123,70 @@ class CupBleGattStateMachineTest {
     }
 
     @Test
+    fun twentyFakeGattLifecycleLoopsResetReceiverAndRejectLateCallbacks() {
+        val transport = FakeBleTransport()
+        val owner = CupBleGattStateMachine(transport)
+        owner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)
+        owner.startScanning(clearPreviousResults = true)
+
+        repeat(20) { loopIndex ->
+            owner.startScanning(clearPreviousResults = true)
+            transport.emit(
+                BleTransportEvent.Discovered(
+                    BleTransportDiscovery(deviceId, "CUP-SIM", -42, true, Instant.EPOCH),
+                ),
+            )
+            assertTrue("connect loop $loopIndex", owner.connect(deviceId))
+            val generation = owner.connectionGeneration
+            assertEquals((loopIndex + 1).toLong(), generation)
+
+            transport.emit(BleTransportEvent.Connected(deviceId))
+            transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+            transport.emit(
+                BleTransportEvent.CharacteristicsDiscovered(
+                    deviceId,
+                    profile.serviceUuid,
+                    listOf(
+                        BleTransportCharacteristic(profile.notifyCharacteristicUuid, listOf("notify"), true, false),
+                        BleTransportCharacteristic(profile.controlCharacteristicUuid, listOf("write"), false, false),
+                    ),
+                    null,
+                ),
+            )
+            transport.emit(BleTransportEvent.NotificationStateChanged(deviceId, profile.notifyCharacteristicUuid, true, null))
+            assertEquals(BleConnectionPhase.Subscribed(deviceId), owner.phase)
+
+            owner.handle(
+                BleTransportEvent.ValueReceived(deviceId, profile.notifyCharacteristicUuid, byteArrayOf(loopIndex.toByte()), null),
+                nowUptimeSeconds = loopIndex.toDouble(),
+                callbackGeneration = generation,
+            )
+            assertEquals(BleConnectionPhase.Receiving(deviceId), owner.phase)
+
+            assertTrue(owner.disconnect())
+            transport.emit(BleTransportEvent.Disconnected(deviceId, null))
+            assertEquals(BleConnectionPhase.Idle, owner.phase)
+            assertEquals(StreamFreshness.UNAVAILABLE, owner.freshness)
+
+            val staleBefore = owner.diagnostics.ignoredStaleCallbackCount
+            owner.handle(
+                BleTransportEvent.ValueReceived(deviceId, profile.notifyCharacteristicUuid, byteArrayOf(99), null),
+                nowUptimeSeconds = loopIndex.toDouble(),
+                callbackGeneration = generation - 1,
+            )
+            assertEquals(staleBefore + 1, owner.diagnostics.ignoredStaleCallbackCount)
+            assertEquals(BleConnectionPhase.Idle, owner.phase)
+        }
+
+        assertEquals(20, transport.commands.count { it is FakeBleCommand.Connect })
+        assertEquals(20, transport.commands.count { it is FakeBleCommand.Disconnect })
+        assertEquals(20, transport.commands.count { it == FakeBleCommand.SetNotifications(true, profile.notifyCharacteristicUuid, deviceId) })
+        assertEquals(20, transport.commands.count { it == FakeBleCommand.SetNotifications(false, profile.notifyCharacteristicUuid, deviceId) })
+        assertTrue(transport.commands.none { it == FakeBleCommand.SetNotifications(true, profile.controlCharacteristicUuid, deviceId) })
+        assertTrue(transport.commands.none { it is FakeBleCommand.Activate })
+    }
+
+    @Test
     fun deadlinePollFailsCurrentStageAtBoundaryAndLeavesOldDeadlineObsolete() {
         val transport = FakeBleTransport()
         val owner = CupBleGattStateMachine(
