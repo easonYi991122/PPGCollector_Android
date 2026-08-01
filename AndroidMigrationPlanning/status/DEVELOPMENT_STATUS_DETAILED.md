@@ -1515,6 +1515,39 @@
 
 继续 M5 failure endurance：注入 startForeground/stop/queue/断连失败，核对服务停止与 safe-prefix recovery；设备可用后运行 API/厂商 instrumentation 和真实生命周期门禁。
 
+## 2026-08-02 · M5 · CAP-007 writer failure and incomplete-prefix injection
+
+### 本轮目标
+
+补齐写入/派生线程异常与用户 stop 竞争时的故障语义：已确认 raw/CSV 前缀仍可读、会话不会伪装为 complete、writer failure 会覆盖尚未完成的普通 stop；不模拟真实磁盘故障或真机服务崩溃。
+
+### 需求/参考/Android 目标
+
+- Requirement: `CAP-002`、`CAP-007`、`REL-004`；Phase 3 §6.1/§6.4、Phase 5 §8.2。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md`、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.2、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` 故障注入表，以及 Swift `PPGCollectorTests/Integration/CaptureSessionControllerIntegrationTests.swift` 的 `delayedAppendFailureUpgradesUserStopToIncompleteWriteError`。
+- Android target: `CaptureRecordingController.kt`、`CaptureRecordingControllerTest.kt`。
+- Non-goals: physical disk-full/raw I/O injection, process SIGKILL, Android service runtime, emulator/真机/API/厂商矩阵。
+
+### 实现事实
+
+- worker 捕获 writer/decoder 异常时，若原 stop reason 是 USER、VIEW_EXIT、SCENE_BACKGROUND、DEVICE_DISCONNECT、DATA_TIMEOUT 或 UNKNOWN，则升级为 `WRITE_ERROR`；已发生的 `RESOURCE_PRESSURE`/其他 fatal reason 保留首因，错误文本保留在 metadata writer error。
+- 新 JVM 场景先排入一个有效 408-byte frame，再排入超过 64 KiB raw 防御上限的 chunk，同时请求 USER stop；验证有效 chunk 已写入 raw/CSV 后，异常导致 summary/metadata 为 `WRITE_ERROR`、`complete=false`，且 CSV 仍有 50 行可读前缀。
+
+### 验证
+
+- targeted: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.data.session.CaptureRecordingControllerTest --no-daemon` → `BUILD SUCCESSFUL`。
+- full local gate: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；93 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- Hardware validation: pending；本轮没有运行 emulator/真机，也没有把超限输入当作真实磁盘错误的替代证明。
+
+### 风险与决策变化
+
+- 该切片证明的是 controller 的确定性异常语义和已确认前缀，不证明 `FileChannel`/文件系统耗尽时每个 OS 错误都能保留完整 prefix；真实 raw write error、SIGKILL 最近 checkpoint、服务被系统终止仍需独立门禁。
+- `D-002` API/厂商矩阵、`D-003` 后台策略、`D-004` 签名/分发、`D-005` 隐私/保留/加密和真实 CUP 证据仍开放。
+
+### 下一轮
+
+继续 M5 的 release privacy/log 静态审计与 API/厂商矩阵准备；本地优先补充真实文件 I/O failure seam，再在设备可用时执行生命周期与 2 h 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

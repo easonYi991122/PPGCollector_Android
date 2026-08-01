@@ -226,6 +226,26 @@ class CaptureRecordingController(
         stopRequested = true
     }
 
+    /** A writer/decoder failure makes an otherwise benign stop incomplete. */
+    private fun requestWriteFailureLocked(error: Throwable) {
+        if (stopReason == null || stopReason in nonFatalStopReasons) {
+            stopReason = CaptureStopReason.WRITE_ERROR
+        }
+        if (lastError == null) lastError = error.message ?: error::class.simpleName
+        stopRequested = true
+    }
+
+    private companion object {
+        val nonFatalStopReasons = setOf(
+            CaptureStopReason.USER,
+            CaptureStopReason.VIEW_EXIT,
+            CaptureStopReason.SCENE_BACKGROUND,
+            CaptureStopReason.DEVICE_DISCONNECT,
+            CaptureStopReason.DATA_TIMEOUT,
+            CaptureStopReason.UNKNOWN,
+        )
+    }
+
     private fun workerLoop() {
         workerStartGate?.await()
         val decoder = CupBatchStreamDecoder()
@@ -277,9 +297,7 @@ class CaptureRecordingController(
             finalizeWriter()
         } catch (error: Throwable) {
             synchronized(lock) {
-                if (stopReason == null) stopReason = CaptureStopReason.WRITE_ERROR
-                if (lastError == null) lastError = error.message ?: error::class.simpleName
-                stopRequested = true
+                requestWriteFailureLocked(error)
             }
             finishAnalysis()
             finalizeWriter()

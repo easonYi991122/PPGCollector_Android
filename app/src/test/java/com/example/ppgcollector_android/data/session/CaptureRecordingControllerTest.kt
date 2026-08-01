@@ -122,6 +122,64 @@ class CaptureRecordingControllerTest {
     }
 
     @Test
+    fun delayedWriterFailureUpgradesUserStopAndLeavesReadableIncompletePrefix() {
+        val root = Files.createTempDirectory("capture-write-failure")
+        val gate = CountDownLatch(1)
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+                queueCapacity = 2,
+                workerStartGate = gate,
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration(),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 14,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            assertTrue(
+                controller.onRawChunk(
+                    BleRawNotificationChunk(14, 1L, encodeCupBatchFrame(frame())),
+                ),
+            )
+            assertTrue(
+                controller.onRawChunk(
+                    BleRawNotificationChunk(
+                        14,
+                        2L,
+                        ByteArray(CupRawFormat.maximumChunkLength + 1),
+                    ),
+                ),
+            )
+            controller.stop(CaptureStopReason.USER)
+            gate.countDown()
+
+            val summary = controller.awaitFinalized(5, TimeUnit.SECONDS)
+            assertNotNull(summary)
+            assertEquals(CaptureStopReason.WRITE_ERROR, summary!!.stopReason)
+            assertFalse(summary.complete)
+            assertEquals(1L, summary.writer.rawChunkCount)
+            assertEquals(50L, summary.writer.csvRows)
+            assertEquals(50L, CaptureRawSessionReaders.sampleRows(summary.directory))
+
+            val metadata = CaptureSessionMetadataCodec.decode(
+                Files.readString(summary.directory.resolve("controller_001.session.json")),
+            )
+            assertFalse(metadata.complete)
+            assertEquals(CaptureStopReason.WRITE_ERROR, metadata.stopReason)
+            assertTrue(metadata.writer.error.orEmpty().contains("64 KiB"))
+        } finally {
+            gate.countDown()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun acceptedEightSecondWindowProducesObservableAnalysisResultWithoutBlockingRawFinalize() {
         val root = Files.createTempDirectory("capture-analysis")
         try {
