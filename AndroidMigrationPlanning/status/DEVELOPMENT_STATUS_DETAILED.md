@@ -512,6 +512,44 @@
 
 进入 M2 BLE permissions/GATT/fake transport 纯平台切片，或在平台依赖准备后补 async analysis runner；保持 scheduler 的单实例、generation 和 raw-first 边界。
 
+## 2026-08-02 · M2 · BLE profile, freshness, deadline and fake transport core slice
+
+### 本轮目标
+
+按 BLE-001/002/004/006 移植不依赖真机的 BLE 契约：API 31+/≤30 权限分支、CUP-NUS bring-up profile、CUP 名称过滤、连接阶段与 per-stage deadline、旧 generation 防护、2 s stream freshness，以及可注入的 fake transport seam。
+
+### 需求/参考/Android 目标
+
+- Requirements: BLE-001、BLE-002、BLE-004、BLE-006；Phase 2 路线与架构 §2/§3；风险 D-001/R-002/R-003。
+- Primary sources: `reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift`、`BluetoothModels.swift`、`CUPStreamFreshnessTracker.swift`、`BLEConnectionDeadlineTracker.swift`、`BLETransport.swift` 及对应 Bluetooth tests。
+- Tests/golden: Swift profile/freshness/deadline semantics；JVM tests cover NUS UUID/prefix/passive flag, API permission branches, inclusive timeout, stale stage/device deadlines, cancellation, connection phase flags and fake command ordering.
+- Android targets: `app/src/main/java/com/example/ppgcollector_android/core/ble/BleModels.kt`、`BleFreshness.kt`、`BleConnectionDeadline.kt`、`FakeBleTransport.kt`、`app/src/main/AndroidManifest.xml` and `BleCoreTest.kt`。
+- Non-goals: `BluetoothLeScanner`/`BluetoothGatt` callbacks, runtime permission UI, CCCD implementation, FGS/lifecycle, real device validation and raw writer。
+
+### 实现事实
+
+- `CupBleDeviceProfile.cupNusBringUp` 固化当前 NUS service/notify/control UUID、`CUP` 前缀和 passive stream；没有引入 START/STOP control write。
+- `BlePermissionPolicy` 与 Manifest 声明对应 API 31+ `BLUETOOTH_SCAN/CONNECT`、API ≤30 `ACCESS_FINE_LOCATION`，并支持是否声明 `neverForLocation` 的策略测试。
+- `CupStreamFreshnessTracker` 区分 unavailable/waiting/fresh/stale，最后合法帧在 timeout 边界内保持 fresh；`BleConnectionDeadlineTracker` 以 operation/device/generation 键控，阶段切换、取消和新设备尝试会使旧 timeout 失效。
+- `BleTransport`/`FakeBleTransport` 保留 ordered event sink 与 scan/connect/discovery/notification 命令边界，供后续 Android `BluetoothGatt` owner 和 fake GATT state machine 注入；当前 fake 不模拟真实系统 callback。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`57 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：通过。
+- 真机 GATT/扫描/权限弹窗/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- NUS UUID、采样协议和 passive 行为仍是 bring-up draft；没有真实固件抓包，不能宣称生产协议或真实 receiving 成功。
+- 当前只完成 pure core/fake seam；Android callback 线程复制、monotonic raw chunk、CCCD 成功回调、旧 callback 丢弃和 backpressure 仍待 GATT owner 切片。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+继续 M2 Android BLE owner/fake GATT event state machine：扫描 CUP 过滤、connect→service→characteristic→CCCD→receiving、deadline callback 与 generation guard；保持 control passive 和 raw-first 边界。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
