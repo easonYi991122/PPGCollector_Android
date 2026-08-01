@@ -1101,6 +1101,42 @@
 
 进入 M4 Sessions slice：从 filesystem catalog 构建 lifecycle-aware Sessions list/detail 状态，展示 complete/incomplete、stop reason、版本和 integrity findings；保持 preview/recording ownership 不变。
 
+## 2026-08-02 · M4 · Filesystem-backed Sessions catalog state
+
+### 本轮目标
+
+将既有 filesystem `CaptureSessionRepository` 接入 lifecycle-aware Sessions ViewModel/Compose 页面：不建立不可恢复的数据库真源，展示 complete/incomplete、stop reason、版本、文件存在性和 integrity findings，并为详情/恢复/导出保留明确入口。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-009、CAP-009/CAP-010、REL-003/004；目录扫描可从文件系统重建，损坏/截尾会话标记为 recovery candidate，不崩溃、不修改源。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-009/CAP-009/CAP-010、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§6.5/§8、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` Phase 4 §7.1/§7.2、Swift `CaptureSessionRepository.swift`/`SavedSessionsView.swift`/`SavedSessionDetailView.swift`。
+- Android targets: `data/session/CaptureSessionRepository.kt`/inspection models、Sessions ViewModel/Compose screen、repository JVM tests。
+- Non-goals: database index, destructive delete, recovery mutation, raw replay/analysis implementation, SAF Activity Result, real filesystem/provider instrumentation, real-device validation。
+
+### 实现事实
+
+- `CaptureSessionRepository.listSessions` remains the only source of catalog truth; ViewModel loads it on `Dispatchers.IO`, exposes immutable `StateFlow`, and refreshes on lifecycle start without touching recording/preview owners.
+- Presentation maps metadata `complete`, `stopReason`, version/profile fields, expected-file presence, readable metadata and `isRecoveryCandidate` into actionable Chinese status/findings; malformed entries remain listable as incomplete rather than throwing.
+- Compose Sessions surface is read-only: refresh, complete/incomplete badges, stop reason/version/bytes, and detail selection; recovery/export actions are explicit pending seams and do not mutate source files.
+- Detail state retains repository inspection result and expected file paths for a later recovery/export flow; no raw bytes or full files are loaded into the UI state.
+
+### 验证
+
+- Command/result: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon` → `BUILD SUCCESSFUL`；debug assemble 通过。
+- JVM coverage: 累计 83 tests；新增 `SessionsPresentationTest` 覆盖不可读取 metadata、缺少预期文件、recovery candidate 和 findings 映射，既有 repository/inspection tests 继续通过。
+- `git diff --check`：pass。真实 filesystem 大会话扫描、Activity recreation、recovery/export provider、后台/锁屏和硬件：仍待 instrumentation/system/hardware validation，符合本项目本轮不做真机门禁的策略。
+- Real filesystem large-session scan, Activity recreation, recovery/export provider, background/lock-screen and hardware: pending instrumentation/system/hardware validation, per project policy.
+
+### 风险与决策变化
+
+- Catalog is intentionally read-only and filesystem-backed; it must not infer verified completeness from directory names or UI state, and must not silently repair/rewrite metadata.
+- Metrics CSV backfill, offline analysis history/versioning and user retention/encryption decisions remain open. `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+继续接 Sessions recovery/export Activity Result seams，先做只读 inspection findings 与 SAF/FileProvider progress/cancel 状态，再考虑分析历史与重放 UI。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -40,6 +41,7 @@ import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
+    private val sessionsViewModel: SessionsViewModel by viewModels()
 
     private val bleCoordinator
         get() = (application as PpgCollectorApplication).bleCoordinator
@@ -63,11 +65,16 @@ class MainActivity : ComponentActivity() {
                 val sessionName by captureViewModel.sessionName.collectAsStateWithLifecycle()
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
                 val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
+                val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     BleHome(
                         snapshot = snapshot,
                         capture = capture,
                         preview = preview,
+                        sessions = sessions,
+                        onRefreshSessions = sessionsViewModel::refresh,
+                        onSelectSession = sessionsViewModel::select,
+                        onClearSessionSelection = sessionsViewModel::clearSelection,
                         sessionName = sessionName,
                         captureGate = captureGate,
                         onSessionNameChange = captureViewModel::setSessionName,
@@ -86,6 +93,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         captureViewModel.onStart()
+        sessionsViewModel.refresh()
     }
 
     override fun onStop() {
@@ -108,6 +116,10 @@ private fun BleHome(
     snapshot: BleCoordinatorSnapshot,
     capture: CaptureServiceObservation,
     preview: BlePreviewSnapshot,
+    sessions: SessionsUiState,
+    onRefreshSessions: () -> Unit,
+    onSelectSession: (SessionListItemUi) -> Unit,
+    onClearSessionSelection: () -> Unit,
     sessionName: String,
     captureGate: CaptureGateUiState,
     onSessionNameChange: (String) -> Unit,
@@ -208,6 +220,98 @@ private fun BleHome(
             }
         }
         snapshot.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
+        SessionsPanel(
+            state = sessions,
+            onRefresh = onRefreshSessions,
+            onSelect = onSelectSession,
+            onClearSelection = onClearSessionSelection,
+        )
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun SessionsPanel(
+    state: SessionsUiState,
+    onRefresh: () -> Unit,
+    onSelect: (SessionListItemUi) -> Unit,
+    onClearSelection: () -> Unit,
+) {
+    Spacer(Modifier.height(20.dp))
+    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+        Text("已保存会话", style = MaterialTheme.typography.titleMedium)
+        Button(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
+    }
+    state.error?.let { Text("会话目录：$it", color = MaterialTheme.colorScheme.error) }
+    if (state.isLoading) {
+        Text("正在读取会话目录…")
+    } else if (state.sessions.isEmpty()) {
+        Text("暂无已保存会话")
+    } else {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(240.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items(state.sessions, key = { it.directory.toString() }) { item ->
+                Card(
+                    onClick = { onSelect(item) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(10.dp)) {
+                        Text(item.baseName, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            when {
+                                item.verifiedComplete -> "complete · verified files"
+                                item.recoveryCandidate -> "incomplete · recovery candidate"
+                                else -> "incomplete · inspect"
+                            },
+                            color = if (item.verifiedComplete) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                        )
+                        Text(
+                            "stop=${item.stopReason ?: "—"} · soft=${item.softVersion ?: "—"} · alg=${item.algorithmVersion ?: "—"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (item.findings.isNotEmpty()) {
+                            Text("发现：${item.findings.joinToString("；")}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state.selected?.let { detail ->
+        Spacer(Modifier.height(8.dp))
+        Text("会话详情：${detail.item.baseName}", style = MaterialTheme.typography.titleSmall)
+        detail.expectedFiles.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+        when {
+            detail.isInspecting -> Text("正在执行只读完整性检查…")
+            detail.error != null -> Text("检查失败：${detail.error}", color = MaterialTheme.colorScheme.error)
+            detail.inspection != null -> {
+                val inspection = detail.inspection
+                Text(
+                    if (inspection.isVerifiedConsistent) "完整性：verified consistent"
+                    else "完整性：存在 findings（不会修改源文件）",
+                    color = if (inspection.isVerifiedConsistent) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+                inspection.findings.forEach { finding ->
+                    Text(
+                        "${finding.severity}: ${finding.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        Button(onClick = onClearSelection) { Text("关闭详情") }
+        Text("恢复、导出和重放入口将在后续切片接入。", style = MaterialTheme.typography.bodySmall)
     }
 }
 
