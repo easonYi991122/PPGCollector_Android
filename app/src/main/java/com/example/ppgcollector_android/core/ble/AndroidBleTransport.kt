@@ -194,16 +194,20 @@ class AndroidBleTransport(
 
     override fun activate() {
         post {
-            val adapter = bluetoothAdapter
-            emit(
-                BleTransportEvent.AvailabilityChanged(
-                    when {
-                        adapter == null -> BluetoothAvailability.UNSUPPORTED
-                        adapter.isEnabled -> BluetoothAvailability.POWERED_ON
-                        else -> BluetoothAvailability.POWERED_OFF
-                    },
-                ),
-            )
+            try {
+                val adapter = bluetoothAdapter
+                emit(
+                    BleTransportEvent.AvailabilityChanged(
+                        when {
+                            adapter == null -> BluetoothAvailability.UNSUPPORTED
+                            adapter.isEnabled -> BluetoothAvailability.POWERED_ON
+                            else -> BluetoothAvailability.POWERED_OFF
+                        },
+                    ),
+                )
+            } catch (_: SecurityException) {
+                emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNAUTHORIZED))
+            }
         }
     }
 

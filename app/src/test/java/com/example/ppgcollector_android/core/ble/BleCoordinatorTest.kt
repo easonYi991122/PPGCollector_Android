@@ -36,7 +36,7 @@ class BleCoordinatorTest {
         val transport = FakeBleTransport()
         val coordinator = BleCoordinator(transport, apiLevel = 33)
         assertEquals(BleCoordinatorAction.PERMISSION_REQUIRED, coordinator.startScanning())
-        assertEquals(0, transport.commands.size)
+        assertEquals(listOf(FakeBleCommand.Activate), transport.commands)
         assertTrue(coordinator.snapshot.permission.gateState == BlePermissionGateState.REQUEST_REQUIRED)
 
         coordinator.applyPermissionResult(
@@ -57,6 +57,27 @@ class BleCoordinatorTest {
         assertEquals(BleCoordinatorAction.STARTED, coordinator.connect(deviceId))
         assertEquals(BleConnectionPhase.Connecting(deviceId), coordinator.snapshot.phase)
         assertEquals(FakeBleCommand.Connect(deviceId), transport.commands.last())
+    }
+
+    @Test
+    fun coordinatorReactivatesAdapterAfterPermissionsAreGranted() {
+        val transport = FakeBleTransport()
+        val coordinator = BleCoordinator(transport, apiLevel = 33)
+        assertEquals(listOf(FakeBleCommand.Activate), transport.commands)
+
+        assertEquals(BleCoordinatorAction.PERMISSION_REQUIRED, coordinator.startScanning())
+        coordinator.applyPermissionResult(
+            mapOf(
+                "android.permission.BLUETOOTH_SCAN" to true,
+                "android.permission.BLUETOOTH_CONNECT" to true,
+            ),
+        )
+        assertEquals(BleCoordinatorAction.STARTED, coordinator.startScanning(clearPreviousResults = true))
+        assertEquals(2, transport.commands.count { it == FakeBleCommand.Activate })
+
+        transport.emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON))
+        assertTrue(coordinator.snapshot.isScanning)
+        assertEquals(1, transport.commands.count { it == FakeBleCommand.StartScanning })
     }
 
     @Test

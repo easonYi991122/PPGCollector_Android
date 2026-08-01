@@ -128,6 +128,9 @@ class BleCoordinator(
             owner.handle(event, uptimeSeconds(), hostMonotonicNanos())
             publish()
         }
+        // Match the platform transport contract: install the event sink before
+        // activating the adapter so the initial availability event is observed.
+        transport.activate()
     }
 
     fun permissionRequest(): Set<String> = permissions.permissionsToRequest().also { publish() }
@@ -141,6 +144,11 @@ class BleCoordinator(
             return BleCoordinatorAction.PERMISSION_REQUIRED
         }
         owner.startScanning(clearPreviousResults)
+        if (owner.availability != BluetoothAvailability.POWERED_ON) {
+            // Permission may have been granted after the initial activation;
+            // retry the adapter state query before waiting for scan readiness.
+            transport.activate()
+        }
         publish()
         return BleCoordinatorAction.STARTED
     }

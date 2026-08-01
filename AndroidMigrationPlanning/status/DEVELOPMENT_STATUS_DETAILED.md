@@ -1901,6 +1901,44 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续 M5 本地发布硬化或准备可执行的 instrumentation lifecycle report；有 emulator/device 后执行 REL-002 真机循环、API/厂商和 FGS/进程重建门禁，不以静态 contract 替代运行时证据。
 
+## 2026-08-02 · M5 · BLE availability activation and permission recovery contract
+
+### 本轮目标
+
+修复 Android BLE app-scope owner 未触发 adapter activation 的运行缺口，并保持 BLE-001/003 的权限恢复语义：事件 sink 必须先安装再激活；初始权限拒绝后，权限恢复时扫描操作必须重新查询 adapter；系统权限异常必须转为可观察 availability，而不是抛出 callback 崩溃。
+
+### 需求/参考/Android 目标
+
+- Requirement: `BLE-001`、`BLE-003`、`UI-001`；Phase 2 §5.1/§5.2、Phase 5 §8.1；风险 `R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` BLE-001/BLE-003、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.1/§5.2、`docs/05_SOURCE_REFERENCE_INDEX.md` `BLECentralService`/`BLETransport` seam；Swift `BLECentralService.init` installs the event handler before `transport.activate()`.
+- Tests/golden: `BleCoordinatorTest` fake transport activation/permission recovery; release BLE transport contract; real permission dialog and API/vendor behavior remain hardware evidence.
+- Android target: `BleCoordinator.kt`、`AndroidBleTransport.kt`、`BleCoordinatorTest.kt`、`app/build.gradle.kts`。
+- Non-goals: changing CUP UUID/profile, scan filtering, raw notification bytes/timestamps, GATT stage state machine, CSV/session data, or running emulator/device tests.
+
+### 实现事实
+
+- `BleCoordinator` now installs its ordered event handler and calls `transport.activate()` during initialization; `startScanning()` retries activation when permissions have just recovered or availability is not yet powered on.
+- `AndroidBleTransport.activate()` catches platform `SecurityException` (including API 31+ adapter access without `BLUETOOTH_CONNECT`) and emits `BluetoothAvailability.UNAUTHORIZED`; the callback remains event-only and does no disk/algorithm work.
+- Added fake coverage for initial activation, permission-gated scan, reactivation after grant, and deferred scan start after `POWERED_ON`; existing coordinator command-order expectations were updated accordingly.
+- The existing REL-002 release BLE transport contract also checks the unauthorized activation branch; raw/protocol/CSV/session contracts remain unchanged.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.BleCoordinatorTest :app:verifyReleaseBleTransportContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；98 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-006/007 API、REL-003/004 lifecycle 和 REL-002 BLE transport contract 均通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不执行真实权限对话框、Bluetooth adapter/GATT、API/厂商或真机扫描测试。
+
+### 风险与决策变化
+
+- JVM fake evidence now covers activation ordering and permission-recovery intent, but cannot prove Android framework permission timing, adapter callbacks, scan throttling, or OEM behavior; BLE-001/003 runtime matrix remains open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；用户修改的 `AGENTS.md`、`00_AGENT_MIGRATION_BRIEF.md` 与 `.idea/` 未纳入提交。
+
+### 下一轮
+
+继续 M5 本地发布/生命周期硬化；有 emulator/device 后运行 API 30/31/33/36 permission、BLE scan/GATT、后台/锁屏和厂商矩阵门禁，不以 fake activation 结果替代真机证据。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

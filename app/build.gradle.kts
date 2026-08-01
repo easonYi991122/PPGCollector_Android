@@ -297,6 +297,8 @@ tasks.register("verifyReleaseBleTransportContract") {
             "runCatching { gatt.close() }",
             "releaseGatt(deviceId, gatt, disconnect = false)",
             "releaseGatt(it.device.address, it, disconnect = true)",
+            "override fun activate()",
+            "BluetoothAvailability.UNAUTHORIZED",
         )
         val missing = requiredFragments.filterNot(source::contains)
         check(missing.isEmpty()) {
