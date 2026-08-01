@@ -110,12 +110,16 @@ class CaptureSessionWriter(
     val metadataPath: Path = directory.resolve("${configuration.baseName}.session.json")
 
     private val rawWriter: CupRawWriter
-    private var csvOpen = true
     private var closed = false
     private var finalSummary: CaptureSessionSummary? = null
     private var snapshot = CaptureWriterSnapshot()
     private var nextSampleIndex = 0L
     private var firstStreamSampleIndex: Long? = null
+    private var lastCheckpointNanos = System.nanoTime()
+
+    private companion object {
+        const val checkpointIntervalNanos = 1_000_000_000L
+    }
 
     init {
         if (!CaptureSessionWriterPolicy.isValidBaseName(configuration.baseName)) {
@@ -183,7 +187,6 @@ class CaptureSessionWriter(
 
         // This call intentionally precedes decoder/CSV work.
         rawWriter.append(hostMonotonicNanoseconds, data)
-        rawWriter.flush()
         snapshot = snapshot.copy(
             rawChunkCount = snapshot.rawChunkCount + 1,
             rawPayloadBytes = snapshot.rawPayloadBytes + data.size,
@@ -243,10 +246,9 @@ class CaptureSessionWriter(
                 while (offset < bytes.size) {
                     offset += channel.write(java.nio.ByteBuffer.wrap(bytes, offset, bytes.size - offset))
                 }
-                channel.force(true)
             }
         }
-        writeMetadata(null, null, false, null)
+        checkpointIfDue()
         return snapshot
     }
 
@@ -254,6 +256,7 @@ class CaptureSessionWriter(
         finalSummary?.let { return it }
         val ended = Instant.now()
         closeFiles()
+        snapshot = snapshot.copy(lastFlushUtc = ended)
         val complete = error == null && reason in setOf(
             CaptureStopReason.USER, CaptureStopReason.VIEW_EXIT,
             CaptureStopReason.SCENE_BACKGROUND, CaptureStopReason.DEVICE_DISCONNECT,
@@ -284,8 +287,25 @@ class CaptureSessionWriter(
     private fun closeFiles() {
         if (closed) return
         rawWriter.close()
-        csvOpen = false
+        forceCsv()
         closed = true
+    }
+
+    private fun checkpointIfDue() {
+        val now = System.nanoTime()
+        if (now - lastCheckpointNanos < checkpointIntervalNanos) return
+        rawWriter.flush()
+        forceCsv()
+        snapshot = snapshot.copy(lastFlushUtc = Instant.now())
+        writeMetadata(null, null, false, null)
+        lastCheckpointNanos = now
+    }
+
+    private fun forceCsv() {
+        if (!Files.isRegularFile(csvPath)) return
+        FileChannel.open(csvPath, StandardOpenOption.WRITE).use { channel ->
+            channel.force(true)
+        }
     }
 
     private fun writeMetadata(

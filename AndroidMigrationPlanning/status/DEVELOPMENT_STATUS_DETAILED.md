@@ -1447,6 +1447,41 @@
 
 继续 M5 本地 privacy/log/FGS 静态审计和模拟长稳门禁；在 emulator/目标设备可用时运行 backup/lifecycle/instrumentation，再处理签名与正式隐私决策。
 
+## 2026-08-02 · M5 · REL-001 long-duration raw/CSV/replay simulation
+
+### 本轮目标
+
+移植 Swift `LongDurationDataPathTests` 的 30 min/2 h JVM 门禁，直接驱动 Android production decoder、sequence gate、raw-first writer、CSV、metadata、repository inspection、raw replay、metric scheduler 和 waveform scheduler，验证长流数据完整性与执行预算。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-001`、`PROTO-004`、`UI-002`；Phase 5 §8.1–§8.2 长稳精确断言。
+- Primary source: `AndroidMigrationPlanning/reference_sources/ios_current/PPGCollectorTests/Integration/LongDurationDataPathTests.swift`、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.1、§8.2、`docs/05_SOURCE_REFERENCE_INDEX.md` 长稳测试索引。
+- Android target: `LongDurationDataPathTest.kt` 与 `CaptureSessionWriter.kt` checkpoint/flush policy。
+- Non-goals: real BLE/firmware, emulator/device 2 h endurance, OEM battery/thermal/power metrics, API matrix and clinical validity.
+
+### 实现事实
+
+- 新增 30 min（3,600 frames/7,200 raw chunks/180,000 samples）和 2 h（14,400 frames/28,800 raw chunks/720,000 samples）测试；每帧按 244+164 bytes notification fragmentation 进入同一 decoder/writer path，并覆盖 UInt8 sequence wrap。
+- 测试精确断言 408-byte input、decoded/accepted/frame/raw/CSV/metadata 数量、invalid/discard/missing/duplicate/out-of-order 为 0、decoder pending=0、recent/replay samples=800、raw record peak=256、metric window 从 799 起每 100、waveform 5 Hz publication、warm-up 后 HR/SQI source time、SpO₂ 空值、版本字段和 CSV sample index 连续性。
+- 发现原 writer 每个 chunk 都 force raw/CSV 并 atomic checkpoint metadata，30 min 首次耗时 `71.78s`，超过 `60s` budget；按 Phase 3 §6.1/Phase 5 checkpoint 约 1s 契约改为约 1s force+metadata checkpoint，finish 仍强制 flush CSV/raw，保留 raw append 先于派生顺序。
+
+### 验证
+
+- targeted 30 min：`./gradlew :app:testDebugUnitTest --tests ...thirtyMinuteStreamingKeepsCadenceAndFilesExactlyAligned --no-daemon` → pass，test case `1.525s`。
+- targeted 2 h：`./gradlew :app:testDebugUnitTest --tests ...twoHourRecordingStreamsWriterReplayAndCsvWithinBudget --no-daemon` → pass，test case `6.918s`。
+- full local gate：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；91 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- Hardware validation: pending；本轮不进行 emulator/真机测试，真实 2 h 的 missing/queue/flush latency/heap/CPU/温升/电量/OEM service survival 仍未验证。
+
+### 风险与决策变化
+
+- checkpoint 由每 chunk 改为约 1s：checkpoint 之间发生 SIGKILL 时，文件可能有超出最近 metadata 的 safe prefix，但 metadata 保持 incomplete，inspection/recovery 仍是恢复路径；finish 会同步最终文件。
+- `D-001` 真实协议、`D-002` API/厂商、`D-003` 后台策略、`D-005` 隐私/保留/加密仍开放；模拟数据不能证明真实无线无丢包或厂商后台存活。
+
+### 下一轮
+
+继续 M5 本地 FGS/API 静态 contract 与 queue/stop/failure endurance 注入；设备可用后运行 instrumentation 和真实 2 h 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
