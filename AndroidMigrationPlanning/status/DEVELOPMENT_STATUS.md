@@ -1,21 +1,21 @@
 # PPGCollector Android Development Status
 
 更新时间：2026-08-01
-当前迁移版本：`M0.2`
-当前规划阶段：Phase 0（规划/工程基线）
-状态：工程基础切片已实现；业务迁移尚未开始，协议仍为 draft。
+当前迁移版本：`M1`
+当前规划阶段：Phase 1（纯 Kotlin 对等内核）
+状态：M1 protocol slice 已实现并通过 JVM/build 验证；profile 仍为 draft。
 
 ## 当前一句话
 
-Android 工程仍是 Kotlin/Compose 默认壳；已补充 M0.2 基础 ADR 与 GitHub Actions 的 JVM/build 门禁。下一步进入纯 Kotlin CUP protocol golden slice，但不关闭真实设备协议风险。
+Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol model、流式 decoder、sequence tracker 和 golden JVM tests。下一步继续 raw 文件格式 slice；不关闭真实设备协议风险。
 
 ## 与 MigrationPlanning 对照
 
 | 版本 | 对应阶段 | 已交付能力 | 状态 | 下一步 |
 |---|---|---|---|---|
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
-| `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现，待 JDK 环境验证 | `M1`：纯 Kotlin CUP protocol golden slice |
-| `M1` | Phase 1 | CUP protocol/raw/signal 的纯 Kotlin 对等实现和 golden tests | 未开始 | 先做 protocol，再做 raw/signal |
+| `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
+| `M1` | Phase 1 | CUP draft frame model、LE encode/decode、bounded stream decoder、sequence tracker、golden/边界 JVM tests | protocol slice 已实现；raw/signal 未开始 | 继续 raw，再做 signal |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | 未开始 | 依赖 profile/设备证据和 fake GATT |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | 未开始 | 依赖 M1/M2 的 accepted stream |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | 未开始 | 依赖可观察的数据链路 |
@@ -36,8 +36,8 @@ BLE/权限/GATT、CUP decoder/sequence gate、raw/CSV/session、预处理/HR/SQI
 
 ## 验证与真机策略
 
-- 本轮完成 ADR/CI 配置静态核对。
-- `./gradlew test`、`./gradlew assembleDebug` 已尝试但因环境没有 Java Runtime 未执行；配置 JDK 后重跑。
+- 本轮 M1 使用 Android Studio JDK 25 完成 `./gradlew test` 和 `./gradlew assembleDebug`。
+- `git diff --check` 通过；golden wire、碎片/粘包/坏帧重同步、pending 上限和序号边界均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
 
 ## 当前开放阻塞
