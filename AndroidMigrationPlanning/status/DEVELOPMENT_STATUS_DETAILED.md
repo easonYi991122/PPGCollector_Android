@@ -1275,6 +1275,39 @@
 
 在有 emulator/设备条件时运行本轮 instrumentation；在本地继续做 M4 acceptance audit（生命周期状态、权限返回、重复 start/stop、SAF cancel）并整理进入 M5 前的未决门禁。
 
+## 2026-08-02 · M4 · Capture stop and FGS acceptance audit seam
+
+### 本轮目标
+
+补齐本地 acceptance audit 中最小的可靠性证据：重复停止必须保持 first stop reason 并只完成一次；Manifest 中 connectedDevice 前台服务必须 private 且声明正确 service type。权限 reducer、gate 和 raw queue 故障已有 JVM 覆盖，本轮不扩展到真机故障注入。
+
+### 需求/参考/Android 目标
+
+- Requirements: REL-003、REL-004、Phase 3 §6.2/§6.4；单一 FGS 录制所有者、幂等 finalizer、first stop reason wins。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.4/§9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.2/§6.4、`CaptureForegroundService.kt`、`CaptureRecordingController.kt`、`AndroidManifest.xml`。
+- Android targets: `CaptureRecordingControllerTest.repeatedStopsKeepTheFirstReasonAndFinalizeOnce`、`FileProviderContractTest.captureServiceIsPrivateAndDeclaresConnectedDeviceType`。
+- Non-goals: starting FGS in tests, BLE disconnect/timeout hardware injection, emulator/device instrumentation execution, background/lock-screen policy decision。
+
+### 实现事实
+
+- The new JVM regression starts one controller, submits two different stop reasons, waits for finalization, asserts the first reason is persisted, asserts `FINALIZED`, and confirms a later stop cannot transition it again.
+- The instrumentation contract resolves the installed capture service and asserts `exported=false` plus `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`; together with the existing FileProvider test this covers the manifest ownership/share boundary at runtime when executed.
+- No production code or data contract changed; existing permission/gate, raw queue overflow, stale generation and service binding seams remain the source of behavior.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；JVM suite、debug APK 和 androidTest APK compile passed (88 JVM tests)。
+- `git diff --check`：pass。Instrumentation execution on emulator/device、real FGS start/stop, BLE disconnect/2 s timeout, background/lock-screen and hardware remain pending;本轮不进行真机测试。
+
+### 风险与决策变化
+
+- Manifest/source assertions are contract evidence, not proof of OEM runtime policy or Android API matrix behavior; M5 must still exercise those paths on target API/device combinations.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+运行 instrumentation 后完成 M4 acceptance audit；若仍无 emulator，则继续补本地 SAF cancel/permission-return state tests，并保持 M5 长稳/厂商门禁未开始。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

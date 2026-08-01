@@ -53,6 +53,39 @@ class CaptureRecordingControllerTest {
     }
 
     @Test
+    fun repeatedStopsKeepTheFirstReasonAndFinalizeOnce() {
+        val root = Files.createTempDirectory("capture-first-stop")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration(),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 12,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+
+            controller.stop(CaptureStopReason.DEVICE_DISCONNECT)
+            controller.stop(CaptureStopReason.USER)
+            val summary = controller.awaitFinalized(5, TimeUnit.SECONDS)
+
+            assertNotNull(summary)
+            assertEquals(CaptureStopReason.DEVICE_DISCONNECT, summary!!.stopReason)
+            assertEquals(CaptureRecordingState.FINALIZED, controller.snapshot.state)
+            controller.stop(CaptureStopReason.WRITE_ERROR)
+            assertEquals(CaptureRecordingState.FINALIZED, controller.snapshot.state)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun staleGenerationIsRejectedAndQueueOverflowWinsAsResourceStop() {
         val root = Files.createTempDirectory("capture-overflow")
         val gate = CountDownLatch(1)
