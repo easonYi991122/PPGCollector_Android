@@ -10,6 +10,7 @@ sealed interface CaptureStartFailure {
     data object InvalidSessionName : CaptureStartFailure
     data object StreamNotFresh : CaptureStartFailure
     data object DeviceNotReady : CaptureStartFailure
+    data object ForegroundServiceStartRejected : CaptureStartFailure
     data object SessionAlreadyExists : CaptureStartFailure
     data object InsufficientStorage : CaptureStartFailure
 }

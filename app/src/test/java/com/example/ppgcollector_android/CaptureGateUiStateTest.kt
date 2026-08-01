@@ -34,4 +34,23 @@ class CaptureGateUiStateTest {
             CaptureGateUiState("session_001", CaptureStartFailure.InsufficientStorage).message,
         )
     }
+
+    @Test
+    fun serviceStartPolicyFailuresAreActionableAndDoNotLookLikeDeviceLoss() {
+        assertEquals(
+            CaptureStartFailure.ForegroundServiceStartRejected,
+            mapCaptureServiceStartFailure(SecurityException()),
+        )
+        assertEquals(
+            "系统拒绝启动录制服务，请从前台页面重试并检查服务权限",
+            CaptureGateUiState(
+                "session_001",
+                CaptureStartFailure.ForegroundServiceStartRejected,
+            ).message,
+        )
+        assertEquals(
+            CaptureStartFailure.DeviceNotReady,
+            mapCaptureServiceStartFailure(IllegalStateException("not connected")),
+        )
+    }
 }

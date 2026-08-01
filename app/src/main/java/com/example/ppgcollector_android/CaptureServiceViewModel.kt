@@ -57,6 +57,8 @@ private fun CaptureStartFailure.message(): String = when (this) {
     CaptureStartFailure.InvalidSessionName -> "录制名只能包含字母、数字、下划线和短横线"
     CaptureStartFailure.StreamNotFresh -> "等待新鲜数据流"
     CaptureStartFailure.DeviceNotReady -> "设备尚未进入接收状态"
+    CaptureStartFailure.ForegroundServiceStartRejected ->
+        "系统拒绝启动录制服务，请从前台页面重试并检查服务权限"
     CaptureStartFailure.SessionAlreadyExists -> "会话名已存在"
     CaptureStartFailure.InsufficientStorage -> "可用存储不足"
 }
@@ -270,8 +272,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                     deviceName = deviceName,
                 ),
             )
-        }.onFailure {
-            _captureGate.value = gate.copy(failure = CaptureStartFailure.DeviceNotReady)
+        }.onFailure { error ->
+            _captureGate.value = gate.copy(failure = mapCaptureServiceStartFailure(error))
         }
     }
 
@@ -301,3 +303,14 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         super.onCleared()
     }
 }
+
+/** Maps API 31+ background-start and API 34+ FGS permission failures to an actionable gate. */
+internal fun mapCaptureServiceStartFailure(error: Throwable): CaptureStartFailure =
+    if (error is SecurityException ||
+        error::class.java.name == "android.app.ForegroundServiceStartNotAllowedException" ||
+        error::class.java.name.endsWith("ForegroundServiceTypeException")
+    ) {
+        CaptureStartFailure.ForegroundServiceStartRejected
+    } else {
+        CaptureStartFailure.DeviceNotReady
+    }

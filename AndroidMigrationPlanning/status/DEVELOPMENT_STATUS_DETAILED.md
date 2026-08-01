@@ -1482,6 +1482,39 @@
 
 继续 M5 本地 FGS/API 静态 contract 与 queue/stop/failure endurance 注入；设备可用后运行 instrumentation 和真实 2 h 门禁。
 
+## 2026-08-02 · M5 · REL-007 FGS start rejection and manifest contract
+
+### 本轮目标
+
+补齐前台服务启动失败的可解释状态，并把 target SDK、FGS 基础权限、`connectedDevice` 类型权限和私有 service 声明纳入静态 instrumentation contract；不在本轮启动真实服务或宣称系统生命周期已验收。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-007`、`REL-003`、`REL-004`；Phase 5 §8.3；风险 `R-003`/`R-015`，决策 `D-002`/`D-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md`、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §12、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.3、`docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md`；Android 官方 [FGS 启动规则](https://developer.android.com/develop/background-work/services/fgs/launch)、[后台启动限制](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start) 和 [Android 14 FGS 类型要求](https://developer.android.com/about/versions/14/changes/fgs-types-required?hl=en)。
+- Android target: `CaptureStartFailure`/`CaptureServiceViewModel`、`FileProviderContractTest`、`CaptureGateUiStateTest`。
+- Non-goals: emulator/真机运行、API/厂商矩阵、通知运行时授权流程、锁屏/后台存活、正式签名和产品隐私策略。
+
+### 实现事实
+
+- 新增 `ForegroundServiceStartRejected`，将 `SecurityException`、API 31+ `ForegroundServiceStartNotAllowedException` 及 FGS type exception 映射为可操作的“从前台页面重试并检查服务权限”状态；普通启动错误仍显示 `DeviceNotReady`，避免把系统策略拒绝误报为设备断连。
+- instrumentation contract 断言 target SDK 37、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_CONNECTED_DEVICE`、`POST_NOTIFICATIONS` 请求权限，以及已有私有 `connectedDevice` capture service 声明。
+
+### 验证
+
+- targeted: `./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.CaptureGateUiStateTest assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`。
+- full local gate: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；92 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过；merged manifest 含 FGS 权限、`connectedDevice` service 和 target SDK 37。
+- Hardware validation: pending；本轮只编译 instrumentation contract，不运行 emulator/真机。
+
+### 风险与决策变化
+
+- Android 官方规则要求 API 31+ 关注后台启动限制，API 34+ 关注 FGS 类型权限；本轮只完成异常映射和声明静态检查，不能证明 Activity 可见性、通知权限、系统重建、锁屏或 OEM 后台策略下的 runtime 行为。
+- `D-002` API/厂商矩阵、`D-003` 后台策略、`D-004` 签名/分发和 `D-005` 隐私/保留/加密仍开放。
+
+### 下一轮
+
+继续 M5 failure endurance：注入 startForeground/stop/queue/断连失败，核对服务停止与 safe-prefix recovery；设备可用后运行 API/厂商 instrumentation 和真实生命周期门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
