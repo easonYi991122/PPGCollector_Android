@@ -881,6 +881,43 @@
 
 实现 SAF/export boundary：流式复制会话三文件、进度/取消、临时分享 staging 与不暴露内部路径；随后接正式 Sessions/Recovery Compose 页面。
 
+## 2026-08-02 · M3 · Streaming SAF/FileProvider export boundary
+
+### 本轮目标
+
+按 CAP-010 与 Phase 3 §6.3，实现内部会话到外部分享/SAF 的安全导出边界：三文件 zip 流式复制、进度/取消、目标不覆盖、相对 entry name；FileProvider 只开放 cache staging，不暴露 `filesDir`。
+
+### 需求/参考/Android 目标
+
+- Requirements: CAP-010、REL-005；内部存储是真源，SAF 用于用户导出，FileProvider 只分享临时 staging，不能把内部绝对路径交给外部。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` CAP-010、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §8/§6.5、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.3、Swift `ShareLink`/session repository shareable file semantics。
+- Android targets: `data/session/CaptureSessionExportService.kt`、`CaptureAndroidExport.kt`、`res/xml/capture_file_paths.xml`、`AndroidManifest.xml`。
+- Non-goals: formal Compose export UI/Activity Result launcher, external DocumentsProvider instrumentation, encryption/retention policy, real-device validation。
+
+### 实现事实
+
+- core exporter 只导出 expected raw/CSV/session JSON 三文件，entry name 是受控相对 basename；使用 64 KiB buffer、`ZipOutputStream`、progress callback 和 cancellation callback。
+- Path export 先写同目录隐藏 temp zip，再 no-overwrite/atomic move；取消或失败清理 temp，既有目标不覆盖。SAF adapter 把同一流导出到 caller-selected `Uri`，未让外部 provider 成为高频 raw writer。
+- FileProvider adapter 将 zip 写入 `cache/capture-export-staging/`，文件名由安全 basename+随机 ID 构成；`capture_file_paths.xml` 只允许该 cache 子目录，manifest provider `exported=false`/grant URI permissions。
+- JVM tests 验证三 entry、无绝对/路径穿越名称、进度终点、取消清理、destination collision；debug packaging 验证 SAF/FileProvider resources、provider manifest 和 FGS 共存。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- SAF provider 实际写入/取消、FileProvider 外部 app 读取、后台/锁屏/真机：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前是可被 Activity Result/Compose 调用的 export seam，不是正式用户导出页面；外部 Uri provider 的错误、权限撤销、用户取消仍需 Android instrumentation 覆盖。
+- zip 导出保留 incomplete/recovery metadata 原语义，不把导出视为 verified 或修复；不打印 raw、完整设备地址或内部路径。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+进入 M4 前的连接切片：将 `LiveMetricWindowScheduler` 作为 bounded worker 的异步分析 seam，输出 StateFlow 可观察 snapshot，再接正式 Capture/Sessions Compose 页面和 Activity Result export flow。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
