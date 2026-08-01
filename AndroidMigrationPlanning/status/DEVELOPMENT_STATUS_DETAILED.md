@@ -475,6 +475,43 @@
 
 进入 M1 `MetricResult` validity/source-time contract 与 800/100 live window scheduler slice；保持 generation/gap/旧结果丢弃语义。
 
+## 2026-08-02 · M1 · MetricResult and live window scheduler parity JVM slice
+
+### 本轮目标
+
+按 SIG-002 与 live pipeline 契约移植 `MetricResult` 的 value/valid/provisional/reason/version/source time 字段，以及 100 Hz accepted sample 的 800 sample rolling window、首个 end=799、每 +100 cadence、gap generation 和旧 request 丢弃语义。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-002；路线 §4.3、§4.4；架构文档 §3.1、§7.2、§10；风险 R-004/R-012。
+- Primary source: `reference_sources/ios_current/PPGCollector/Domain/Models/LiveMetricModels.swift`、`reference_sources/ios_current/PPGCollector/SignalProcessing/Runtime/PPGLiveMetricRuntime.swift`、对应 runtime tests。
+- Tests/golden: Swift runtime synthetic stream semantics；JVM tests cover 800/100 cadence, 8 s time axis, bounded ring, gap reset/re-warmup, rejected frame, stale generation/request, MetricResult invalid/calibration separation and analyzer source metadata.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricModels.kt`、`LiveMetricRuntime.kt`、`app/src/main/java/com/example/ppgcollector_android/core/protocol/CupDecodedFrameEvent.kt` and live tests.
+- Non-goals: Android coroutine/FGS/BLE ownership, async cancellation runner, Compose/UI, raw-first writer、真机测试；SpO2/BP remains unavailable.
+
+### 实现事实
+
+- 新增 typed `MetricResult<T>`、`LiveMetricSnapshot` 与 unavailable/warming-up/runtime constructors；source sample/time、measuredAt、algorithm version 和 calibration separation 被保留，ratio/SQI 只能 provisional/diagnostic。
+- 新增 `CupDecodedFrameEvent` 作为 sequence gate 到 live scheduler 的明确边界；scheduler 只接收 accepted frames，gap 清空两个 causal preprocessor 与 bounded arrays、generation++，首次 800 后每 100 样本发出不可变 request。
+- `LiveMetricAnalyzer` 复用既有 HR/SQI/ratio core，将 request window end/source metadata 写入结果；氧饱和度和血压明确 unavailable，不生成伪造数值。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`49 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前证明的是纯 Kotlin scheduler/analyzer 和 stale-request guard；Android coroutine cancellation、FGS ownership、BLE callback/backpressure 尚未接入，不能宣称 live 产品链路完成。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；SpO2/BP 无校准/模型仍 unavailable。
+- `00_AGENT_MIGRATION_BRIEF.md` 的既有用户修改和 `.idea/` 均未纳入本轮提交。
+
+### 下一轮
+
+进入 M2 BLE permissions/GATT/fake transport 纯平台切片，或在平台依赖准备后补 async analysis runner；保持 scheduler 的单实例、generation 和 raw-first 边界。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
