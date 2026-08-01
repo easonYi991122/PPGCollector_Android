@@ -1377,6 +1377,42 @@
 
 继续 M5 release hardening 前置：明确签名/包名/隐私策略，评估 R8/resource shrink 与 release lint/权限门禁；有 emulator/设备后运行 instrumentation 和长稳门禁。
 
+## 2026-08-02 · M5 · Release shrinking and API-26 lint gate
+
+### 本轮目标
+
+把 Phase 5 §8.3 的 release code/resource shrinking 从预检状态推进到可重复构建，并修复压缩门禁暴露的 minSdk 兼容性问题；不把 unsigned artifact、静态 lint 或模拟构建当作签名、真机或厂商发布验收。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-005`（release 不含 debug/export 测试数据）并为 `REL-006/REL-007` 的后续 API/FGS 验收建立 release 静态门禁；Phase 5 §8.3。
+- Primary source: `AndroidMigrationPlanning/docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.1–§8.3、`docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-005/REL-006/REL-007、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §12。
+- Android target: `app/build.gradle.kts` release optimization、session metadata/raw/CSV Android data path、`AndroidBleTransport` descriptor subscription path。
+- Non-goals: signing/package/distribution, privacy policy and retention decision, API/vendor matrix, real BLE, 2 h endurance and emulator/device instrumentation execution.
+
+### 实现事实
+
+- `app/build.gradle.kts` 将 release `optimization.enable` 从 `false` 改为 `true`；AGP 实际执行 `minifyReleaseWithR8`、`convertShrunkResourcesToBinaryRelease` 和 `optimizeReleaseResources`。
+- release lint 首次发现 4 个阻断项：`Files.readString`/`Files.writeString` 在 minSdk 26 不可用，以及 API 33 `writeDescriptor` 返回值误与 `BluetoothGatt.GATT_SUCCESS` 比较。
+- session metadata 改为 API 26 可用的 `Files.newInputStream` bounded UTF-8 reader，增加 1 MiB metadata 上限；CSV header 改为 `newOutputStream`；API 33 descriptor 分支改用 `BluetoothStatusCodes.SUCCESS`。
+- 无需添加反射 keep 规则：metadata JSON 是手写 codec，manifest 中的 Activity、connectedDevice service、Application 和 FileProvider 均在压缩后 dex/merged manifest 中保留。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew lintRelease test --no-daemon` → `BUILD SUCCESSFUL`；release lint 0 errors、21 warnings，JVM suite 通过（当前 89 tests）。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；release R8/resource shrink、debug androidTest APK 编译通过。
+- 压缩 APK：`app/build/outputs/apk/release/app-release-unsigned.apk`，`1,328,529 bytes`；ZIP 未发现 `androidTest`、fixture、golden、raw/CSV/session JSON 测试资源条目；保留 `MainActivity`、`CaptureForegroundService`、`PpgCollectorApplication` 和 `FileProvider` 相关符号。
+- Hardware validation: pending；本轮不进行 emulator/真机测试。
+
+### 风险与决策变化
+
+- release lint 仍有 21 个非阻断 warning（BLE deprecated API、manifest API 属性、旧依赖版本及默认样式资源）；本轮不借升级依赖或修改产品身份来隐藏它们。
+- `D-002` API/厂商矩阵、`D-003` 后台策略、`D-004` 签名/包名/分发、`D-005` 数据保留/导出/加密、`D-001` 真实协议仍开放；压缩构建不关闭这些风险。
+
+### 下一轮
+
+继续 M5 本地可执行门禁：补 release privacy/log/backup policy audit 与 API/FGS 静态 contract 检查；有 emulator/目标设备后执行 instrumentation、生命周期和长稳矩阵。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

@@ -60,7 +60,7 @@ object CaptureSessionRepository {
         val files = expectedFiles(directory)
         val metadata = runCatching {
             if (Files.isRegularFile(files.metadata)) {
-                CaptureSessionMetadataCodec.decode(Files.readString(files.metadata))
+                CaptureSessionMetadataCodec.decode(files.metadata)
             } else {
                 null
             }

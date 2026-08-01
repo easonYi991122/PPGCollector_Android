@@ -80,7 +80,7 @@ object CaptureSessionInspectionService {
 
         val metadata = if (Files.exists(metadataPath)) {
             try {
-                CaptureSessionMetadataCodec.decode(Files.readString(metadataPath))
+                CaptureSessionMetadataCodec.decode(metadataPath)
             } catch (error: Exception) {
                 findings += finding("metadata-unreadable", CaptureInspectionSeverity.ERROR,
                     "metadata cannot be parsed: ${error.message ?: error::class.simpleName}")

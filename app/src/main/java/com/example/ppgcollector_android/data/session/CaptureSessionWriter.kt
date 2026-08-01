@@ -136,13 +136,13 @@ class CaptureSessionWriter(
         }
         try {
             rawWriter = CupRawWriter(rawPath)
-            Files.writeString(
+            Files.newOutputStream(
                 csvPath,
-                CaptureCsvSchema.header,
-                Charsets.UTF_8,
                 StandardOpenOption.CREATE_NEW,
                 StandardOpenOption.WRITE,
-            )
+            ).use { output ->
+                output.write(CaptureCsvSchema.header.toByteArray(Charsets.UTF_8))
+            }
             writeMetadata(endedUtc = null, reason = null, complete = false, error = null)
         } catch (error: Throwable) {
             runCatching { if (Files.exists(directory)) directory.toFile().deleteRecursively() }

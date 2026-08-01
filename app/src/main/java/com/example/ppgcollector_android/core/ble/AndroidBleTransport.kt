@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -338,7 +339,7 @@ class AndroidBleTransport(
             }
             pendingDescriptors[gatt] = PendingDescriptorWrite(deviceId, characteristicUuid, enabled)
             val accepted = if (Build.VERSION.SDK_INT >= 33) {
-                gatt.writeDescriptor(descriptor, value) == BluetoothGatt.GATT_SUCCESS
+                gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 descriptor.value = value

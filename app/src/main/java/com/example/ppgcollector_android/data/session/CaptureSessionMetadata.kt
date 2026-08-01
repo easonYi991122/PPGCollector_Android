@@ -1,5 +1,9 @@
 package com.example.ppgcollector_android.data.session
 
+import java.io.ByteArrayOutputStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.util.LinkedHashMap
 
@@ -93,6 +97,8 @@ class CaptureSessionMetadataJsonException(message: String) :
 
 /** JSON codec for the versioned session metadata contract. */
 object CaptureSessionMetadataCodec {
+    private const val maxMetadataBytes = 1 * 1024 * 1024
+
     fun encode(metadata: CaptureSessionMetadata): String =
         JsonWriter.write(toJson(metadata))
 
@@ -104,6 +110,23 @@ object CaptureSessionMetadataCodec {
 
     fun decode(bytes: ByteArray): CaptureSessionMetadata =
         decode(bytes.toString(Charsets.UTF_8))
+
+    /** Reads bounded UTF-8 metadata without relying on post-API-26 Files helpers. */
+    fun decode(path: Path): CaptureSessionMetadata {
+        val bytes = ByteArrayOutputStream()
+        Files.newInputStream(path, StandardOpenOption.READ).use { input ->
+            val buffer = ByteArray(8 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (bytes.size() + count > maxMetadataBytes) {
+                    throw CaptureSessionMetadataJsonException("metadata exceeds 1 MiB")
+                }
+                bytes.write(buffer, 0, count)
+            }
+        }
+        return decode(bytes.toByteArray())
+    }
 
     private fun toJson(metadata: CaptureSessionMetadata): JsonValue.ObjectValue =
         obj(
