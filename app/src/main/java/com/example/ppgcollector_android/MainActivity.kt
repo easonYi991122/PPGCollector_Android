@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -51,10 +52,16 @@ class MainActivity : ComponentActivity() {
             PPGCollector_AndroidTheme {
                 val snapshot by bleCoordinator.snapshotFlow.collectAsStateWithLifecycle()
                 val capture by captureViewModel.serviceState.collectAsStateWithLifecycle()
+                val sessionName by captureViewModel.sessionName.collectAsStateWithLifecycle()
+                val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     BleHome(
                         snapshot = snapshot,
                         capture = capture,
+                        sessionName = sessionName,
+                        captureGate = captureGate,
+                        onSessionNameChange = captureViewModel::setSessionName,
+                        onStartCapture = captureViewModel::startRecording,
                         onStopCapture = captureViewModel::stopRecording,
                         onScan = ::requestScan,
                         onStopScan = bleCoordinator::stopScanning,
@@ -90,6 +97,10 @@ class MainActivity : ComponentActivity() {
 private fun BleHome(
     snapshot: BleCoordinatorSnapshot,
     capture: CaptureServiceObservation,
+    sessionName: String,
+    captureGate: CaptureGateUiState,
+    onSessionNameChange: (String) -> Unit,
+    onStartCapture: () -> Unit,
     onStopCapture: () -> Unit,
     onScan: () -> Unit,
     onStopScan: () -> Unit,
@@ -111,6 +122,23 @@ private fun BleHome(
         Text("录制服务：${capture.binding}")
         Text("录制：${capture.recording.state}")
         Text("分析：${capture.analysis.state}")
+        if (capture.recording.state != CaptureRecordingState.RECORDING &&
+            capture.recording.state != CaptureRecordingState.STOPPING
+        ) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = sessionName,
+                onValueChange = onSessionNameChange,
+                label = { Text("录制名称") },
+                singleLine = true,
+                enabled = !snapshot.phase.isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(onClick = onStartCapture, enabled = captureGate.canStart) {
+                Text("开始录制")
+            }
+            captureGate.message?.let { Text("开始条件：$it") }
+        }
         if (capture.recording.state == CaptureRecordingState.RECORDING ||
             capture.recording.state == CaptureRecordingState.STOPPING
         ) {

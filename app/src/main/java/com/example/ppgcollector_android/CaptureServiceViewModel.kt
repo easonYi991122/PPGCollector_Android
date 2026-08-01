@@ -7,15 +7,21 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
+import com.example.ppgcollector_android.data.session.CaptureStartContext
+import com.example.ppgcollector_android.data.session.CaptureStartFailure
+import com.example.ppgcollector_android.data.session.CaptureStartGate
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.nio.file.Files
 
 enum class CaptureServiceBindingState {
     UNBOUND,
@@ -31,6 +37,26 @@ data class CaptureServiceObservation(
     val analysis: CaptureAnalysisSnapshot = CaptureAnalysisSnapshot(),
     val error: String? = null,
 )
+
+data class CaptureGateUiState(
+    val sessionName: String = "",
+    val failure: CaptureStartFailure? = CaptureStartFailure.InvalidSessionName,
+) {
+    val canStart: Boolean
+        get() = failure == null
+
+    val message: String?
+        get() = failure?.message()
+}
+
+private fun CaptureStartFailure.message(): String = when (this) {
+    CaptureStartFailure.AlreadyRecording -> "已有录制进行中"
+    CaptureStartFailure.InvalidSessionName -> "录制名只能包含字母、数字、下划线和短横线"
+    CaptureStartFailure.StreamNotFresh -> "等待新鲜数据流"
+    CaptureStartFailure.DeviceNotReady -> "设备尚未进入接收状态"
+    CaptureStartFailure.SessionAlreadyExists -> "会话名已存在"
+    CaptureStartFailure.InsufficientStorage -> "可用存储不足"
+}
 
 /**
  * Owns only the Activity-side binding. The foreground service remains the
@@ -174,19 +200,84 @@ class CaptureServiceClient(
     private fun publishUnbound() {
         _state.value = CaptureServiceObservation()
     }
-
 }
 
 class CaptureViewModel(application: android.app.Application) : AndroidViewModel(application) {
+    private val collectorApplication = application as PpgCollectorApplication
     private val serviceClient = CaptureServiceClient(application, viewModelScope)
+    private val _sessionName = MutableStateFlow("")
+    private val _captureGate = MutableStateFlow(CaptureGateUiState())
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
+    val sessionName: StateFlow<String> = _sessionName.asStateFlow()
+    val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            combine(
+                _sessionName,
+                collectorApplication.bleCoordinator.snapshotFlow,
+                serviceClient.state,
+            ) { name, ble, service ->
+                CaptureGateUiState(
+                    sessionName = name,
+                    failure = evaluateGate(name, ble, service.recording),
+                )
+            }.collect { _captureGate.value = it }
+        }
+    }
+
+    fun setSessionName(value: String) {
+        _sessionName.value = value
+    }
 
     fun onStart() = serviceClient.bind()
 
     fun onStop() = serviceClient.unbind()
 
     fun stopRecording() = serviceClient.stopRecording()
+
+    fun startRecording() {
+        val gate = _captureGate.value
+        if (!gate.canStart) return
+        val ble = collectorApplication.bleCoordinator.snapshot
+        val deviceName = ble.phase.deviceId?.let { id ->
+            ble.discoveredDevices.firstOrNull { it.id == id }?.name
+        }
+        runCatching {
+            androidx.core.content.ContextCompat.startForegroundService(
+                getApplication(),
+                CaptureForegroundService.startIntent(
+                    getApplication(),
+                    sessionName = gate.sessionName,
+                    deviceName = deviceName,
+                ),
+            )
+        }.onFailure {
+            _captureGate.value = gate.copy(failure = CaptureStartFailure.DeviceNotReady)
+        }
+    }
+
+    private fun evaluateGate(
+        name: String,
+        ble: BleCoordinatorSnapshot,
+        recording: CaptureRecordingSnapshot,
+    ): CaptureStartFailure? {
+        val root = collectorApplication.sessionsRoot
+        val capacityRoot = root.parent ?: root
+        return CaptureStartGate.validate(
+            CaptureStartContext(
+                isRecording = recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.IDLE &&
+                    recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED &&
+                    recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.FAILED,
+                phase = ble.phase,
+                freshness = ble.freshness,
+                sessionsRoot = root,
+                sessionName = name,
+                availableBytes = runCatching { Files.getFileStore(capacityRoot).usableSpace }.getOrNull(),
+            ),
+        )
+    }
 
     override fun onCleared() {
         serviceClient.unbind()

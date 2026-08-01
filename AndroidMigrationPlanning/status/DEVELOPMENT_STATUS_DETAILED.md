@@ -992,6 +992,42 @@
 
 实现 M4 formal capture surface：复用 `CaptureStartGate` 展示名称/连接/fresh/storage 原因、显式 start/stop intent 和 elapsed/status；随后接 waveform/metric presentation，保持 service/controller ownership。
 
+## 2026-08-02 · M4 · Formal capture gate and start/stop surface
+
+### 本轮目标
+
+把既有纯 Kotlin `CaptureStartGate` 接到 Compose/FGS 真实入口：录制名称、连接/fresh/重名/存储原因必须可见，开始动作只能启动 `connectedDevice` service，停止动作只调用 service finalizer。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-005、UI-006、UI-008、CAP-001/CAP-007、REL-003/004；合法 ASCII 名称、gate 单独失败可解释、service notification/stop 入口、raw-first ownership 不变。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-005/UI-006/UI-008、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6/§9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` Phase 3 §6.1/§6.2 与 Phase 4 §7.1/§7.2、`05_SOURCE_REFERENCE_INDEX.md` 的 `SessionNameValidator.swift`/`CaptureSessionController.swift`。
+- Android targets: `CaptureServiceViewModel.kt`、`MainActivity.kt`、`CaptureForegroundService.kt`、`CaptureSessionWriterTest.kt` 与 `CaptureGateUiStateTest.kt`。
+- Non-goals: waveform Canvas、正式 metrics cards、Sessions/detail/replay、SAF Activity Result、真实 FGS/Activity recreation instrumentation、real-device validation、metrics CSV backfill。
+
+### 实现事实
+
+- `CaptureViewModel` 将 session name、app-scope BLE snapshot 和 service recording snapshot 合并为 `CaptureGateUiState`；开始按钮只有 `CaptureStartGate.validate` 返回 null 时启用，并把非法名、stale、device-not-ready、重名、容量不足映射为用户可读原因。
+- Compose surface 增加 name field、开始按钮和 service stop button；`startRecording()` 只调用 `ContextCompat.startForegroundService`，Activity 不创建 writer、不接收 raw callback。
+- `CaptureForegroundService` 将真实 `FileStore.usableSpace` 传入 controller gate，修复此前 `availableBytes=null` 会跳过 20 MiB 预检的边界；service 仍重复执行 gate，抵御 UI/service 状态竞态。
+- 增加 gate 容量不足测试、UI gate reason/canStart 测试；已有 first-stop/raw-first/finalizer 测试继续覆盖数据完整性。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`，79 个 JVM tests 全部通过。
+- `git diff --check`：通过。
+- 真实 FGS notification、Activity 重建、后台/锁屏、重复点击/竞态、SAF/provider、真机与长稳：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- `startForegroundService` 后的 service start rejection 尚未通过专门 binder result flow 回传到 UI；正式 instrumentation 需要验证权限、可见启动、重复 start 和 gate 竞态的用户提示。
+- 当前仍没有 elapsed duration、Canvas waveform、HR/SQI/ratio presentation；SpO2/BP 不可用语义不改变，live metrics 不回填 CSV。
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+继续 M4 waveform/metrics slice：接 800-sample live analysis result 的明确 valid/provisional/reason/source presentation 与 bounded Canvas 波形快照；随后推进 Sessions catalog/detail。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

@@ -72,6 +72,15 @@ class CaptureSessionWriterTest {
                 CaptureStartFailure.InvalidSessionName,
                 CaptureStartGate.validate(valid.copy(sessionName = "bad/name")),
             )
+            assertEquals(
+                CaptureStartFailure.InsufficientStorage,
+                CaptureStartGate.validate(
+                    valid.copy(
+                        sessionName = "low_storage",
+                        availableBytes = CaptureSessionWriterPolicy.minimumAvailableCapacityBytes - 1,
+                    ),
+                ),
+            )
         } finally {
             root.toFile().deleteRecursively()
         }

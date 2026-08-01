@@ -157,7 +157,10 @@ class CaptureForegroundService : Service() {
             phase = phase,
             freshness = snapshot.freshness,
             connectionGeneration = snapshot.connectionGeneration,
-            availableBytes = null,
+            availableBytes = runCatching {
+                Files.getFileStore((application as PpgCollectorApplication).sessionsRoot.parent)
+                    .usableSpace
+            }.getOrNull(),
         )
         if (result is CaptureRecordingStartResult.Started) {
             bleCoordinator.onRawChunk = recordingController::onRawChunk
