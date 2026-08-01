@@ -1137,6 +1137,41 @@
 
 继续接 Sessions recovery/export Activity Result seams，先做只读 inspection findings 与 SAF/FileProvider progress/cancel 状态，再考虑分析历史与重放 UI。
 
+## 2026-08-02 · M4 · Sessions SAF export and safe-prefix recovery actions
+
+### 本轮目标
+
+把已有的流式 ZIP 导出和只读 safe-prefix recovery 内核接入 Sessions 详情页，提供用户选择目标、进度/取消、恢复副本和结果反馈；不修改原会话、不把 raw/CSV 全量载入 UI，也不提前实现重放工作台。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-009、CAP-010、Phase 4 §7.1 Detail、Phase 3 §6.3、REL-003/004；导出经 SAF，恢复只复制安全前缀到新目录并保留 provenance。
+- Primary source: `docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.3/§7.1、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.5、`CaptureSessionExportService.kt`、`CaptureSessionRecoveryService.kt`、`CaptureAndroidExport.kt`、Swift `SavedSessionDetailView.swift`。
+- Android targets: `SessionsViewModel.kt`、`MainActivity.kt` Activity Result `CreateDocument`/Sessions detail action surface；existing export/recovery JVM tests。
+- Non-goals: shared-storage writes without user choice, destructive delete, source mutation, FileProvider share action UI, replay viewport/workbench, real provider/instrumentation and real-device validation。
+
+### 实现事实
+
+- `SessionsViewModel` now owns lifecycle-scoped export/recovery action state; export resolves the selected directory from the filesystem catalog again before streaming, so stale UI items cannot export a different source.
+- `MainActivity` launches `ActivityResultContracts.CreateDocument("application/zip")`; the SAF adapter streams the three expected session files through the bounded ZIP exporter and reports copied/total bytes. A cancelled picker or running action exposes an explicit cancellation path.
+- Recovery invokes `CaptureSessionRecoveryService.suggestedBaseName` and `recover` on `Dispatchers.IO`; the source directory remains read-only, the result is a new filesystem session with recovery provenance, and the catalog re-scans/selects the new copy for inspection.
+- Detail copy states show export progress, recovery/export errors and user-facing completion text; action buttons are disabled while busy. No raw bytes or stack traces are placed in Compose state.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon` → `BUILD SUCCESSFUL`；debug compile includes `CreateDocument` wiring and Sessions action state.
+- Existing `CaptureSessionExportServiceTest` and `CaptureSessionRecoveryServiceTest` continue to pass, including relative ZIP entries, cancellation/destination protection, safe-prefix copy and source preservation; full JVM suite passed (83 tests).
+- `git diff --check`：pass。真实 SAF provider cancellation/partial-document behavior、FileProvider share、Activity recreation、后台/锁屏和 hardware：pending instrumentation/system/hardware validation；本轮不进行真机测试。
+
+### 风险与决策变化
+
+- SAF cancellation cannot universally delete a provider-owned partial document; the UI stops the stream and reports cancellation, while provider-specific cleanup remains an instrumentation decision. Export destination is always user-selected and no shared-storage path is inferred.
+- Recovery remains an explicit copy operation and is disabled only while another detail action is running; replay visualization, action history and metrics CSV backfill remain open. `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+继续 M4 Detail：接入 bounded raw replay 的最近样本/统计摘要与明确的 replay loading/cancel 状态，随后补 Activity recreation/system lifecycle 和 SAF/FileProvider instrumentation 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

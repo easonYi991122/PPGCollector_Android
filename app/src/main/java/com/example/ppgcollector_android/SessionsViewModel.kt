@@ -2,7 +2,13 @@ package com.example.ppgcollector_android
 
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import com.example.ppgcollector_android.data.session.CaptureExportCancellation
+import com.example.ppgcollector_android.data.session.CaptureExportProgress
+import com.example.ppgcollector_android.data.session.CaptureSafExportService
+import com.example.ppgcollector_android.data.session.CaptureSessionExportException
 import com.example.ppgcollector_android.data.session.CaptureSessionInspection
+import com.example.ppgcollector_android.data.session.CaptureSessionRecoveryService
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import java.nio.file.Files
@@ -12,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -36,11 +43,23 @@ data class SessionDetailUi(
     val error: String? = null,
 )
 
+enum class SessionActionKind { EXPORT, RECOVER }
+
+data class SessionActionUi(
+    val kind: SessionActionKind? = null,
+    val isRunning: Boolean = false,
+    val bytesCopied: Long = 0L,
+    val totalBytes: Long = 0L,
+    val message: String? = null,
+    val error: String? = null,
+)
+
 data class SessionsUiState(
     val isLoading: Boolean = false,
     val sessions: List<SessionListItemUi> = emptyList(),
     val selected: SessionDetailUi? = null,
     val error: String? = null,
+    val action: SessionActionUi = SessionActionUi(),
 )
 
 object SessionListItemMapper {
@@ -77,6 +96,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
     private val _state = MutableStateFlow(SessionsUiState())
     private var refreshJob: Job? = null
     private var inspectionJob: Job? = null
+    private var actionJob: Job? = null
 
     val state: StateFlow<SessionsUiState> = _state.asStateFlow()
 
@@ -132,7 +152,118 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     fun clearSelection() {
         inspectionJob?.cancel()
+        actionJob?.cancel()
         _state.value = _state.value.copy(selected = null)
+    }
+
+    fun exportSelectedTo(destination: Uri) {
+        val item = _state.value.selected?.item ?: return
+        actionJob?.cancel()
+        actionJob = viewModelScope.launch {
+            setAction(SessionActionUi(kind = SessionActionKind.EXPORT, isRunning = true))
+            try {
+                val report = withContext(Dispatchers.IO) {
+                    val session = findSession(item.directory)
+                        ?: error("session no longer exists")
+                    val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    CaptureSafExportService(app.contentResolver).export(
+                        session = session,
+                        destination = destination,
+                        onProgress = ::publishExportProgress,
+                        cancellation = CaptureExportCancellation {
+                            if (job?.isActive == false) {
+                                throw CaptureSessionExportException.Cancelled
+                            }
+                        },
+                    )
+                }
+                setAction(
+                    SessionActionUi(
+                        kind = SessionActionKind.EXPORT,
+                        message = "已导出 ${report.entryNames.size} 个文件",
+                    ),
+                )
+            } catch (_: CaptureSessionExportException.Cancelled) {
+                setAction(SessionActionUi(message = "导出已取消"))
+            } catch (error: Exception) {
+                setAction(
+                    SessionActionUi(
+                        kind = SessionActionKind.EXPORT,
+                        error = error.message ?: error::class.simpleName,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun recoverSelected() {
+        val item = _state.value.selected?.item ?: return
+        actionJob?.cancel()
+        actionJob = viewModelScope.launch {
+            setAction(SessionActionUi(kind = SessionActionKind.RECOVER, isRunning = true))
+            try {
+                val recovered = withContext(Dispatchers.IO) {
+                    val session = findSession(item.directory)
+                        ?: error("session no longer exists")
+                    CaptureSessionRecoveryService.recover(
+                        session = session,
+                        requestedBaseName = CaptureSessionRecoveryService.suggestedBaseName(session),
+                    )
+                }
+                setAction(
+                    SessionActionUi(
+                        kind = SessionActionKind.RECOVER,
+                        message = "已创建安全恢复副本：${recovered.baseName}",
+                    ),
+                )
+                refreshAndSelect(recovered.directory)
+            } catch (error: Exception) {
+                setAction(
+                    SessionActionUi(
+                        kind = SessionActionKind.RECOVER,
+                        error = error.message ?: error::class.simpleName,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun cancelAction() {
+        if (_state.value.action.isRunning) {
+            actionJob?.cancel()
+            setAction(SessionActionUi(message = "操作已取消"))
+        }
+    }
+
+    fun clearAction() {
+        setAction(SessionActionUi())
+    }
+
+    private suspend fun findSession(directory: Path): StoredCaptureSession? =
+        CaptureSessionRepository.listSessions(app.sessionsRoot)
+            .firstOrNull { it.directory == directory }
+
+    private suspend fun refreshAndSelect(directory: Path) {
+        val items = withContext(Dispatchers.IO) {
+            CaptureSessionRepository.listSessions(app.sessionsRoot).map(SessionListItemMapper::map)
+        }
+        _state.update { it.copy(sessions = items) }
+        items.firstOrNull { it.directory == directory }?.let(::select)
+    }
+
+    private fun publishExportProgress(progress: CaptureExportProgress) {
+        _state.update {
+            it.copy(
+                action = it.action.copy(
+                    bytesCopied = progress.bytesCopied,
+                    totalBytes = progress.totalBytes,
+                ),
+            )
+        }
+    }
+
+    private fun setAction(action: SessionActionUi) {
+        _state.update { it.copy(action = action) }
     }
 
     private fun expectedFileNames(directory: Path): List<String> {

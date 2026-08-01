@@ -55,6 +55,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { destination ->
+        if (destination == null) {
+            sessionsViewModel.cancelAction()
+        } else {
+            sessionsViewModel.exportSelectedTo(destination)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -75,6 +85,10 @@ class MainActivity : ComponentActivity() {
                         onRefreshSessions = sessionsViewModel::refresh,
                         onSelectSession = sessionsViewModel::select,
                         onClearSessionSelection = sessionsViewModel::clearSelection,
+                        onRequestExport = ::requestSessionExport,
+                        onRecoverSession = sessionsViewModel::recoverSelected,
+                        onCancelSessionAction = sessionsViewModel::cancelAction,
+                        onClearSessionAction = sessionsViewModel::clearAction,
                         sessionName = sessionName,
                         captureGate = captureGate,
                         onSessionNameChange = captureViewModel::setSessionName,
@@ -109,6 +123,10 @@ class MainActivity : ComponentActivity() {
             permissionLauncher.launch(missing.toTypedArray())
         }
     }
+
+    private fun requestSessionExport(item: SessionListItemUi) {
+        exportLauncher.launch("${item.baseName}.zip")
+    }
 }
 
 @androidx.compose.runtime.Composable
@@ -120,6 +138,10 @@ private fun BleHome(
     onRefreshSessions: () -> Unit,
     onSelectSession: (SessionListItemUi) -> Unit,
     onClearSessionSelection: () -> Unit,
+    onRequestExport: (SessionListItemUi) -> Unit,
+    onRecoverSession: () -> Unit,
+    onCancelSessionAction: () -> Unit,
+    onClearSessionAction: () -> Unit,
     sessionName: String,
     captureGate: CaptureGateUiState,
     onSessionNameChange: (String) -> Unit,
@@ -225,6 +247,10 @@ private fun BleHome(
             onRefresh = onRefreshSessions,
             onSelect = onSelectSession,
             onClearSelection = onClearSessionSelection,
+            onRequestExport = onRequestExport,
+            onRecover = onRecoverSession,
+            onCancelAction = onCancelSessionAction,
+            onClearAction = onClearSessionAction,
         )
     }
 }
@@ -235,6 +261,10 @@ private fun SessionsPanel(
     onRefresh: () -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
     onClearSelection: () -> Unit,
+    onRequestExport: (SessionListItemUi) -> Unit,
+    onRecover: () -> Unit,
+    onCancelAction: () -> Unit,
+    onClearAction: () -> Unit,
 ) {
     Spacer(Modifier.height(20.dp))
     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -310,8 +340,35 @@ private fun SessionsPanel(
                 }
             }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { onRequestExport(detail.item) },
+                enabled = !state.action.isRunning,
+            ) { Text("导出 ZIP") }
+            if (detail.item.recoveryCandidate) {
+                Button(
+                    onClick = onRecover,
+                    enabled = !state.action.isRunning,
+                ) { Text("创建恢复副本") }
+            }
+        }
+        state.action.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        state.action.error?.let {
+            Text("操作失败：$it", color = MaterialTheme.colorScheme.error)
+        }
+        if (state.action.isRunning) {
+            if (state.action.kind == SessionActionKind.EXPORT && state.action.totalBytes > 0) {
+                val percent = (state.action.bytesCopied * 100 / state.action.totalBytes).coerceIn(0, 100)
+                Text("导出进度：$percent%（${state.action.bytesCopied}/${state.action.totalBytes} bytes）")
+            } else {
+                Text("正在创建安全恢复副本…")
+            }
+            Button(onClick = onCancelAction) { Text("取消操作") }
+        } else if (state.action.message != null || state.action.error != null) {
+            Button(onClick = onClearAction) { Text("清除操作结果") }
+        }
         Button(onClick = onClearSelection) { Text("关闭详情") }
-        Text("恢复、导出和重放入口将在后续切片接入。", style = MaterialTheme.typography.bodySmall)
+        Text("导出只写入用户选择的目标；恢复只创建新目录，不修改源会话。", style = MaterialTheme.typography.bodySmall)
     }
 }
 
