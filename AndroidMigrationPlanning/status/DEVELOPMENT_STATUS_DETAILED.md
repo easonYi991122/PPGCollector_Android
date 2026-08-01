@@ -2014,6 +2014,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在 emulator/device 可用时执行本轮 instrumentation，重点覆盖 Activity recreation、动态字号/TalkBack、SAF/FileProvider provider 和 FGS bind/rebind；本地继续 M5 API/厂商/发布门禁，但不把编译结果替代 runtime/hardware evidence。
 
+## 2026-08-02 · M4 · Deterministic SAF picker cancellation
+
+### 本轮目标
+
+补齐 Phase 4 Detail/SAF acceptance seam 的用户取消边界：用户取消 `ACTION_CREATE_DOCUMENT` 时始终得到明确反馈；正在进行的导出/恢复取消必须停止工作而不把取消异常伪装成失败，也不能让已取消操作覆盖新会话/新操作状态。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-009`、`CAP-010`、`REL-003`/`REL-004`；Phase 3 §6.3、Phase 4 §7.1/§7.2 的 SAF progress/cancel 和生命周期状态边界。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-009/CAP-010、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.3/§7.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` export/cancellation boundary、`MainActivity.kt`/`SessionsViewModel.kt`。
+- Tests/golden: `CaptureSessionExportServiceTest` cancellation/destination protection；新增 `SessionsPresentationTest.exportPickerCancellationKeepsActionSpecificFeedback`。
+- Android target: `MainActivity` `CreateDocument` result callback、`SessionsViewModel.cancelExportPicker/cancelAction`、export/recovery coroutine cancellation handling。
+- Non-goals: changing ZIP/raw/CSV/session formats, shared-storage policy, provider-specific partial-document deletion, real SAF provider execution, FGS/BLE ownership or emulator/device validation。
+
+### 实现事实
+
+- `CreateDocument` returning `null` now calls `cancelExportPicker()`, which publishes a stable `EXPORT` action with `导出已取消` even when the picker was cancelled before an export coroutine started.
+- Running export/recovery cancellation preserves the action kind and does not let a cancelled coroutine’s broad `Exception` handler write a stale error. `CancellationException` exits the coroutine without a state write; explicit user cancellation owns the visible state.
+- Added a pure JVM assertion for export/recovery cancellation feedback. Raw, CSV, metadata, ZIP entry names, recovery source immutability and service/GATT ownership remain unchanged.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.SessionsPresentationTest :app:compileDebugKotlin --no-daemon --console=plain` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon --console=plain` → `BUILD SUCCESSFUL`；JVM suite 通过，release lint 0 errors，R8/resource shrinking、release APK 和 instrumentation APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon --console=plain` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-002 transport、REL-003/004 lifecycle 和 REL-006/007 merged-manifest/API contracts 均保持通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不运行真实 DocumentsProvider、SAF partial-document cleanup、Activity recreation、FGS/BLE、emulator 或真机测试。
+
+### 风险与决策变化
+
+- Local state evidence now distinguishes picker cancellation from provider/stream failure, but only a real DocumentsProvider can prove URI permission revocation, partial-document behavior and provider cleanup. Those gates remain open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变 schema/profile/algorithm version。
+
+### 下一轮
+
+继续 M4 本地 acceptance audit 的 permission-return/重复 start-stop 状态覆盖，或在 emulator/device 可用时运行 SAF/FileProvider/Activity recreation 门禁；不把 JVM cancellation 结果替代真实 provider 证据。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

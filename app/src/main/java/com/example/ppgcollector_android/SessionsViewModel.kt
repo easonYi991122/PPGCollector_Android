@@ -13,6 +13,7 @@ import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +54,12 @@ data class SessionActionUi(
     val message: String? = null,
     val error: String? = null,
 )
+
+internal fun cancelledSessionAction(kind: SessionActionKind?): SessionActionUi =
+    SessionActionUi(
+        kind = kind,
+        message = if (kind == SessionActionKind.EXPORT) "导出已取消" else "操作已取消",
+    )
 
 data class SessionsUiState(
     val isLoading: Boolean = false,
@@ -196,6 +203,8 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                         message = "已导出 ${report.entryNames.size} 个文件",
                     ),
                 )
+            } catch (_: CancellationException) {
+                return@launch
             } catch (_: CaptureSessionExportException.Cancelled) {
                 setAction(SessionActionUi(message = "导出已取消"))
             } catch (error: Exception) {
@@ -230,6 +239,8 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                     ),
                 )
                 refreshAndSelect(recovered.directory)
+            } catch (_: CancellationException) {
+                return@launch
             } catch (error: Exception) {
                 setAction(
                     SessionActionUi(
@@ -241,11 +252,18 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         }
     }
 
-    fun cancelAction() {
+    fun cancelExportPicker() {
         if (_state.value.action.isRunning) {
             actionJob?.cancel()
-            setAction(SessionActionUi(message = "操作已取消"))
         }
+        setAction(cancelledSessionAction(SessionActionKind.EXPORT))
+    }
+
+    fun cancelAction() {
+        val action = _state.value.action
+        if (!action.isRunning) return
+        actionJob?.cancel()
+        setAction(cancelledSessionAction(action.kind))
     }
 
     fun clearAction() {

@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { destination ->
         if (destination == null) {
-            sessionsViewModel.cancelAction()
+            sessionsViewModel.cancelExportPicker()
         } else {
             sessionsViewModel.exportSelectedTo(destination)
         }
