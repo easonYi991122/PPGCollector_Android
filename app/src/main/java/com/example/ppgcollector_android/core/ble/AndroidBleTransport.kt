@@ -333,30 +333,37 @@ class AndroidBleTransport(
                 emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "GATT characteristic unavailable"))
                 return@post
             }
-            val changed = runCatching { gatt.setCharacteristicNotification(characteristic, enabled) }.getOrDefault(false)
-            val descriptor = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
-            if (!changed || descriptor == null) {
-                emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "CCCD unavailable"))
-                return@post
-            }
-            val value = when {
-                !enabled -> BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-                characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ->
-                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                else -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-            }
-            pendingDescriptors[gatt] = PendingDescriptorWrite(deviceId, characteristicUuid, enabled)
-            val accepted = if (Build.VERSION.SDK_INT >= 33) {
-                gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                descriptor.value = value
-                @Suppress("DEPRECATION")
-                gatt.writeDescriptor(descriptor)
-            }
-            if (!accepted) {
+            try {
+                val changed = runCatching {
+                    gatt.setCharacteristicNotification(characteristic, enabled)
+                }.getOrDefault(false)
+                val descriptor = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
+                if (!changed || descriptor == null) {
+                    emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "CCCD unavailable"))
+                    return@post
+                }
+                val value = when {
+                    !enabled -> BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                    characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ->
+                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    else -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                }
+                pendingDescriptors[gatt] = PendingDescriptorWrite(deviceId, characteristicUuid, enabled)
+                val accepted = if (Build.VERSION.SDK_INT >= 33) {
+                    gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = value
+                    @Suppress("DEPRECATION")
+                    gatt.writeDescriptor(descriptor)
+                }
+                if (!accepted) {
+                    pendingDescriptors.remove(gatt)
+                    emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "CCCD write rejected"))
+                }
+            } catch (_: SecurityException) {
                 pendingDescriptors.remove(gatt)
-                emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "CCCD write rejected"))
+                emit(BleTransportEvent.NotificationStateChanged(deviceId, characteristicUuid, false, "未获得蓝牙连接权限"))
             }
         }
     }

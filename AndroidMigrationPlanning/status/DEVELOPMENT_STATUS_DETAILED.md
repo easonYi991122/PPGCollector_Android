@@ -1939,6 +1939,44 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续 M5 本地发布/生命周期硬化；有 emulator/device 后运行 API 30/31/33/36 permission、BLE scan/GATT、后台/锁屏和厂商矩阵门禁，不以 fake activation 结果替代真机证据。
 
+## 2026-08-02 · M5 · BLE CCCD permission-revocation failure contract
+
+### 本轮目标
+
+补齐 BLE-001/003 在连接后撤销 `BLUETOOTH_CONNECT` 时的 CCCD 写入失败路径：平台 adapter 不应让 `SecurityException` 穿透主线程 callback；必须清理 pending descriptor、发布可审计的订阅失败事件，并让 GATT owner 安全进入失败/断开状态，不生成 raw 数据。
+
+### 需求/参考/Android 目标
+
+- Requirement: `BLE-001`、`BLE-003`、`BLE-005`、`REL-004`；Phase 2 §5.2、Phase 5 §8.1；风险 `R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` BLE-001/003/005、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` single-owner/raw-first failure boundary；Android `BluetoothGatt.writeDescriptor` API seam。
+- Tests/golden: fake GATT state-machine CCCD failure path plus release source contract; Android permission revocation, framework callback ordering and OEM behavior remain hardware evidence.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt`、`CupBleGattStateMachineTest.kt`、`app/build.gradle.kts`。
+- Non-goals: changing CCCD UUID/value policy, CUP control writes, raw/CSV/session schema, or running emulator/device tests.
+
+### 实现事实
+
+- Wrapped the Android `setNotificationsEnabled` descriptor path in a `SecurityException` boundary; it removes the pending descriptor and emits `NotificationStateChanged(..., false, "未获得蓝牙连接权限")`.
+- Existing state-machine failure handling then records the subscription error, disconnects the device and does not deliver notification bytes to the raw sink.
+- Added fake GATT coverage for CCCD failure and extended `verifyReleaseBleTransportContract` to inspect the notification function body, including permission catch, pending cleanup and failure event.
+- No protocol, raw, CSV, algorithm or session data contract changed.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.CupBleGattStateMachineTest :app:verifyReleaseBleTransportContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；99 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-006/007 API、REL-003/004 lifecycle 和 REL-002 BLE transport contract 均通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不执行真实权限撤销、BluetoothGatt、API/厂商、后台/锁屏或真机循环测试。
+
+### 风险与决策变化
+
+- Local evidence proves the adapter-to-owner failure boundary, but not system permission revocation timing, descriptor callback races, or OEM behavior; BLE-001/003/005 runtime gates remain open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；用户修改的 `AGENTS.md`、`00_AGENT_MIGRATION_BRIEF.md` 与 `.idea/` 未纳入提交。
+
+### 下一轮
+
+继续 M5 本地发布/生命周期硬化；有 emulator/device 后运行权限撤销、CCCD/断连、API/厂商和 FGS 生命周期门禁，不以 fake failure path 替代真实设备证据。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

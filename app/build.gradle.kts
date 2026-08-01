@@ -304,11 +304,28 @@ tasks.register("verifyReleaseBleTransportContract") {
         check(missing.isEmpty()) {
             "REL-002 Android BLE transport contract missing fragments: ${missing.joinToString()}"
         }
+        val notificationStart = source.indexOf("override fun setNotificationsEnabled(")
+        val notificationEnd = source.indexOf("fun close()", notificationStart)
+        check(notificationStart >= 0 && notificationEnd > notificationStart) {
+            "REL-001/REL-002 notification transport body is missing"
+        }
+        val notificationBody = source.substring(notificationStart, notificationEnd)
+        val requiredNotificationFragments = listOf(
+            "catch (_: SecurityException)",
+            "pendingDescriptors.remove(gatt)",
+            "未获得蓝牙连接权限",
+            "NotificationStateChanged(deviceId, characteristicUuid, false",
+        )
+        val missingNotification = requiredNotificationFragments.filterNot(notificationBody::contains)
+        check(missingNotification.isEmpty()) {
+            "REL-001/REL-002 CCCD permission failure contract missing fragments: ${missingNotification.joinToString()}"
+        }
         val report = buildString {
             appendLine("REL-002 Android BLE transport lifecycle contract")
             appendLine("gatt_release=map+connected_ids+pending_descriptor+BluetoothGatt.close")
             appendLine("replacement_release=before_connecting_new_device")
             appendLine("security_exception_release=disconnect_failure_path")
+            appendLine("cccd_permission_failure=notification_state_error")
             appendLine("status=passed")
         }
         releaseBleTransportContractReport.get().asFile.apply {

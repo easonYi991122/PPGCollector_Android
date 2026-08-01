@@ -104,6 +104,45 @@ class CupBleGattStateMachineTest {
     }
 
     @Test
+    fun cccdFailureStopsSubscriptionAndDisconnectsWithoutEmittingRawData() {
+        val transport = FakeBleTransport()
+        val owner = readyToConnecting(transport)
+        val chunks = mutableListOf<BleRawNotificationChunk>()
+        owner.onRawChunk = chunks::add
+        transport.emit(BleTransportEvent.Connected(deviceId))
+        transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+        transport.emit(
+            BleTransportEvent.CharacteristicsDiscovered(
+                deviceId,
+                profile.serviceUuid,
+                listOf(BleTransportCharacteristic(profile.notifyCharacteristicUuid, listOf("notify"), true, false)),
+                null,
+            ),
+        )
+        transport.emit(
+            BleTransportEvent.NotificationStateChanged(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                isNotifying = false,
+                errorMessage = "未获得蓝牙连接权限",
+            ),
+        )
+
+        assertTrue(owner.phase is BleConnectionPhase.Failed)
+        assertEquals(StreamFreshness.UNAVAILABLE, owner.freshness)
+        assertTrue(transport.commands.contains(FakeBleCommand.Disconnect(deviceId)))
+        transport.emit(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                byteArrayOf(1),
+                null,
+            ),
+        )
+        assertTrue(chunks.isEmpty())
+    }
+
+    @Test
     fun oldConnectionGenerationAndWrongPhaseCallbacksAreIgnored() {
         val transport = FakeBleTransport()
         val owner = readyToConnecting(transport)
