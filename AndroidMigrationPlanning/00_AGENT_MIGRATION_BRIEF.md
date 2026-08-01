@@ -99,7 +99,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、分步 permission callback merge、permission/Compose seam 已实现；真机运行门禁未过 |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
-| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、bounded waveform/metrics、Sessions/replay、scroll/accessibility、确定性 SAF cancel 和 instrumentation seam 已实现；runtime/SAF provider/可访问性仍待验收 |
+| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、bounded waveform/metrics、Sessions/replay、scroll/accessibility、确定性 SAF cancel、可取消 inspection/refresh 和 instrumentation seam 已实现；runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 未开始 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |

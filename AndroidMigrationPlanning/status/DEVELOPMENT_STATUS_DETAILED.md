@@ -2088,6 +2088,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续本地 M5 release/API contract 与 M4 acceptance seam，或在 emulator/device 可用时运行 BLE permission/API/FGS/Activity recreation 矩阵；不以 JVM reducer 结果关闭真实设备门禁。
 
+## 2026-08-02 · M4 · Preserve Sessions coroutine cancellation
+
+### 本轮目标
+
+补齐 Sessions 页的生命周期取消边界：refresh 或只读 inspection 被新请求、选择变化或 Activity/ViewModel teardown 取消时，旧协程不能把 `CancellationException` 作为普通 I/O 错误写回 StateFlow，也不能污染新会话的反馈。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-009`、`CAP-009`、`REL-003`；Phase 4 §7.1/§7.2 的 filesystem-backed catalog/detail、inspection cancel 和 lifecycle/recreation 行为。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-009/CAP-009、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §7.1/§7.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` filesystem/lifecycle boundary、`SessionsViewModel.kt`。
+- Tests/golden: existing Sessions repository/inspection/replay tests；新增 `SessionsPresentationTest.sessionWorkCancellationIsNotConvertedToPresentationError`。
+- Android target: `SessionsViewModel.kt` `runCatchingCancellable`、refresh/inspection jobs and existing export/recovery cancellation handlers。
+- Non-goals: changing session files, inspection findings, raw replay, SAF/ZIP format, BLE/FGS ownership, actual Activity recreation or emulator/device execution。
+
+### 实现事实
+
+- Added a cancellable result wrapper that rethrows `CancellationException` to the coroutine boundary and only converts ordinary exceptions to `Result.failure`.
+- Sessions refresh and inspection now use the wrapper; export/recovery already use explicit cancellation handling, so cancelled work exits without publishing stale errors while user-driven cancellation publishes its own action feedback.
+- Added a pure JVM regression proving cancellation is not converted into a presentation result. Filesystem, raw, CSV, metadata and session ownership contracts are unchanged.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.SessionsPresentationTest :app:compileDebugKotlin --no-daemon --console=plain` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon --console=plain` → `BUILD SUCCESSFUL`；JVM suite 通过，release lint 0 errors，R8/resource shrinking、release APK 和 instrumentation APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon --console=plain` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-002 transport、REL-003/004 lifecycle 和 REL-006/007 merged-manifest/API contracts 均保持通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不运行 Activity recreation、后台/锁屏、SAF provider、FGS/BLE、emulator 或真机测试。
+
+### 风险与决策变化
+
+- Local cancellation semantics prevent stale state writes, but blocking filesystem behavior under process death, Android lifecycle dispatch and provider/runtime behavior still require instrumentation/system evidence.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变 schema/profile/algorithm version。
+
+### 下一轮
+
+继续本地 M5 release/API contract 与 M4 acceptance seam；在 emulator/device 可用时运行 Activity recreation、TalkBack/dynamic font、SAF/FileProvider 和 FGS bind/rebind 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

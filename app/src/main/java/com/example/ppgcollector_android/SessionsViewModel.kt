@@ -23,6 +23,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+internal inline fun <T> runCatchingCancellable(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+
 data class SessionListItemUi(
     val directory: Path,
     val baseName: String,
@@ -112,7 +121,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         refreshJob = viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null)
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingCancellable {
                     CaptureSessionRepository.listSessions(app.sessionsRoot)
                         .map(SessionListItemMapper::map)
                 }
@@ -139,7 +148,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         )
         inspectionJob = viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { CaptureSessionRepository.inspect(item.directory) }
+                runCatchingCancellable { CaptureSessionRepository.inspect(item.directory) }
             }
             val selected = _state.value.selected
             if (selected?.item?.directory != item.directory) return@launch

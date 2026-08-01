@@ -3,12 +3,26 @@ package com.example.ppgcollector_android
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import java.nio.file.Files
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.fail
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionsPresentationTest {
+    @Test
+    fun sessionWorkCancellationIsNotConvertedToPresentationError() {
+        try {
+            runCatchingCancellable<Int> {
+                throw CancellationException("refresh cancelled")
+            }
+            fail("expected cancellation to reach the coroutine boundary")
+        } catch (error: CancellationException) {
+            assertEquals("refresh cancelled", error.message)
+        }
+    }
+
     @Test
     fun exportPickerCancellationKeepsActionSpecificFeedback() {
         val cancelled = cancelledSessionAction(SessionActionKind.EXPORT)
