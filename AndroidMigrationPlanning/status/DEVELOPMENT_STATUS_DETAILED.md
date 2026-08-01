@@ -1308,6 +1308,39 @@
 
 运行 instrumentation 后完成 M4 acceptance audit；若仍无 emulator，则继续补本地 SAF cancel/permission-return state tests，并保持 M5 长稳/厂商门禁未开始。
 
+## 2026-08-02 · M4 · Waveform accessibility semantics
+
+### 本轮目标
+
+补齐 Phase 4 §7.2 的 Canvas 可访问性语义：RED、IR 和 replay 波形不能只依赖视觉绘制，TalkBack/Compose semantics 应能读出通道与当前有界样本数量；不改变绘图数据、采样窗口或指标来源。
+
+### 需求/参考/Android 目标
+
+- Requirements: Phase 4 §7.2 screen/accessibility gate、UI-003/UI-007；动态波形仍使用 bounded Canvas/min-max bucket。
+- Primary source: `docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §7.2、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.4/§8、`CUPDualWaveformPreview.swift` information architecture。
+- Android targets: `MainActivity.kt` `WaveformPanel` semantics、`waveformContentDescription`、`WaveformAccessibilityTest.kt`。
+- Non-goals: claiming TalkBack runtime pass, screenshot/performance audit, full-session accessibility, raw/CSV/metric changes or device testing。
+
+### 实现事实
+
+- Every RED/IR/replay Canvas now exposes a semantics content description containing its channel label and the exact bounded sample count, e.g. `RED 波形，800 个样本`.
+- The label formatter is pure and covered by JVM tests for live and replay labels; Canvas still receives the same min/max-bucketed values and does not allocate per-sample Composables.
+- Existing text-labeled buttons/cards and instrumentation surface tests remain unchanged; runtime TalkBack/dynamic-font behavior is still an explicit device gate.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；JVM suite、debug APK 和 androidTest APK 编译通过（89 JVM tests）。
+- `git diff --check`：pass。Instrumentation execution, TalkBack, dynamic font, screenshot/performance, Activity recreation runtime and hardware remain pending;本轮不进行真机测试。
+
+### 风险与决策变化
+
+- Semantics describe retained samples, not a clinical result or full-session completeness; screen readers must not infer missing samples are absent from the source without inspection findings.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+运行 instrumentation 后完成 M4 acceptance audit；本地可继续补 SAF cancel/permission-return state coverage，但不提前宣称 M4 runtime 门禁通过。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

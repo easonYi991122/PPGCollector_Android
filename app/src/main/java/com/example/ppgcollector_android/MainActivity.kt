@@ -29,6 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.viewModels
@@ -487,7 +489,10 @@ private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(72.dp),
+            .height(72.dp)
+            .semantics {
+                contentDescription = waveformContentDescription(label, values.size)
+            },
     ) {
         val buckets = LiveWaveformBucketMath.bucket(values, size.width.toInt())
         if (buckets.isEmpty()) return@Canvas
@@ -518,6 +523,9 @@ private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
         }
     }
 }
+
+internal fun waveformContentDescription(label: String, sampleCount: Int): String =
+    "$label 波形，$sampleCount 个样本"
 
 @androidx.compose.runtime.Composable
 private fun LiveMetricsPanel(metrics: LiveMetricSnapshot?) {
