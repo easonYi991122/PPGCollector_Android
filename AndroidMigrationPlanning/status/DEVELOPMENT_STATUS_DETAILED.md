@@ -1548,6 +1548,40 @@
 
 继续 M5 的 release privacy/log 静态审计与 API/厂商矩阵准备；本地优先补充真实文件 I/O failure seam，再在设备可用时执行生命周期与 2 h 门禁。
 
+## 2026-08-02 · M5 · REL-005 release privacy/log artifact audit
+
+### 本轮目标
+
+把 REL-005 的本地发布检查变成可重复的 Gradle 门禁：生产源码不得通过 ad-hoc logging 输出原始 PPG、设备身份、路径或堆栈；release APK 不得携带测试/fixture/session 文件。该门禁不替代最终隐私政策、系统日志抓取或真实分发 QA。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-005`；Phase 5 §8.3；风险 `R-015`，决策 `D-005`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-005、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §12、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.3，以及现有 release preflight/artifact scan 记录。
+- Android target: `app/build.gradle.kts` 的 `verifyReleasePrivacy` task、release APK。
+- Non-goals: at-rest encryption、retention/privacy policy、完整系统 logcat/Crash report 审计、签名发布、emulator/真机测试。
+
+### 实现事实
+
+- `verifyReleasePrivacy` 依赖 `assembleRelease`，扫描 `src/main` 的 Kotlin/Java，拒绝 `android.util.Log`、Timber、`println`、`System.out/err` 和 `printStackTrace` 等 ad-hoc 输出入口。
+- 任务流式扫描 unsigned release APK ZIP，拒绝 `androidTest`/`test`、fixture/golden、`.cupraw` 和 `.session.json` 条目；只报告文件/entry 名，不打印采集数据。
+- 任务声明 source/APK inputs，并明确使用 `--no-configuration-cache` 的专用审计模式；普通 JVM/lint/release/androidTest 构建继续使用项目 configuration cache。
+
+### 验证
+
+- privacy audit: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-daemon --no-configuration-cache` → `BUILD SUCCESSFUL`，输出 `REL-005 privacy audit passed`。
+- full local gate: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；93 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- Hardware validation: pending；本轮不运行 emulator/真机，不把静态 audit 当作系统 logcat、备份恢复或签名渠道证明。
+
+### 风险与决策变化
+
+- 当前生产源码无 ad-hoc logging API，因此静态门禁通过；如果后续引入统一诊断 logger，必须先增加字段级脱敏测试，禁止把本任务规则简单放宽。
+- `D-005` 的加密、保留期限、用户删除入口和正式隐私政策仍开放；`D-002`/`D-003` API/厂商后台与生命周期门禁仍未执行。
+
+### 下一轮
+
+继续 M5 API/厂商矩阵与真实生命周期门禁准备；本地优先完善 notification/FGS/permission contract 和可注入的系统 stop/断连报告，再等待设备执行 instrumentation 与真实 2 h 记录。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
