@@ -3,11 +3,11 @@
 更新时间：2026-08-02
 当前迁移版本：`M3`
 当前规划阶段：Phase 3（录制、恢复与后台可靠性）
-状态：M1 protocol/raw/session/signal core、M2 BLE owner/adapter/permission/UI seam 与 M3 raw-first session writer、session start gate、bounded recording controller 已实现并通过 JVM/build 验证；FGS、恢复/导出和真实设备 profile 仍未完成。
+状态：M1 protocol/raw/session/signal core、M2 BLE owner/adapter/permission/UI seam 与 M3 raw-first session writer、session start gate、bounded recording controller、connectedDevice FGS/notification ownership seam 已实现并通过 JVM/build 验证；恢复/导出、正式 UI 和真实设备 profile 仍未完成。
 
 ## 当前一句话
 
-Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec、bounded raw replay、CSV audit、metadata cross-check、固定 SOS/DC/gap-reset preprocessing、SciPy-compatible peak detector、HR estimator、provisional SQI、diagnostic ratio-of-ratios、MetricResult/source-time 和 800/100 live window scheduler，M2 BLE profile/权限/freshness/deadline/fake transport/GATT event-state core、Android scanner/GATT adapter、permission result seam、app-scope coordinator、Activity Result/lifecycle Compose StateFlow seam，以及 M3 raw-first writer、incomplete metadata、no-overwrite、storage/name/start gate、幂等结束语义、有界 256 raw queue、增量 decoder/sequence gate 和 recording controller。下一步是 FGS ownership、async analysis/lifecycle 与恢复/导出；不关闭真实设备协议风险。
+Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec、bounded raw replay、CSV audit、metadata cross-check、固定 SOS/DC/gap-reset preprocessing、SciPy-compatible peak detector、HR estimator、provisional SQI、diagnostic ratio-of-ratios、MetricResult/source-time 和 800/100 live window scheduler，M2 BLE profile/权限/freshness/deadline/fake transport/GATT event-state core、Android scanner/GATT adapter、permission result seam、app-scope coordinator、Activity Result/lifecycle Compose StateFlow seam，以及 M3 raw-first writer、incomplete metadata、no-overwrite、storage/name/start gate、幂等结束语义、有界 256 raw queue、增量 decoder/sequence gate、recording controller 和 connectedDevice FGS/notification/bind seam。下一步是 async analysis/lifecycle、恢复/导出与正式录制 UI；不关闭真实设备协议风险。
 
 ## 与 MigrationPlanning 对照
 
@@ -17,7 +17,7 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
 | `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler、数据完整性边界 JVM tests | protocol/raw/CSV/metadata/inspection-replay/preprocessing/peak/HR/SQI/ratio/live-core slices 已实现；Android async runner/lifecycle 未接入 | M2 BLE permissions/GATT/fake transport |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | profile、权限策略、phase/deadline/freshness、fake transport、fake GATT state machine、Android scanner/GATT adapter、permission seam、app-scope coordinator、Activity Result/Compose StateFlow 已实现并经 JVM/build 验证；真实 UI/真机门禁未开始 | async analysis/lifecycle / M3 writer integration |
-| `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller | writer/session/start gate/controller 已实现并经 JVM/build 验证；尚未接 connectedDevice FGS、恢复/导出 | FGS ownership、async analysis/lifecycle、recovery/export |
+| `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam | writer/session/controller/manifest/service 已实现并经 JVM/build 验证；系统后台/重建行为、恢复/导出仍未验收 | async analysis/lifecycle、recovery/export、正式 capture UI |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | 未开始 | 依赖可观察的数据链路 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 未开始 | 需要真机与发布证据 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | 未开始 | 依赖 raw replay 和独立分析版本 |
@@ -32,11 +32,11 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 
 ## 当前未完成能力
 
-Android 前台服务、恢复/导出、正式录制/历史 Compose 页面与真机长稳均未交付；M3 controller 已提供异步有界 raw queue 和 accepted decoder/write seam，但尚未绑定 connectedDevice FGS，也尚未将 LiveMetricWindowScheduler 接入其 worker，真实设备行为仍待硬件验证，preprocessing/peak/HR/SQI/ratio/live runtime 仍为纯 Kotlin parity core，SQI 与 ratio 明确为 provisional/diagnostic，inspection/replay 当前只提供 JVM 纯文件内核。
+Android 恢复/导出、正式录制/历史 Compose 页面与真机长稳均未交付；M3 controller 已由 `CaptureForegroundService` 持有并提供 notification/bind/rebind seam，但尚未完成系统生命周期/进程死亡恢复验收，也尚未将 LiveMetricWindowScheduler 接入其 worker，真实设备行为仍待硬件验证，preprocessing/peak/HR/SQI/ratio/live runtime 仍为纯 Kotlin parity core，SQI 与 ratio 明确为 provisional/diagnostic，inspection/replay 当前只提供 JVM 纯文件内核。
 
 ## 验证与真机策略
 
-- 本轮 M3 使用 Android Studio JDK 25 完成 `./gradlew test --no-daemon` 和 `./gradlew assembleDebug --no-daemon`，均 `BUILD SUCCESSFUL`。
+- 本轮 M3 使用 Android Studio JDK 25 完成 `./gradlew test --no-daemon` 和 `./gradlew assembleDebug --no-daemon`，均 `BUILD SUCCESSFUL`；Manifest merge/package 包含 connectedDevice service type 和 FGS permissions。
 - `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、固定 SOS/DC/gap reset、四个 preprocessing fixture case、plateau midpoint、distance tie、prominence/width peak semantics、6 个 HR fixture case 的 BPM/DFT/RR/confidence/reason trace、8 个 SQI fixture case 的 peak/cycle/template/Pearson/grade trace、ratio-of-ratios 的 trim/RMS/ACDC/invalid paths、MetricResult invalid/calibration separation、800/100 cadence/window bound、gap generation、rejected frame、stale request/source timestamp、M2 NUS profile/name filter、API 30/31/33 permission branches、waiting/fresh/stale freshness、stage/device stale deadline、timeout clamp、phase flags、fake transport command order、fake GATT connect/service/characteristic/CCCD/receiving path、raw byte/timestamp copy、wrong phase/generation rejection、missing service/notify failure、deadline polling、Android adapter compile/Manifest merge、permission result deny/recover、coordinator permission/availability/scan/connect gates、coordinator snapshot/raw seam、Activity Result/lifecycle-compose compile、Application manifest wiring、Locale.ROOT、RFC 4180 转义、metadata round-trip 和 JSON audit 均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
 

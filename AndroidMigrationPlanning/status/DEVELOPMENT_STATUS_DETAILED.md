@@ -771,6 +771,43 @@
 
 以 controller 作为唯一 session owner 接入 `connectedDevice` FGS、notification start/stop action 和 Activity bind/rebind；随后再接 async analysis snapshot 与 incomplete discovery/recovery。
 
+## 2026-08-02 · M3 · connectedDevice foreground-service ownership seam
+
+### 本轮目标
+
+依据 Phase 3 §6.2 和 REL-003/REL-007，将 recording controller 放入 Android `connectedDevice` 前台服务边界：服务单一持有 controller，通知提供停止入口，Activity 可通过 local binder 重绑观察；不创建第二个 GATT owner。
+
+### 需求/参考/Android 目标
+
+- Requirements: CAP-007、REL-003、REL-004、REL-007；`connectedDevice` FGS、`START_NOT_STICKY`、可见通知、stop action、bind/rebind seam。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.2、`docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-003/REL-007、`CaptureSessionController.swift` ownership semantics。
+- Android targets: `CaptureForegroundService.kt`、`BleCoordinatorSnapshot.connectionGeneration`、`AndroidManifest.xml`。
+- Non-goals: real Activity start flow/formal capture page、API 34/36 runtime test、process-death recovery/export、real-device/background endurance。
+
+### 实现事实
+
+- Manifest 声明 `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_CONNECTED_DEVICE`、`POST_NOTIFICATIONS`，service 使用 `android:foregroundServiceType="connectedDevice"` 且 `exported=false`。
+- `CaptureForegroundService` 返回 `START_NOT_STICKY`，创建低打扰 notification channel，启动时调用 connected-device foreground type，通知 action 触发统一 `USER` stop；local binder 暴露 snapshot/stop，支持 Activity 后续 bind/rebind。
+- 服务复用 `PpgCollectorApplication.bleCoordinator`，通过 snapshot 的 connection generation、phase、freshness 做 start gate，并把 raw callback sink 交给服务持有的 `CaptureRecordingController`；没有新建第二个 GATT owner。
+- FGS start 失败、gate 失败、service destroy 都清理 foreground 状态；真正系统可见启动限制、通知授权、锁屏/任务移除/进程死亡仍标 pending hardware/system validation。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`；Manifest merge、service type、FGS permissions 和 APK packaging 通过。
+- `git diff --check`：待提交前执行。
+- API 34/36 FGS launch、通知拒绝、后台/锁屏/进程重建、真机 GATT：pending hardware/system validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前服务已形成 ownership seam，但 app-scope `BleCoordinator` 仍是实际 GATT owner；完整“开始录制时原子移交 GATT 到 service”需要后续 service-aware coordinator 重构，不能把当前代码描述为最终后台架构。
+- service start intent 只提供最小 session name/device 参数，正式 Capture UI、POST_NOTIFICATIONS 结果 seam、elapsed/written status notification 和 recovery discovery 尚未完成。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+补 service lifecycle fake/instrumented contract 与 Activity Result notification/start flow，再接 LiveMetricWindowScheduler 异步分析快照；随后实现 incomplete session discovery/recovery/export。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
