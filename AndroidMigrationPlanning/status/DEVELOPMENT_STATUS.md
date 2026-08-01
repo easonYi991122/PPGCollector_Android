@@ -3,11 +3,11 @@
 更新时间：2026-08-01
 当前迁移版本：`M1`
 当前规划阶段：Phase 1（纯 Kotlin 对等内核）
-状态：M1 protocol、raw、CSV 与 session metadata slices 已实现并通过 JVM/build 验证；profile 仍为 draft。
+状态：M1 protocol、raw、CSV、session metadata 与 inspection/replay glue 已实现并通过 JVM/build 验证；profile 仍为 draft。
 
 ## 当前一句话
 
-Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec 和 JVM tests。下一步进入 inspection/replay glue；不关闭真实设备协议风险。
+Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec、bounded raw replay、CSV audit、metadata cross-check 和 JVM tests。下一步是 signal fixtures；不关闭真实设备协议风险。
 
 ## 与 MigrationPlanning 对照
 
@@ -15,7 +15,7 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 |---|---|---|---|---|
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
-| `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、数据完整性边界 JVM tests | protocol/raw/CSV/metadata slices 已实现；inspection/signal 未开始 | 继续 inspection/replay，再做 signal |
+| `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、数据完整性边界 JVM tests | protocol/raw/CSV/metadata/inspection-replay slices 已实现；signal 未开始 | signal preprocessing fixtures |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | 未开始 | 依赖 profile/设备证据和 fake GATT |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | 未开始 | 依赖 M1/M2 的 accepted stream |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | 未开始 | 依赖可观察的数据链路 |
@@ -32,12 +32,12 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 
 ## 当前未完成能力
 
-BLE/权限/GATT、CUP decoder/sequence gate、raw/CSV/session、预处理/HR/SQI/R、前台服务、恢复/导出、正式 Compose 页面、Android 生命周期与真机长稳均未交付。
+BLE/权限/GATT、raw-first session writer、预处理/HR/SQI/R、前台服务、恢复/导出、正式 Compose 页面、Android 生命周期与真机长稳均未交付；inspection/replay 当前只提供 JVM 纯文件内核，不代表完整 session repository 或恢复能力。
 
 ## 验证与真机策略
 
 - 本轮 M1 使用 Android Studio JDK 25 完成 `./gradlew test` 和 `./gradlew assembleDebug`。
-- `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、25 列 header、Locale.ROOT、RFC 4180 转义、metric invalid 语义、metadata round-trip 和 JSON audit 均有 JVM 测试。
+- `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、Locale.ROOT、RFC 4180 转义、metric invalid 语义、metadata round-trip 和 JSON audit 均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
 
 ## 当前开放阻塞

@@ -248,6 +248,45 @@
 
 进入 M1 inspection/replay glue：组合 raw scan、CSV streaming audit、metadata cross-check 和“不一致则不 verified complete”报告；随后再决定是否进入 signal fixtures。
 
+## 2026-08-01 · M1 · Bounded raw replay and session inspection JVM slice
+
+### 本轮目标
+
+按 Phase 1 `:data:session` 的 inspection/replay 路线，把 CUPRAW1 safe-prefix scan 接到同一 decoder/sequence pipeline，流式审计 CSV，并只读交叉核对 raw、CSV、metadata；不实现恢复复制、session writer、repository 或 UI。
+
+### 需求/参考/Android 目标
+
+- Requirement: CAP-009；路线 §4.2、§6.5；架构文档 §6.5、§11；风险 R-008/R-013。
+- Primary source: `reference_sources/ios_current/PPGCollector/Infrastructure/Storage/CUPRawFileReader.swift`、`CUPRawReplayEngine.swift`、`CaptureSessionInspectionService.swift`、`CaptureSessionRepository.swift`。
+- Tests/golden: Swift raw streaming report、safe-prefix tail classification、CSV 64 KiB scan、raw/CSV/metadata count cross-check；Android JVM temp-directory tests使用现有 draft golden frame encoder。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/data/session/CupRawReplay.kt`、`CaptureSessionInspection.kt` 及 `CaptureSessionInspectionTest.kt`。
+- Non-goals: recovery safe-prefix copy/staging/atomic move、writer checkpoint/fsync actor、repository list/export、signal algorithms、BLE/FGS/UI、真机测试。
+
+### 实现事实
+
+- `CupRawReplayEngine` 通过 `CupRawReader.scan` 流式消费完整 raw records，跨 notification chunk 保持 decoder 状态；sequence first/continuous/gap 进入 accepted stream，duplicate/out-of-order 只计诊断。
+- replay report 保留 raw record/payload/valid-byte/tail、decoder/sequence 诊断、host 时间范围和 accepted sample count；recent replay samples 有界为 800，避免按会话时长线性保留内存。
+- `CaptureSessionInspectionService` 只读约定目录文件，流式扫描 CSV（64 KiB buffer），分类 missing/unreadable/header/tail/structure/sequence findings，并交叉核对 metadata 的 raw chunk/sample count 与 CSV 完整行数。
+- `complete=true` 仍不自动等同 verified；只有无 findings、raw 结构干净、CSV header 正确且无截尾时才报告 `isVerifiedConsistent`。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`31 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 replay 的 accepted sample recent buffer 已有界，但完整的 signal pipeline、CSV 行语义校验和 recovery copy 仍未实现；不得把 inspection slice 宣称为完整录制能力。
+- raw host timestamp 按“完成一帧的 notification chunk”记录，保持 Swift replay 语义；跨真实设备 chunk 边界仍需抓包验证。
+- D-001、D-005、D-006、D-007 仍开放；本轮未改变协议/schema/profile 命名。
+- `.idea/` 为既有用户未跟踪内容，未纳入本轮提交。
+
+### 下一轮
+
+进入 M1 signal fixtures：先移植 preprocessing/gap reset 的纯 Kotlin 最小切片，再接 HR/SQI；继续保持 draft protocol 和未校准 ratio 语义。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
