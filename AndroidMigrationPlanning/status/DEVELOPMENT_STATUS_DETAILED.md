@@ -734,6 +734,43 @@
 
 把 writer 接到 coordinator 的 accepted stream 与 async analysis/lifecycle seam，再实现 FGS ownership；随后补 crash recovery/export，而不是先扩展正式页面。
 
+## 2026-08-02 · M3 · Accepted stream recording controller
+
+### 本轮目标
+
+在已交付 writer/start gate 之上完成 accepted raw stream 的单一控制器边界：BLE callback 只复制并进入有界 256 队列，worker 负责 decoder/sequence gate 和 writer，所有停止/溢出/写入错误共享 first-reason finalizer。
+
+### 需求/参考/Android 目标
+
+- Requirements: CAP-001/CAP-002/CAP-007、REL-003；Phase 3 §6.1 的 pending channel 256、raw-first、统一停止。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md`、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§3.3、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6、`CaptureSessionController.swift`、`CUPStreamingPipeline.swift`。
+- Android targets: `data/session/CaptureRecordingController.kt`、`CaptureSessionWriter.appendRawThenDerive` 与对应 JVM tests。
+- Non-goals: connectedDevice FGS/notification、Activity binding、crash recovery/export、real-device validation、正式 metric UI。
+
+### 实现事实
+
+- `CaptureRecordingController` 以 connection generation 校验并复制 `BleRawNotificationChunk`，使用 256 有界 `ArrayBlockingQueue`；队列满时记录 `queueOverflowCount`，请求 `resourcePressure` stop，不静默丢 raw。
+- worker 内维护每会话 `CupBatchStreamDecoder` 与 `CupFrameSequenceTracker`，将 first/continuous/gap 接受、duplicate/out-of-order 拒绝后生成 `CaptureStreamChunkEvent`；writer 是该会话唯一文件写入者。
+- `CaptureSessionWriter.appendRawThenDerive` 先完成 CUPRAW1 record，再执行延迟 decoder callback 和 CSV 派生。decoder 异常测试确认已 ack raw 可读，最终会话为 incomplete。
+- `stop` 采用 first stop reason wins，先 drain 已入队 chunk 再 finish；重复停止不会创建第二 summary。stale generation、队列溢出、accepted 408-byte frame 与 50 CSV rows 均有 JVM 覆盖。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/锁屏/FGS/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- controller 是可被 FGS 持有的纯 JVM lifecycle seam，但目前尚未声明 Android Service、notification channel 或 process-recovery ownership；不能宣称已交付后台录制。
+- LiveMetricWindowScheduler 尚未接入该 worker，CSV metric cells 默认按当前不可用/未校准语义写入；SpO2/BP 仍不可用，ratio-of-ratios 仍 diagnostic/provisional。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+以 controller 作为唯一 session owner 接入 `connectedDevice` FGS、notification start/stop action 和 Activity bind/rebind；随后再接 async analysis snapshot 与 incomplete discovery/recovery。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

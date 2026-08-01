@@ -77,6 +77,30 @@ class CaptureSessionWriterTest {
         }
     }
 
+    @Test
+    fun decoderFailureAfterRawAcknowledgementLeavesAuditableIncompleteRaw() {
+        val root = Files.createTempDirectory("capture-raw-first")
+        try {
+            val writer = CaptureSessionWriter(configuration(), root) { Long.MAX_VALUE }
+            try {
+                writer.appendRawThenDerive(
+                    hostMonotonicNanoseconds = 77u,
+                    data = byteArrayOf(9, 8, 7),
+                ) {
+                    error("synthetic decoder failure")
+                }
+            } catch (_: IllegalStateException) {
+                // The raw record must remain even though derivation failed.
+            }
+            assertEquals(1, CupRawReader.read(writer.rawPath).size)
+            val summary = writer.finish(CaptureStopReason.WRITE_ERROR, "decoder failure")
+            assertFalse(summary.complete)
+            assertEquals(1, summary.writer.rawChunkCount)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "session-id",
         baseName = "session_001",

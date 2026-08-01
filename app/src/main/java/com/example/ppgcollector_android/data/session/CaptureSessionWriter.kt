@@ -150,23 +150,46 @@ class CaptureSessionWriter(
     }
 
     fun append(event: CaptureStreamChunkEvent): CaptureWriterSnapshot {
+        return appendRawThenDerive(
+            hostMonotonicNanoseconds = event.hostMonotonicNanoseconds,
+            data = event.data,
+            acceptedSampleStartIndex = event.acceptedSampleStartIndex,
+            metrics = event.metrics,
+        ) { event.decodedFrames }
+    }
+
+    /**
+     * A raw acknowledgement is completed before [decode] is evaluated. This is
+     * the seam used by the recording worker so decoder failures cannot erase
+     * an already acknowledged notification from the raw source of truth.
+     */
+    fun appendRawThenDerive(
+        hostMonotonicNanoseconds: ULong,
+        data: ByteArray,
+        acceptedSampleStartIndex: Long? = null,
+        metrics: LiveMetricSnapshot = LiveMetricSnapshot.unavailable(
+            hasConnectedDevice = true,
+            freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH,
+        ),
+        decode: () -> List<CupDecodedFrameEvent>,
+    ): CaptureWriterSnapshot {
         checkOpen()
-        if (event.data.isEmpty()) return snapshot
-        if (event.data.size > CupRawFormat.maximumChunkLength) {
-            throw CaptureSessionWriterException.ChunkTooLarge(event.data.size)
+        if (data.isEmpty()) return snapshot
+        if (data.size > CupRawFormat.maximumChunkLength) {
+            throw CaptureSessionWriterException.ChunkTooLarge(data.size)
         }
 
-        // This call is intentionally before any derived CSV mutation.
-        rawWriter.append(event.hostMonotonicNanoseconds, event.data)
+        // This call intentionally precedes decoder/CSV work.
+        rawWriter.append(hostMonotonicNanoseconds, data)
         snapshot = snapshot.copy(
             rawChunkCount = snapshot.rawChunkCount + 1,
-            rawPayloadBytes = snapshot.rawPayloadBytes + event.data.size,
+            rawPayloadBytes = snapshot.rawPayloadBytes + data.size,
             rawFileBytes = rawWriter.bytesWritten,
         )
 
         val csv = StringBuilder()
-        var streamIndex = event.acceptedSampleStartIndex
-        for (decoded in event.decodedFrames) {
+        var streamIndex = acceptedSampleStartIndex
+        for (decoded in decode()) {
             snapshot = snapshot.copy(
                 missingFrames = snapshot.missingFrames +
                     ((decoded.sequenceEvent as? CupSequenceEvent.Gap)?.missingFrames ?: 0),
@@ -185,19 +208,19 @@ class CaptureSessionWriter(
                             CaptureSessionWriterPolicy.sampleSchemaVersion,
                             configuration.sessionId,
                             nextSampleIndex,
-                            event.hostMonotonicNanoseconds,
+                            hostMonotonicNanoseconds,
                             decoded.frame.sequence,
                             sampleInFrame,
                             sample.red,
                             sample.ir,
-                            event.metrics.heartRateBpm.toCsvCell(),
-                            event.metrics.oxygenSaturationPercent.toCsvCell(),
-                            event.metrics.signalQuality.toCsvCell(),
+                            metrics.heartRateBpm.toCsvCell(),
+                            metrics.oxygenSaturationPercent.toCsvCell(),
+                            metrics.signalQuality.toCsvCell(),
                             configuration.softVersion,
                             configuration.algorithmVersion,
                             configuration.preprocessProfile,
                             configuration.protocolProfile,
-                            event.metrics.ratioOfRatios.toCsvCell(),
+                            metrics.ratioOfRatios.toCsvCell(),
                         ),
                         firstStreamSampleIndex,
                     ),
