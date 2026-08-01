@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,11 +23,17 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.viewModels
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
+import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
+import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
+import com.example.ppgcollector_android.core.signal.MetricResult
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 
@@ -122,6 +129,12 @@ private fun BleHome(
         Text("录制服务：${capture.binding}")
         Text("录制：${capture.recording.state}")
         Text("分析：${capture.analysis.state}")
+        if (capture.waveform.red.isNotEmpty()) {
+            LiveWaveformAndMetrics(
+                waveform = capture.waveform,
+                metrics = capture.analysis.lastResult?.snapshot,
+            )
+        }
         if (capture.recording.state != CaptureRecordingState.RECORDING &&
             capture.recording.state != CaptureRecordingState.STOPPING
         ) {
@@ -179,5 +192,105 @@ private fun BleHome(
             }
         }
         snapshot.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun LiveWaveformAndMetrics(
+    waveform: LiveWaveformSnapshot,
+    metrics: LiveMetricSnapshot?,
+) {
+    Spacer(Modifier.height(12.dp))
+    Text("实时波形（最近 ${waveform.red.size}/800 个样本）")
+    WaveformPanel("RED", Color(0xFFD32F2F), waveform.red)
+    WaveformPanel("IR", Color(0xFF1565C0), waveform.ir)
+    Text(
+        "源样本 ${waveform.sourceSampleStartIndex ?: "—"}–${waveform.sourceSampleEndIndex ?: "—"} · 发布 #${waveform.publicationSequence}",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    LiveMetricsPanel(metrics)
+}
+
+@androidx.compose.runtime.Composable
+private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
+    Text(label, style = MaterialTheme.typography.labelMedium)
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(72.dp),
+    ) {
+        val buckets = LiveWaveformBucketMath.bucket(values, size.width.toInt())
+        if (buckets.isEmpty()) return@Canvas
+        val minimum = buckets.minOf { it.minimum }
+        val maximum = buckets.maxOf { it.maximum }
+        val range = maximum - minimum
+        val padding = if (range.isFinite() && range > 0.0) {
+            range * 0.08
+        } else {
+            maxOf(kotlin.math.abs(maximum) * 0.08, 1.0)
+        }
+        val lower = minimum - padding
+        val upper = maximum + padding
+        val span = (upper - lower).coerceAtLeast(1e-9)
+        buckets.forEachIndexed { index, bucket ->
+            val x = if (buckets.size == 1) 0f
+            else index.toFloat() / (buckets.size - 1).toFloat() * size.width
+            val top = ((upper - bucket.maximum) / span * size.height)
+                .toFloat().coerceIn(0f, size.height)
+            val bottom = ((upper - bucket.minimum) / span * size.height)
+                .toFloat().coerceIn(0f, size.height)
+            drawLine(
+                color = color,
+                start = Offset(x, top),
+                end = Offset(x, bottom),
+                strokeWidth = 1f,
+            )
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun LiveMetricsPanel(metrics: LiveMetricSnapshot?) {
+    Text("实时指标", style = MaterialTheme.typography.titleSmall)
+    if (metrics == null) {
+        Text("等待 8 秒窗口；当前没有可用指标")
+        return
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MetricValue(Modifier.weight(1f), "HR", metrics.heartRateBpm, "bpm")
+        MetricValue(Modifier.weight(1f), "SQI", metrics.signalQuality, "")
+        MetricValue(Modifier.weight(1f), "R（诊断）", metrics.ratioOfRatios, "")
+    }
+    Text(
+        "SpO₂：不可用（缺少正式标定） · BP：不可用（未提供模型）",
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+@androidx.compose.runtime.Composable
+private fun <T : Any> MetricValue(
+    modifier: Modifier,
+    label: String,
+    metric: MetricResult<T>,
+    suffix: String,
+) {
+    val value = if (metric.value != null && metric.isValid) {
+        "${metric.value}${if (suffix.isEmpty()) "" else " $suffix"}"
+    } else {
+        "不可用"
+    }
+    val state = when {
+        metric.value == null || !metric.isValid -> metric.unavailableReason?.message ?: "无效"
+        metric.isProvisional -> "临时"
+        else -> "有效"
+    }
+    Column(modifier = modifier) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+        Text(state, style = MaterialTheme.typography.bodySmall)
+        Text(
+            "源 ${metric.sourceSampleIndex ?: "—"} · ${metric.algorithmVersion}",
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }

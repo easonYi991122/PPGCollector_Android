@@ -124,6 +124,8 @@ class CaptureRecordingControllerTest {
             assertNotNull(analysis.lastResult)
             assertEquals(799L, analysis.lastResult!!.request.windowEndSampleIndex)
             assertEquals(800, analysis.lastResult!!.request.rawIr.size)
+            assertEquals(800, controller.waveformSnapshot.value.red.size)
+            assertEquals(800, controller.waveformSnapshot.value.ir.size)
             assertTrue(
                 analysis.lastResult!!.snapshot.heartRateBpm.algorithmVersion.isNotEmpty(),
             )

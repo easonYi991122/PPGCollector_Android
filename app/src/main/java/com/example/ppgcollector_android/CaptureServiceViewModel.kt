@@ -13,6 +13,7 @@ import com.example.ppgcollector_android.data.session.CaptureStartContext
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import com.example.ppgcollector_android.data.session.CaptureStartGate
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.combine
@@ -35,6 +36,7 @@ data class CaptureServiceObservation(
     val binding: CaptureServiceBindingState = CaptureServiceBindingState.UNBOUND,
     val recording: CaptureRecordingSnapshot = CaptureRecordingSnapshot(),
     val analysis: CaptureAnalysisSnapshot = CaptureAnalysisSnapshot(),
+    val waveform: LiveWaveformSnapshot = LiveWaveformSnapshot(),
     val error: String? = null,
 )
 
@@ -73,6 +75,7 @@ class CaptureServiceClient(
     private var binder: CaptureForegroundService.LocalBinder? = null
     private var recordingJob: Job? = null
     private var analysisJob: Job? = null
+    private var waveformJob: Job? = null
 
     val state: StateFlow<CaptureServiceObservation> = _state.asStateFlow()
 
@@ -94,13 +97,16 @@ class CaptureServiceClient(
                     binding = CaptureServiceBindingState.BOUND,
                     recording = localBinder.snapshot(),
                     analysis = localBinder.analysisSnapshot(),
+                    waveform = localBinder.waveformSnapshot(),
                     error = null,
                 )
             }
             recordingJob?.cancel()
             analysisJob?.cancel()
+            waveformJob?.cancel()
             recordingJob = observeRecording(localBinder)
             analysisJob = observeAnalysis(localBinder)
+            waveformJob = observeWaveform(localBinder)
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -180,11 +186,20 @@ class CaptureServiceClient(
             }
         }
 
+    private fun observeWaveform(localBinder: CaptureForegroundService.LocalBinder): Job =
+        scope.launch {
+            localBinder.waveformFlow().collect { waveform ->
+                _state.update { it.copy(waveform = waveform) }
+            }
+        }
+
     private fun clearObservers() {
         recordingJob?.cancel()
         analysisJob?.cancel()
         recordingJob = null
         analysisJob = null
+        waveformJob?.cancel()
+        waveformJob = null
     }
 
     private fun fail(message: String) {

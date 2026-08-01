@@ -10,6 +10,8 @@ import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LiveMetricWindowScheduler
+import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
+import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshotScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,7 +94,9 @@ class CaptureRecordingController(
     private var analysisWorker: Thread? = null
     private var analysisStopRequested = false
     private var analysisScheduler = LiveMetricWindowScheduler()
+    private var waveformScheduler = LiveWaveformSnapshotScheduler()
     private val _analysisSnapshot = MutableStateFlow(CaptureAnalysisSnapshot())
+    private val _waveformSnapshot = MutableStateFlow(LiveWaveformSnapshot())
 
     private data class AnalysisInput(
         val frames: List<CupDecodedFrameEvent>,
@@ -110,6 +114,8 @@ class CaptureRecordingController(
     val snapshotFlow: StateFlow<CaptureRecordingSnapshot> = _snapshotFlow.asStateFlow()
 
     val analysisSnapshot: StateFlow<CaptureAnalysisSnapshot> = _analysisSnapshot.asStateFlow()
+
+    val waveformSnapshot: StateFlow<LiveWaveformSnapshot> = _waveformSnapshot.asStateFlow()
 
     fun start(
         configuration: CaptureSessionConfiguration,
@@ -142,9 +148,11 @@ class CaptureRecordingController(
                 analysisQueue.clear()
                 analysisStopRequested = false
                 analysisScheduler = LiveMetricWindowScheduler()
+                waveformScheduler = LiveWaveformSnapshotScheduler()
                 _analysisSnapshot.value = CaptureAnalysisSnapshot(
                     state = CaptureAnalysisState.WARMING,
                 )
+                _waveformSnapshot.value = LiveWaveformSnapshot()
                 finalSummary = null
                 lastError = null
                 analysisWorker = thread(start = true, name = "ppg-capture-analysis") {
@@ -284,6 +292,13 @@ class CaptureRecordingController(
                 val input = analysisQueue.poll(100, TimeUnit.MILLISECONDS)
                 if (input != null) {
                     try {
+                        val nowNanos = System.nanoTime()
+                        waveformScheduler.ingest(
+                            decodedFrames = input.frames,
+                            acceptedSampleStartIndex = input.acceptedSampleStartIndex,
+                            measuredAt = input.measuredAt,
+                            nowNanos = nowNanos,
+                        )?.let { _waveformSnapshot.value = it }
                         val request = analysisScheduler.ingest(
                             decodedFrames = input.frames,
                             measuredAt = input.measuredAt,
@@ -313,11 +328,17 @@ class CaptureRecordingController(
                         )
                     }
                 }
+                waveformScheduler.poll(System.nanoTime(), Instant.now())?.let {
+                    _waveformSnapshot.value = it
+                }
                 synchronized(lock) {
                     if (analysisStopRequested && analysisQueue.isEmpty()) return
                 }
             }
         } finally {
+            waveformScheduler.publishNow(Instant.now())?.let {
+                _waveformSnapshot.value = it
+            }
             if (_analysisSnapshot.value.state != CaptureAnalysisState.FAILED) {
                 _analysisSnapshot.value = _analysisSnapshot.value.copy(
                     state = CaptureAnalysisState.STOPPED,

@@ -18,6 +18,7 @@ import com.example.ppgcollector_android.data.session.CaptureDeviceContext
 import com.example.ppgcollector_android.data.session.CaptureRecordingController
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
+import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.flow.StateFlow
 import com.example.ppgcollector_android.data.session.CaptureRecordingStartResult
 import com.example.ppgcollector_android.data.session.CaptureSessionConfiguration
@@ -47,6 +48,10 @@ class CaptureForegroundService : Service() {
             this@CaptureForegroundService.analysisSnapshot()
         fun analysisFlow(): StateFlow<CaptureAnalysisSnapshot> =
             this@CaptureForegroundService.analysisFlow()
+        fun waveformSnapshot(): LiveWaveformSnapshot =
+            this@CaptureForegroundService.waveformSnapshot()
+        fun waveformFlow(): StateFlow<LiveWaveformSnapshot> =
+            this@CaptureForegroundService.waveformFlow()
         fun stop(): Unit = this@CaptureForegroundService.stopRecording(CaptureStopReason.USER)
     }
 
@@ -90,6 +95,10 @@ class CaptureForegroundService : Service() {
     fun analysisSnapshot(): CaptureAnalysisSnapshot = recordingController.analysisSnapshot.value
 
     fun analysisFlow(): StateFlow<CaptureAnalysisSnapshot> = recordingController.analysisSnapshot
+
+    fun waveformSnapshot(): LiveWaveformSnapshot = recordingController.waveformSnapshot.value
+
+    fun waveformFlow(): StateFlow<LiveWaveformSnapshot> = recordingController.waveformSnapshot
 
     fun stopRecording(reason: CaptureStopReason) {
         recordingController.stop(reason)

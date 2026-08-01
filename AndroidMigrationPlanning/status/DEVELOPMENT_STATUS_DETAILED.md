@@ -1028,6 +1028,42 @@
 
 继续 M4 waveform/metrics slice：接 800-sample live analysis result 的明确 valid/provisional/reason/source presentation 与 bounded Canvas 波形快照；随后推进 Sessions catalog/detail。
 
+## 2026-08-02 · M4 · Bounded live waveform and metrics presentation
+
+### 本轮目标
+
+把 recording-owned accepted stream 接到 bounded 800-sample/5 Hz waveform snapshot 与 Compose presentation，并直接展示已有 `MetricResult` 的 valid/provisional/reason/algorithm/source 字段；不修改 raw、CSV 或分析算法语义。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-002/UI-003/UI-004、SIG-002、REL-003；8 s 双轨 RED/IR、默认 5 Hz、动态独立 Y、min/max bucket、HR/SQI/R 状态、SpO2/BP unavailable。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-002/UI-003/UI-004、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §7.2/§8/§10、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` Phase 2 §5.1/Phase 4 §7.1/§7.2、Swift `CUPWaveformSnapshot.swift`/`CUPDualWaveformPreview.swift`/`BLECentralService.swift`。
+- Android targets: `core/signal/LiveWaveformRuntime.kt`、`CaptureRecordingController.kt`、`CaptureForegroundService.kt`、`CaptureServiceViewModel.kt`、`MainActivity.kt`、waveform/controller JVM tests。
+- Non-goals: coordinator-owned non-recording preview continuity, replay viewport, formal Sessions UI, Activity Result export, metrics CSV backfill, calibration/clinical SpO2/BP, real-device/system validation。
+
+### 实现事实
+
+- `LiveWaveformSnapshotScheduler` maintains primitive RED/IR rings capped at 800 samples, generation/source index/time and publication sequence; a 200 ms wall-clock poll publishes at most one snapshot and advances from the due tick, so delayed workers do not burst historical snapshots.
+- `LiveWaveformBucketMath` reduces each channel independently to min/max buckets sized by Canvas width; constant/empty inputs have safe handling and no per-sample Composable is created.
+- recording analysis worker updates waveform state independently of 1 Hz analysis requests, flushes a final snapshot before analysis worker exit, and exposes it through FGS local binder/`CaptureServiceClient` StateFlow.
+- Compose renders separate RED/IR Canvas tracks with independent dynamic Y padding and shows HR/SQI/R from `MetricResult`; invalid values show reason, valid provisional values show temporary state, source index and algorithm version remain visible, and SpO2/BP are explicit unavailable text.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`，81 个 JVM tests 全部通过。
+- JVM coverage: immediate/5 Hz/delayed no-burst publication, bounded 800 ring, source indices, min/max bucket extrema, controller final waveform flush and existing 800-sample metric/raw finalization。
+- `git diff --check`：通过。
+- Canvas screenshot/perf、非录制 preview continuity、Activity recreation/FGS bind-rebind、后台/锁屏、真机和长稳：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 当前 waveform source 是 recording controller 的 accepted stream；停止录制后不破坏已连接预览，但尚未把 coordinator 的非录制 raw stream 接入同一 preview StateFlow，UI-007 的“停止后继续显示”仍需下一轮专门切片。
+- live metrics 仍不回填 CSV；SQI provisional、ratio diagnostic、SpO2/BP unavailable 语义保持不变。`D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+实现 coordinator-owned non-recording preview pipeline：BLE callback 继续只复制/投递，app-scope bounded decoder/sequence/waveform StateFlow 在停止录制后仍可供 Activity 观察；随后推进 Sessions catalog/detail。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
