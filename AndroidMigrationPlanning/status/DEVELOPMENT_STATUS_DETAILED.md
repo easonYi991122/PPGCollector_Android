@@ -1413,6 +1413,40 @@
 
 继续 M5 本地可执行门禁：补 release privacy/log/backup policy audit 与 API/FGS 静态 contract 检查；有 emulator/目标设备后执行 instrumentation、生命周期和长稳矩阵。
 
+## 2026-08-02 · M5 · Session backup boundary and lifecycle disclosure
+
+### 本轮目标
+
+落实 `REL-005`/`D-005` 的当前安全默认：内部 `files/sessions` 会话不进入 Android cloud backup 或 device transfer，用户在 Sessions 页面明确知道未导出数据的卸载后果和 ZIP 导出路径；不替代最终保留期限、加密和签名决策。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-005`、Phase 5 §8.3 数据安全/隐私检查；`D-005` 当前建议“不默认云备份”。
+- Primary source: `AndroidMigrationPlanning/docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-005、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §12、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.3、`docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md` D-005/R-007/R-015。
+- Android target: `app/src/main/res/xml/backup_rules.xml`、`data_extraction_rules.xml`、`MainActivity` Sessions surface 和 Activity recreation instrumentation contract。
+- Non-goals: at-rest encryption、最终 retention/privacy policy、signed distribution、emulator/真机 backup restore、API/厂商矩阵。
+
+### 实现事实
+
+- `files/sessions` 在 legacy `full-backup-content` 和 Android 12+ `cloud-backup`、`device-transfer` 规则中均显式 exclude；内部采集仍只写 app-specific storage，显式 SAF ZIP export 仍是用户归档路径。
+- Sessions 页面新增用户可见说明：“会话仅保存在本应用内部；卸载应用会删除未导出的会话……导出 ZIP”；Activity recreation instrumentation contract 同时断言该说明可见。
+- 未修改 raw、CSV、metadata schema 或 export contents；隐私边界只限制系统备份复制，避免改变跨平台数据契约。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew lintRelease test assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；release lint 0 errors、JVM suite 通过（89 tests），release R8/resource shrinking、debug androidTest APK 编译通过。
+- release APK `app/build/outputs/apk/release/app-release-unsigned.apk` 为 `1,328,729 bytes`；静态 ZIP scan 未发现 `androidTest`、fixture、golden、raw/CSV/session JSON 测试资源条目；manifest 仍引用两套 backup rules。
+- Instrumentation runtime、实际 backup/restore、emulator/真机验证: pending；本轮按约定不进行真机测试。
+
+### 风险与决策变化
+
+- 本轮落实的是技术默认，不关闭 `D-005`：加密、保留期限、用户删除入口和正式隐私政策仍需产品/安全决策；`D-004` 签名、`D-002` API/厂商和 `D-003` 后台策略仍开放。
+- UI disclosure 不是 runtime backup proof；需要 API 级 instrumentation/backup restore 或发布 QA 证据确认系统行为。
+
+### 下一轮
+
+继续 M5 本地 privacy/log/FGS 静态审计和模拟长稳门禁；在 emulator/目标设备可用时运行 backup/lifecycle/instrumentation，再处理签名与正式隐私决策。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

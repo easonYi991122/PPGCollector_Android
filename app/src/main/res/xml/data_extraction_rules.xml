@@ -5,15 +5,10 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- PPG sessions are sensitive and must be explicitly exported by the user. -->
+        <exclude domain="file" path="sessions" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="file" path="sessions" />
     </device-transfer>
-    -->
 </data-extraction-rules>

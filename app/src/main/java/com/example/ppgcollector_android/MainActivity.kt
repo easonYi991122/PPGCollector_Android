@@ -282,6 +282,10 @@ private fun SessionsPanel(
         Text("已保存会话", style = MaterialTheme.typography.titleMedium)
         Button(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
     }
+    Text(
+        "会话仅保存在本应用内部；卸载应用会删除未导出的会话。请选择会话后使用“导出 ZIP”保存副本。",
+        style = MaterialTheme.typography.bodySmall,
+    )
     state.error?.let { Text("会话目录：$it", color = MaterialTheme.colorScheme.error) }
     if (state.isLoading) {
         Text("正在读取会话目录…")

@@ -19,11 +19,13 @@ class MainActivitySystemTest {
         composeRule.onNodeWithText("CUPCollector").assertIsDisplayed()
         composeRule.onNodeWithText("扫描 CUP").assertIsDisplayed()
         composeRule.onNodeWithText("已保存会话").assertIsDisplayed()
+        composeRule.onNodeWithText("卸载应用会删除未导出的会话", substring = true).assertIsDisplayed()
 
         composeRule.activityRule.scenario.recreate()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("CUPCollector").assertIsDisplayed()
         composeRule.onNodeWithText("已保存会话").assertIsDisplayed()
+        composeRule.onNodeWithText("卸载应用会删除未导出的会话", substring = true).assertIsDisplayed()
     }
 }
