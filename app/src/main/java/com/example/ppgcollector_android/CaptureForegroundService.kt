@@ -20,6 +20,13 @@ import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.example.ppgcollector_android.data.session.CaptureRecordingStartResult
 import com.example.ppgcollector_android.data.session.CaptureSessionConfiguration
 import com.example.ppgcollector_android.data.session.CaptureStorageCapacityProvider
@@ -36,6 +43,8 @@ class CaptureForegroundService : Service() {
     private lateinit var recordingController: CaptureRecordingController
     private lateinit var bleCoordinator: BleCoordinator
     private var rawSinkInstalled = false
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var stopJob: Job? = null
 
     private val localBinder = LocalBinder()
 
@@ -79,6 +88,9 @@ class CaptureForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = localBinder
 
     override fun onDestroy() {
+        stopJob?.cancel()
+        stopJob = null
+        serviceScope.cancel()
         if (rawSinkInstalled) {
             bleCoordinator.onRawChunk = null
             rawSinkInstalled = false
@@ -102,9 +114,20 @@ class CaptureForegroundService : Service() {
 
     fun stopRecording(reason: CaptureStopReason) {
         recordingController.stop(reason)
-        if (recordingController.snapshot.state !=
-            com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING
+        val state = recordingController.snapshot.state
+        if (state != com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING &&
+            state != com.example.ppgcollector_android.data.session.CaptureRecordingState.STOPPING
         ) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        stopJob?.cancel()
+        stopJob = serviceScope.launch {
+            recordingController.snapshotFlow.first { snapshot ->
+                snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED ||
+                    snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FAILED
+            }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }

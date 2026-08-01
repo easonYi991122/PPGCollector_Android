@@ -1649,6 +1649,40 @@
 
 继续 API/厂商矩阵的本地准备：补静态 merged-manifest/API target report 和服务生命周期 failure contract；设备可用后运行 API 26/30/31/33/34/35/36/37 emulator 与至少两类厂商门禁。
 
+## 2026-08-02 · M5 · REL-004 service finalization lifecycle contract
+
+### 本轮目标
+
+补齐停止录制时的 connectedDevice FGS 生命周期契约：服务必须保持前台状态，直到 raw-first writer 完成最终 flush/metadata 状态发布；只在 `FINALIZED` 或 `FAILED` 后移除通知并停止服务。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-004`、`CAP-002`、`CAP-007`；Phase 3 §6.2/§6.4、Phase 5 §8.1；风险 `R-003`、`R-015`，决策 `D-003`。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.4/§8、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.4/§8.1；`CaptureRecordingController` finalizer and `CaptureForegroundService` lifecycle.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt`。
+- Non-goals: changing raw/CUPRAW1/CSV/session schema, stop-reason precedence, BLE ownership, emulator/OEM/real-device runtime validation.
+
+### 实现事实
+
+- `CaptureForegroundService.stopRecording` now observes the controller `StateFlow` after requesting stop and keeps the FGS notification until `FINALIZED` or `FAILED`; the existing immediate-stop path remains for idle/already-terminal states.
+- The service owns a supervisor coroutine scope and cancels pending finalization observation before controller cleanup in `onDestroy`, preventing a late callback from calling `stopSelf` after service teardown.
+- The controller remains the single finalizer and still drains accepted raw chunks before publishing the terminal state; no data contract or first-stop-reason behavior changed.
+
+### 验证
+
+- Targeted: `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest :app:compileDebugKotlin --no-daemon` → `BUILD SUCCESSFUL`。
+- `git diff --check` → passed。
+- Hardware validation: pending; this round does not run emulator/device, notification drawer, lock-screen, OEM, or real 2 h capture tests.
+
+### 风险与决策变化
+
+- JVM/build evidence verifies compilation and existing controller finalization tests, but not Android process death, notification timing, or vendor-specific FGS behavior; those remain release/device gates.
+- `D-002`、`D-003`、`D-004`、`D-005` and real CUP evidence remain open.
+
+### 下一轮
+
+Add the static merged-manifest/API target report requested by the M5 release checklist, then run available instrumentation and API/vendor lifecycle gates when an emulator/device is available.
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
