@@ -1863,6 +1863,44 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续 M5 release/API/厂商矩阵硬化；有 emulator/device 后执行 REL-002 真机循环及 REL-003/004 生命周期门禁，不以 fake 结果关闭真实设备风险。
 
+## 2026-08-02 · M5 · REL-002 Android GATT resource release contract
+
+### 本轮目标
+
+把 REL-002 从 fake owner 循环进一步落实到 Android `BluetoothGatt` adapter：每次连接替换、正常断开、断开权限异常、stale callback 和 transport close 都必须释放旧平台对象及其关联 bookkeeping，不让旧 GATT 或 pending CCCD 状态污染新连接。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-002`；Phase 2 §5.2、Phase 5 §8.1/§8.2；风险 `R-002`/`R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-002、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.2/§8.1、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` BLE single-owner/generation boundary。
+- Tests/golden: existing fake GATT 20-cycle JVM gate plus release source contract; real BluetoothGatt callback/resource behavior remains hardware evidence.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt`、`app/build.gradle.kts`。
+- Non-goals: changing CUP UUIDs, passive control behavior, raw notification bytes/timestamps, CSV/session schema, or running emulator/device tests.
+
+### 实现事实
+
+- 新增 `releaseGatt(deviceId, gatt, disconnect)` 统一释放函数：按对象身份移除 current map slot，清理 `connectedIds`（仅 current owner）、pending descriptor，并在需要时 disconnect 后 `BluetoothGatt.close()`。
+- 新连接替换其他设备时先释放旧 GATT；`disconnect()` 的 `SecurityException` 路径也释放对象；`close()` 遍历 snapshot 释放全部连接。
+- stale `onConnectionStateChange` callback 不再静默 return，而是关闭迟到的旧 GATT；身份判断避免旧 callback 清除新连接的 `connectedIds`。
+- 新增 `verifyReleaseBleTransportContract`，生成 `app/build/reports/release-ble-transport-contract.txt`，并纳入 `verifyReleasePrivacy`；未改变协议、raw、CSV、算法或 session 数据路径。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:compileDebugKotlin :app:verifyReleaseBleTransportContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；adapter 编译通过，保留既有 Android API deprecation warnings。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；97 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking、release APK 和 androidTest APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-006/007 API、REL-003/004 lifecycle 和 REL-002 BLE transport contract 均通过。
+- `git diff --check` → 待提交前执行。
+- Hardware validation: pending；本轮不执行真实 BluetoothGatt、API/厂商、后台/锁屏或真机循环。
+
+### 风险与决策变化
+
+- 统一释放和静态契约降低 stale GATT/pending descriptor 泄漏风险，但不能证明 Android framework/OEM 在真实 callback 排序、蓝牙关闭或进程终止时的行为；REL-002 真机脚本及 REL-006 API/厂商运行矩阵仍开放。
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；用户修改的 `00_AGENT_MIGRATION_BRIEF.md` 与 `.idea/` 未纳入提交。
+
+### 下一轮
+
+继续 M5 本地发布硬化或准备可执行的 instrumentation lifecycle report；有 emulator/device 后执行 REL-002 真机循环、API/厂商和 FGS/进程重建门禁，不以静态 contract 替代运行时证据。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

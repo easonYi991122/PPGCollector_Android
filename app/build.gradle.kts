@@ -74,8 +74,14 @@ val captureServiceSource = layout.projectDirectory.file(
 val captureViewModelSource = layout.projectDirectory.file(
     "src/main/java/com/example/ppgcollector_android/CaptureServiceViewModel.kt",
 )
+val releaseBleTransportSource = layout.projectDirectory.file(
+    "src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt",
+)
 val releaseLifecycleContractReport = layout.buildDirectory.file(
     "reports/release-lifecycle-contract.txt",
+)
+val releaseBleTransportContractReport = layout.buildDirectory.file(
+    "reports/release-ble-transport-contract.txt",
 )
 
 /**
@@ -270,6 +276,50 @@ tasks.register("verifyReleaseLifecycleContract") {
 }
 
 /**
+ * Release REL-002 report: ensure every Android GATT ownership exit releases
+ * the map, callback bookkeeping, pending CCCD write and platform GATT object.
+ */
+tasks.register("verifyReleaseBleTransportContract") {
+    dependsOn("compileReleaseKotlin")
+    inputs.file(releaseBleTransportSource)
+    outputs.file(releaseBleTransportContractReport)
+
+    doLast {
+        val source = releaseBleTransportSource.asFile.readText()
+        val requiredFragments = listOf(
+            "private fun releaseGatt(deviceId: String, gatt: BluetoothGatt, disconnect: Boolean)",
+            "if (gattsById[deviceId] !== gatt) {",
+            "val ownsSlot = gattsById[deviceId] === gatt",
+            "if (ownsSlot) {",
+            "connectedIds.remove(deviceId)",
+            "pendingDescriptors.remove(gatt)",
+            "if (disconnect) runCatching { gatt.disconnect() }",
+            "runCatching { gatt.close() }",
+            "releaseGatt(deviceId, gatt, disconnect = false)",
+            "releaseGatt(it.device.address, it, disconnect = true)",
+        )
+        val missing = requiredFragments.filterNot(source::contains)
+        check(missing.isEmpty()) {
+            "REL-002 Android BLE transport contract missing fragments: ${missing.joinToString()}"
+        }
+        val report = buildString {
+            appendLine("REL-002 Android BLE transport lifecycle contract")
+            appendLine("gatt_release=map+connected_ids+pending_descriptor+BluetoothGatt.close")
+            appendLine("replacement_release=before_connecting_new_device")
+            appendLine("security_exception_release=disconnect_failure_path")
+            appendLine("status=passed")
+        }
+        releaseBleTransportContractReport.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(report)
+        }
+        logger.lifecycle(
+            "REL-002 Android BLE transport contract passed: ${releaseBleTransportContractReport.get().asFile}",
+        )
+    }
+}
+
+/**
  * Release-only REL-005 audit: production code must not emit raw PPG, device
  * identity, filesystem paths, or stack traces through ad-hoc logging, and the
  * compressed APK must not carry test/session fixtures.
@@ -278,6 +328,7 @@ tasks.register("verifyReleasePrivacy") {
     dependsOn("assembleRelease")
     dependsOn("verifyReleaseApiContract")
     dependsOn("verifyReleaseLifecycleContract")
+    dependsOn("verifyReleaseBleTransportContract")
     notCompatibleWithConfigurationCache("uses a streaming APK/source audit action")
     inputs.dir(releasePrivacySourceDir)
     inputs.file(releasePrivacyApk)

@@ -84,7 +84,12 @@ class AndroidBleTransport(
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             val deviceId = gatt.device.address
             post {
-                if (gattsById[deviceId] !== gatt) return@post
+                if (gattsById[deviceId] !== gatt) {
+                    // A replacement GATT may have won the slot before this
+                    // callback arrived; still close the stale platform object.
+                    releaseGatt(deviceId, gatt, disconnect = false)
+                    return@post
+                }
                 if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED &&
                     status == BluetoothGatt.GATT_SUCCESS
                 ) {
@@ -109,7 +114,7 @@ class AndroidBleTransport(
                             ),
                         )
                     }
-                    gatt.close()
+                    releaseGatt(deviceId, gatt, disconnect = false)
                 }
             }
         }
@@ -246,10 +251,8 @@ class AndroidBleTransport(
                     return@post
                 }
                 gattsById.values.filter { it.device.address != deviceId }.forEach {
-                    it.disconnect()
-                    it.close()
+                    releaseGatt(it.device.address, it, disconnect = true)
                 }
-                gattsById.keys.filter { it != deviceId }.forEach { gattsById.remove(it) }
                 val gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
                 if (gatt == null) {
                     emit(BleTransportEvent.FailedToConnect(deviceId, "无法创建 GATT"))
@@ -274,6 +277,7 @@ class AndroidBleTransport(
             try {
                 gatt.disconnect()
             } catch (_: SecurityException) {
+                releaseGatt(deviceId, gatt, disconnect = false)
                 emit(BleTransportEvent.Disconnected(deviceId, "未获得蓝牙连接权限"))
             }
         }
@@ -357,10 +361,22 @@ class AndroidBleTransport(
         post {
             stopScanning()
             pendingDescriptors.clear()
-            gattsById.values.forEach { it.disconnect(); it.close() }
-            gattsById.clear()
-            connectedIds.clear()
+            gattsById.values.toList().forEach {
+                releaseGatt(it.device.address, it, disconnect = true)
+            }
         }
+    }
+
+    /** Releases all per-GATT state exactly once before a new owner can use the slot. */
+    private fun releaseGatt(deviceId: String, gatt: BluetoothGatt, disconnect: Boolean) {
+        val ownsSlot = gattsById[deviceId] === gatt
+        if (ownsSlot) {
+            gattsById.remove(deviceId)
+            connectedIds.remove(deviceId)
+        }
+        pendingDescriptors.remove(gatt)
+        if (disconnect) runCatching { gatt.disconnect() }
+        runCatching { gatt.close() }
     }
 
     private fun post(block: () -> Unit) {
