@@ -2125,6 +2125,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续本地 M5 release/API contract 与 M4 acceptance seam；在 emulator/device 可用时运行 Activity recreation、TalkBack/dynamic font、SAF/FileProvider 和 FGS bind/rebind 门禁。
 
+## 2026-08-02 · M1 · Randomized CUP stream fragmentation evidence
+
+### 本轮目标
+
+完成 Phase 1 protocol 方案中明确的 property-style 验收补口：同一多帧字节流在固定种子随机 notification 分片、24 帧粘连和每帧之间噪声下，必须产生相同 frame sequence，且 discarded/pending 诊断有界且可审计。
+
+### 需求/参考/Android 目标
+
+- Requirement: `PROTO-002`、`PROTO-004`；Phase 1 §4.1/§4.4 的随机拆包、噪声 resync 和 pending buffer 门禁。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` PROTO-002/PROTO-004、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §4.1、`docs/05_SOURCE_REFERENCE_INDEX.md` `CUPBatchStreamDecoder.swift`/protocol tests。
+- Tests/golden: `golden_seq42.hex`、existing fixed fragment/noise/bounded-pending tests；新增 `CupBatchProtocolTest.seededRandomFragmentsAndInterFrameNoisePreserveTheWholeStream`。
+- Android target: `app/src/test/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocolTest.kt` against production `CupBatchStreamDecoder`。
+- Non-goals: changing the draft 408-byte profile, real firmware capture, raw/CSV/session files, sequence semantics, Android BLE transport or emulator/device validation。
+
+### 实现事实
+
+- The test builds 24 encoded frames with deterministic inter-frame noise, feeds the complete stream through a seeded variable chunk-size generator, and asserts exact sequence order, 24 decoded frames, discarded-noise accounting and zero pending bytes.
+- Existing all-fixed-fragment coverage remains, so the new case exercises boundaries not enumerated by the fixed-size loop without changing the decoder or golden wire format.
+- This strengthens draft protocol evidence only; real CUP frame shape and sample-count ambiguity remain `draft` under `D-001`.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.protocol.CupBatchProtocolTest :app:compileDebugKotlin --no-daemon --console=plain` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon --console=plain` → `BUILD SUCCESSFUL`；JVM suite 通过，release lint 0 errors，R8/resource shrinking、release APK 和 instrumentation APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon --console=plain` → `BUILD SUCCESSFUL`；REL-005 privacy、REL-002 transport、REL-003/004 lifecycle 和 REL-006/007 merged-manifest/API contracts 均保持通过。
+- `git diff --check` → passed。
+- Hardware validation: pending；本轮不运行真实 CUP、BLE notification、emulator 或真机测试。
+
+### 风险与决策变化
+
+- Randomized JVM chunking reduces decoder regression risk but cannot authenticate the draft wire profile, actual MTU/notification behavior or firmware sample ordering; `D-001` remains open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变 schema/profile/algorithm version。
+
+### 下一轮
+
+继续本地 M5 release/API contract 与 M4 acceptance seam；在真实 CUP 抓包可用时对同一随机分片 harness 进行逐样本 wire/sequence 对照，不把 synthetic stream 结果当作生产协议认证。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

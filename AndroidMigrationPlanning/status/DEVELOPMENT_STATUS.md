@@ -13,6 +13,8 @@
 
 本轮增量：M4 Sessions refresh/inspection 的文件读取结果现在保留 coroutine cancellation，不会把被新操作取消的旧 job 写成错误状态；新增 cancellation boundary JVM 回归测试。
 
+本轮增量：M1 CUP stream decoder 新增固定种子随机 notification 分片、24 帧粘连和帧间噪声 resync 测试，验证输出序列、frame count、discard 计数和 pending=0。
+
 本轮增量：已明确 live metrics 仅作为 raw 写入时快照，异步分析不得回填已写 CSV 行；离线分析结果应另行版本化且不修改源 CSV。
 
 本轮增量：新增 release `REL-003/REL-004` lifecycle contract report，静态检查 `START_NOT_STICKY`、terminal finalization observation、onDestroy cleanup 顺序及 immutable stop action；该报告不替代 emulator/真机生命周期验证。
@@ -37,7 +39,7 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 |---|---|---|---|---|
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
-| `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler、数据完整性边界 JVM tests | protocol/raw/CSV/metadata/inspection-replay/preprocessing/peak/HR/SQI/ratio/live-core slices 已实现；Android async runner/lifecycle 未接入 | M2 BLE permissions/GATT/fake transport |
+| `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler、数据完整性边界 JVM tests | protocol/raw/CSV/metadata/inspection-replay/preprocessing/peak/HR/SQI/ratio/live-core slices、固定种子随机分片/中间噪声 resync 已实现；Android async runner/lifecycle 未接入 | M2 BLE permissions/GATT/fake transport |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | profile、权限策略、分步 permission callback merge、phase/deadline/freshness、fake transport、fake GATT state machine、Android scanner/GATT adapter、permission seam、app-scope coordinator、Activity Result/Compose StateFlow 已实现并经 JVM/build 验证；真实 UI/真机门禁未开始 | async analysis/lifecycle / M3 writer integration |
 | `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam、session catalog/checkpoint、safe-prefix recovery、export seam、async live-analysis seam | writer/session/controller/manifest/service/repository/recovery/export/analysis 已实现并经 JVM/build 验证；系统后台/重建行为、用户正式页面仍未验收 | formal capture/sessions UI、lifecycle binding、metrics CSV policy |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、recording/analysis StateFlow、capture name/gate/start-stop、recording waveform/metrics、coordinator preview continuity、Sessions catalog/detail inspection、SAF export/recovery action feedback、确定性 picker cancel、可取消 refresh/inspection、bounded raw replay summary/waveform、inspection cancel、pure zoom/pan viewport、可滚动页面、waveform semantics 和 instrumentation test seam 已实现；instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | run instrumentation when emulator/device is available、M4 acceptance audit |

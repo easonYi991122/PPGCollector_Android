@@ -96,7 +96,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | Migration 版本 | 对应规划阶段 | 目标交付 | 当前状态 |
 |---|---|---|---|
 | `M0` | Phase 0 | 契约冻结、工程基础、ADR、测试/CI 基线 | `M0.1/M0.2` 文档、基线 ADR 和 JVM/build 门禁已建立；证据决策仍开放 |
-| `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
+| `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core、固定种子随机分片/中间噪声 resync evidence 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、分步 permission callback merge、permission/Compose seam 已实现；真机运行门禁未过 |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、bounded waveform/metrics、Sessions/replay、scroll/accessibility、确定性 SAF cancel、可取消 inspection/refresh 和 instrumentation seam 已实现；runtime/SAF provider/可访问性仍待验收 |

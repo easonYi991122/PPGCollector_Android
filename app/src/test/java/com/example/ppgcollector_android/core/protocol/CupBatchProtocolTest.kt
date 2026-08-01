@@ -59,6 +59,33 @@ class CupBatchProtocolTest {
     }
 
     @Test
+    fun seededRandomFragmentsAndInterFrameNoisePreserveTheWholeStream() {
+        val pieces = ArrayList<ByteArray>()
+        pieces += byteArrayOf(0x10, 0x20, 0x30)
+        repeat(24) { index ->
+            pieces += makeReferenceFrame(index.toUByte())
+            pieces += byteArrayOf(0x11, 0x22, 0x33, 0x44)
+        }
+        val stream = pieces.fold(ByteArray(0)) { accumulated, piece -> accumulated + piece }
+        val decoder = CupBatchStreamDecoder()
+        val decoded = ArrayList<CupBatchFrame>()
+        var offset = 0
+        var randomState = 0x13579BDF
+        while (offset < stream.size) {
+            randomState = randomState * 1_664_525 + 1_013_904_223
+            val chunkSize = 1 + ((randomState ushr 1) % 73)
+            val end = minOf(offset + chunkSize, stream.size)
+            decoded += decoder.feed(stream.copyOfRange(offset, end))
+            offset = end
+        }
+
+        assertEquals((0 until 24).map { it.toUByte() }, decoded.map { it.sequence })
+        assertEquals(24, decoder.stats.frames)
+        assertTrue(decoder.stats.bytesDiscarded >= 3 + 24 * 4)
+        assertEquals(0, decoder.pendingByteCount)
+    }
+
+    @Test
     fun noiseBadTailAndBadHeadersResynchronize() {
         val broken = makeReferenceFrame(3u).also { it[it.lastIndex] = 0x00 }
         val stream = byteArrayOf(0x01, 0x02, 0xAB.toByte()) +
