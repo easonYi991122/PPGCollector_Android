@@ -1,3 +1,4 @@
+import javax.xml.parsers.DocumentBuilderFactory
 import java.util.zip.ZipFile
 
 plugins {
@@ -5,16 +6,20 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val migrationMinSdk = 26
+val migrationCompileSdk = 37
+val migrationTargetSdk = 37
+
 android {
     namespace = "com.example.ppgcollector_android"
     compileSdk {
-        version = release(37)
+        version = release(migrationCompileSdk)
     }
 
     defaultConfig {
         applicationId = "com.example.ppgcollector_android"
-        minSdk = 26
-        targetSdk = 37
+        minSdk = migrationMinSdk
+        targetSdk = migrationTargetSdk
         versionCode = 1
         versionName = "1.0"
 
@@ -59,6 +64,123 @@ dependencies {
 
 val releasePrivacySourceDir = layout.projectDirectory.dir("src/main")
 val releasePrivacyApk = layout.buildDirectory.file("outputs/apk/release/app-release-unsigned.apk")
+val releaseMergedManifest = layout.buildDirectory.file(
+    "intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml",
+)
+val releaseApiContractReport = layout.buildDirectory.file("reports/release-api-contract.txt")
+
+/**
+ * Release REL-006/REL-007 report: validate the merged manifest and the declared
+ * API contract together, so dependency manifest changes cannot silently remove
+ * the connected-device foreground-service permissions or alter the target API.
+ */
+tasks.register("verifyReleaseApiContract") {
+    dependsOn("processReleaseManifest")
+    inputs.property("migrationMinSdk", migrationMinSdk)
+    inputs.property("migrationCompileSdk", migrationCompileSdk)
+    inputs.property("migrationTargetSdk", migrationTargetSdk)
+    inputs.file(releaseMergedManifest)
+    outputs.file(releaseApiContractReport)
+
+    doLast {
+        val manifestFile = releaseMergedManifest.get().asFile
+        check(manifestFile.isFile) {
+            "REL-006/REL-007 merged manifest is missing: ${manifestFile.path}"
+        }
+
+        val document = DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+        }.newDocumentBuilder().parse(manifestFile)
+        val androidNamespace = "http://schemas.android.com/apk/res/android"
+        fun androidAttribute(node: org.w3c.dom.Node, name: String): String =
+            node.attributes.getNamedItemNS(androidNamespace, name)?.nodeValue.orEmpty()
+        fun nodes(tagName: String): List<org.w3c.dom.Node> {
+            val nodeList = document.getElementsByTagName(tagName)
+            return (0 until nodeList.length).map { nodeList.item(it) }
+        }
+
+        val manifest = document.documentElement
+        val sdk = document.getElementsByTagName("uses-sdk").item(0)
+        check(sdk != null) { "REL-006 merged manifest has no uses-sdk" }
+        val mergedMinSdk = androidAttribute(sdk, "minSdkVersion")
+        val mergedTargetSdk = androidAttribute(sdk, "targetSdkVersion")
+        check(mergedMinSdk == migrationMinSdk.toString()) {
+            "REL-006 minSdk mismatch: merged=$mergedMinSdk expected=$migrationMinSdk"
+        }
+        check(mergedTargetSdk == migrationTargetSdk.toString()) {
+            "REL-006 targetSdk mismatch: merged=$mergedTargetSdk expected=$migrationTargetSdk"
+        }
+
+        val permissions = nodes("uses-permission")
+            .asSequence()
+            .map { androidAttribute(it, "name") }
+            .toSet()
+        val requiredPermissions = setOf(
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+            "android.permission.POST_NOTIFICATIONS",
+        )
+        check(permissions.containsAll(requiredPermissions)) {
+            "REL-007 required permission missing: ${requiredPermissions - permissions}"
+        }
+
+        val locationPermission = nodes("uses-permission")
+            .asSequence()
+            .firstOrNull {
+                androidAttribute(it, "name") == "android.permission.ACCESS_FINE_LOCATION"
+            }
+        check(locationPermission != null) {
+            "REL-006 legacy BLE location permission is missing"
+        }
+        check(androidAttribute(locationPermission, "maxSdkVersion") == "30") {
+            "REL-006 legacy location maxSdkVersion must remain 30"
+        }
+
+        val scanPermission = nodes("uses-permission")
+            .asSequence()
+            .firstOrNull {
+                androidAttribute(it, "name") == "android.permission.BLUETOOTH_SCAN"
+            }
+        check(androidAttribute(scanPermission!!, "usesPermissionFlags") == "neverForLocation") {
+            "REL-006 BLUETOOTH_SCAN must retain neverForLocation"
+        }
+
+        val services = nodes("service")
+        val captureService = services.asSequence().firstOrNull {
+            androidAttribute(it, "name").endsWith(".CaptureForegroundService")
+        }
+        check(captureService != null) { "REL-007 capture foreground service is missing" }
+        check(androidAttribute(captureService, "exported") == "false") {
+            "REL-007 capture foreground service must remain private"
+        }
+        check(androidAttribute(captureService, "foregroundServiceType") == "connectedDevice") {
+            "REL-007 capture foreground service type must be connectedDevice"
+        }
+
+        val report = buildString {
+            appendLine("REL-006/REL-007 release API contract")
+            appendLine("declared_min_sdk=$migrationMinSdk")
+            appendLine("declared_compile_sdk=$migrationCompileSdk")
+            appendLine("declared_target_sdk=$migrationTargetSdk")
+            appendLine("merged_min_sdk=$mergedMinSdk")
+            appendLine("merged_target_sdk=$mergedTargetSdk")
+            appendLine("merged_package=${manifest.getAttribute("package")}")
+            appendLine("legacy_location_max_sdk=30")
+            appendLine("bluetooth_scan_flags=neverForLocation")
+            appendLine("capture_service_type=connectedDevice")
+            appendLine("capture_service_exported=false")
+            appendLine("required_permissions=${requiredPermissions.sorted().joinToString(",")}")
+            appendLine("status=passed")
+        }
+        releaseApiContractReport.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(report)
+        }
+        logger.lifecycle("REL-006/REL-007 release API contract passed: ${releaseApiContractReport.get().asFile}")
+    }
+}
 
 /**
  * Release-only REL-005 audit: production code must not emit raw PPG, device
@@ -67,6 +189,7 @@ val releasePrivacyApk = layout.buildDirectory.file("outputs/apk/release/app-rele
  */
 tasks.register("verifyReleasePrivacy") {
     dependsOn("assembleRelease")
+    dependsOn("verifyReleaseApiContract")
     notCompatibleWithConfigurationCache("uses a streaming APK/source audit action")
     inputs.dir(releasePrivacySourceDir)
     inputs.file(releasePrivacyApk)

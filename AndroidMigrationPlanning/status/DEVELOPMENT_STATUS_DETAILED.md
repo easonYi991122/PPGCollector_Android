@@ -1683,6 +1683,43 @@
 
 Add the static merged-manifest/API target report requested by the M5 release checklist, then run available instrumentation and API/vendor lifecycle gates when an emulator/device is available.
 
+## 2026-08-02 · M5 · REL-006/REL-007 merged manifest API contract report
+
+### 本轮目标
+
+把发布构建的 API/权限/前台服务契约从源码和设备运行时检查扩展为 merged-manifest 静态门禁，生成可审计报告，防止依赖 manifest merge 后静默改变 target/min API、BLE 权限或 connectedDevice FGS 配置。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-006`、`REL-007`；Phase 5 §8.1/§8.3；风险 `R-003`，决策 `D-002`/`D-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-006/REL-007、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §9、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §8.1/§8.3、`docs/05_SOURCE_REFERENCE_INDEX.md` Android manifest/service seam。
+- Android target: `app/build.gradle.kts` `verifyReleaseApiContract` and `release-api-contract.txt` report.
+- Non-goals: emulator/device permission dialogs, OEM behavior, real BLE, signing, package identity, and changing raw/CSV/session/algorithm contracts.
+
+### 实现事实
+
+- Centralized release API constants (`minSdk=26`, `compileSdk=37`, `targetSdk=37`) and report both declared values and the parsed release merged manifest values.
+- Added `verifyReleaseApiContract`, which validates merged `uses-sdk`, legacy location `maxSdkVersion=30`, `BLUETOOTH_SCAN` `neverForLocation`, required BLE/FGS/notification permissions, and private `connectedDevice` `CaptureForegroundService`.
+- The task writes `app/build/reports/release-api-contract.txt` and is now a dependency of `verifyReleasePrivacy`, making the existing release privacy audit also enforce the API/manifest contract.
+- The report is build output only; no generated artifact or user-owned `.idea/` content is committed.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleaseApiContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`; report status passed.
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`; 95 JVM tests, release lint 0 errors, release R8/resource shrinking and androidTest APK compilation passed.
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`; REL-005 and merged API contract both passed.
+- `git diff --check` → passed。
+- Hardware validation: pending; this round does not run API emulator, runtime permission, OEM, instrumentation, or real-device tests.
+
+### 风险与决策变化
+
+- Static merged-manifest evidence now covers the release configuration boundary, but cannot prove API 34/36 system enforcement, background-start behavior, notification drawer visibility, or vendor lifecycle survival; `REL-006`/`REL-007` runtime gates remain open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005` and real CUP evidence remain open.
+
+### 下一轮
+
+When an emulator/device is available, run the API 26/30/31/33/34/35/36/37 permission and FGS matrix; locally continue the remaining M5 release checks without claiming runtime coverage from this static report.
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
