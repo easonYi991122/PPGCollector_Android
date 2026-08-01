@@ -37,6 +37,7 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
+import com.example.ppgcollector_android.data.session.CupRawReplayReport
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 
 class MainActivity : ComponentActivity() {
@@ -85,6 +86,7 @@ class MainActivity : ComponentActivity() {
                         onRefreshSessions = sessionsViewModel::refresh,
                         onSelectSession = sessionsViewModel::select,
                         onClearSessionSelection = sessionsViewModel::clearSelection,
+                        onCancelSessionInspection = sessionsViewModel::cancelInspection,
                         onRequestExport = ::requestSessionExport,
                         onRecoverSession = sessionsViewModel::recoverSelected,
                         onCancelSessionAction = sessionsViewModel::cancelAction,
@@ -138,6 +140,7 @@ private fun BleHome(
     onRefreshSessions: () -> Unit,
     onSelectSession: (SessionListItemUi) -> Unit,
     onClearSessionSelection: () -> Unit,
+    onCancelSessionInspection: () -> Unit,
     onRequestExport: (SessionListItemUi) -> Unit,
     onRecoverSession: () -> Unit,
     onCancelSessionAction: () -> Unit,
@@ -247,6 +250,7 @@ private fun BleHome(
             onRefresh = onRefreshSessions,
             onSelect = onSelectSession,
             onClearSelection = onClearSessionSelection,
+            onCancelInspection = onCancelSessionInspection,
             onRequestExport = onRequestExport,
             onRecover = onRecoverSession,
             onCancelAction = onCancelSessionAction,
@@ -261,6 +265,7 @@ private fun SessionsPanel(
     onRefresh: () -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
     onClearSelection: () -> Unit,
+    onCancelInspection: () -> Unit,
     onRequestExport: (SessionListItemUi) -> Unit,
     onRecover: () -> Unit,
     onCancelAction: () -> Unit,
@@ -319,7 +324,10 @@ private fun SessionsPanel(
         Text("会话详情：${detail.item.baseName}", style = MaterialTheme.typography.titleSmall)
         detail.expectedFiles.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         when {
-            detail.isInspecting -> Text("正在执行只读完整性检查…")
+            detail.isInspecting -> {
+                Text("正在执行只读完整性检查…")
+                Button(onClick = onCancelInspection) { Text("取消检查") }
+            }
             detail.error != null -> Text("检查失败：${detail.error}", color = MaterialTheme.colorScheme.error)
             detail.inspection != null -> {
                 val inspection = detail.inspection
@@ -337,6 +345,9 @@ private fun SessionsPanel(
                         "${finding.severity}: ${finding.message}",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+                inspection.replay?.let { replay ->
+                    ReplaySummary(replay)
                 }
             }
         }
@@ -369,6 +380,40 @@ private fun SessionsPanel(
         }
         Button(onClick = onClearSelection) { Text("关闭详情") }
         Text("导出只写入用户选择的目标；恢复只创建新目录，不修改源会话。", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun ReplaySummary(replay: CupRawReplayReport) {
+    Spacer(Modifier.height(8.dp))
+    Text("raw 重放摘要", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "记录 ${replay.rawRecordCount} · 解码帧 ${replay.decodedFrames} · 接受帧 ${replay.acceptedFrames}",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text(
+        "接受样本 ${replay.acceptedSamples} · raw ${replay.rawPayloadBytes} bytes · 峰值记录缓冲 ${replay.peakRawRecordBufferBytes} bytes",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text(
+        "缺失 ${replay.missingFrames} · 重复 ${replay.duplicateFrames} · 乱序 ${replay.outOfOrderFrames} · 丢弃字节 ${replay.discardedBytes}",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    replay.hostDurationSeconds?.let {
+        Text("host 帧跨度：${"%.3f".format(java.util.Locale.ROOT, it)} s", style = MaterialTheme.typography.bodySmall)
+    }
+    if (replay.recentSamples.isNotEmpty()) {
+        Text("最近样本波形（${replay.recentSamples.size}/800）", style = MaterialTheme.typography.bodySmall)
+        WaveformPanel(
+            label = "REPLAY RED",
+            color = Color(0xFFD32F2F),
+            values = replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray(),
+        )
+        WaveformPanel(
+            label = "REPLAY IR",
+            color = Color(0xFF1565C0),
+            values = replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray(),
+        )
     }
 }
 

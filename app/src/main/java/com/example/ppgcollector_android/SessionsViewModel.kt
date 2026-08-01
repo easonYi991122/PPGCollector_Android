@@ -124,6 +124,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
     fun select(item: SessionListItemUi) {
         inspectionJob?.cancel()
         _state.value = _state.value.copy(
+            action = SessionActionUi(),
             selected = SessionDetailUi(
                 item = item,
                 expectedFiles = expectedFileNames(item.directory),
@@ -148,6 +149,18 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                 )
             }
         }
+    }
+
+    fun cancelInspection() {
+        val selected = _state.value.selected ?: return
+        if (!selected.isInspecting) return
+        inspectionJob?.cancel()
+        _state.value = _state.value.copy(
+            selected = selected.copy(
+                isInspecting = false,
+                error = "检查已取消",
+            ),
+        )
     }
 
     fun clearSelection() {

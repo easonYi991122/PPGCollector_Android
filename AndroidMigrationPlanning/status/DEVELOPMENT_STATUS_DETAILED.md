@@ -1172,6 +1172,41 @@
 
 继续 M4 Detail：接入 bounded raw replay 的最近样本/统计摘要与明确的 replay loading/cancel 状态，随后补 Activity recreation/system lifecycle 和 SAF/FileProvider instrumentation 门禁。
 
+## 2026-08-02 · M4 · Bounded raw replay detail surface
+
+### 本轮目标
+
+将 production `CupRawReplayEngine` 的有限统计和最近样本接入 Sessions 详情：展示流式读取的记录/帧/样本/序号异常/host duration 与峰值 raw buffer，并以双轨 Canvas 显示最多 800 个最近样本；检查过程可取消，避免 UI 阻塞或无界保存 raw。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-009、CAP-009、Phase 4 §7.1 Detail/§7.2；raw replay 必须流式、bounded、与 inspection 共用 production pipeline。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§10、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.1/§7.1、Swift `SavedSessionDetailView.swift`、`CUPRawReplayEngine.swift`、`CUPReplayWaveformValuesTests.swift`。
+- Android targets: `CupRawReplay.kt` existing bounded report、`SessionsViewModel.kt` inspection cancellation、`MainActivity.kt` `ReplaySummary`/Canvas surface。
+- Non-goals: editable zoom/pan viewport, offline analysis workbench/history, raw/preprocessed full-file display, provider/hardware/system instrumentation。
+
+### 实现事实
+
+- Detail reuses `CaptureSessionInspection.replay`; it does not reread or copy raw bytes in Compose. The report exposes raw record count, decoded/accepted frames, accepted samples, sequence anomalies, discarded/pending bytes, host duration and peak record buffer.
+- `CupRawReplayEngine` already caps retained samples at 800; the UI maps only that bounded list to independent RED/IR min/max bucket Canvas traces and labels the retention bound.
+- `SessionsViewModel.cancelInspection` cancels the inspection job and reports a user-visible cancelled state; selecting another session resets stale action results and starts a fresh inspection job.
+- Errors remain summarized in UI state without stack traces; source files remain read-only and replay remains diagnostic/raw-derived, not a new metric or CSV source.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon` → `BUILD SUCCESSFUL`；debug compile includes replay summary, bounded waveform and cancel callback wiring。
+- Full JVM suite passed (83 tests), including existing `CaptureSessionInspectionTest`/`CupRawReplay` coverage for streaming tail classification, accepted sequence behavior and bounded recent samples。
+- `git diff --check`：pass。Large-session timing/heap, screenshot/accessibility, Activity recreation, background/lock-screen, SAF/FileProvider provider and hardware validation remain pending；本轮不进行真机测试。
+
+### 风险与决策变化
+
+- Replay waveform is a recent-sample diagnostic view, not a claim of full-session visualization; zoom/pan and preprocessed replay require a separately versioned workbench slice.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+推进 M4 系统生命周期/可访问性与 SAF/FileProvider instrumentation seam，随后再评估 replay viewport 的纯数学 zoom/pan 组件；不提前进入 V1.1 分析工作台。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
