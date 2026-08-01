@@ -18,8 +18,10 @@ import com.example.ppgcollector_android.data.session.CaptureDeviceContext
 import com.example.ppgcollector_android.data.session.CaptureRecordingController
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
+import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,6 +47,7 @@ class CaptureForegroundService : Service() {
     private var rawSinkInstalled = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var stopJob: Job? = null
+    private val _runtimeFailure = MutableStateFlow<CaptureStartFailure?>(null)
 
     private val localBinder = LocalBinder()
 
@@ -61,6 +64,8 @@ class CaptureForegroundService : Service() {
             this@CaptureForegroundService.waveformSnapshot()
         fun waveformFlow(): StateFlow<LiveWaveformSnapshot> =
             this@CaptureForegroundService.waveformFlow()
+        fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?> =
+            this@CaptureForegroundService.runtimeFailureFlow()
         fun stop(): Unit = this@CaptureForegroundService.stopRecording(CaptureStopReason.USER)
     }
 
@@ -112,6 +117,8 @@ class CaptureForegroundService : Service() {
 
     fun waveformFlow(): StateFlow<LiveWaveformSnapshot> = recordingController.waveformSnapshot
 
+    fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?> = _runtimeFailure
+
     fun stopRecording(reason: CaptureStopReason) {
         recordingController.stop(reason)
         val state = recordingController.snapshot.state
@@ -134,6 +141,7 @@ class CaptureForegroundService : Service() {
     }
 
     private fun startRecording(intent: Intent) {
+        _runtimeFailure.value = null
         if (recordingController.snapshot.state ==
             com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING
         ) return
@@ -153,6 +161,7 @@ class CaptureForegroundService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (error: SecurityException) {
+            _runtimeFailure.value = CaptureStartFailure.ForegroundServiceStartRejected
             stopSelfResult(0)
             return
         }

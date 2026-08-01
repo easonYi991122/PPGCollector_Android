@@ -56,6 +56,19 @@ class CaptureGateUiStateTest {
     }
 
     @Test
+    fun serviceRuntimeStartFailureRemainsAnActionableCaptureGateFailure() {
+        val observation = CaptureServiceObservation(
+            runtimeFailure = CaptureStartFailure.ForegroundServiceStartRejected,
+        )
+
+        assertEquals(
+            "系统拒绝启动录制服务，请从前台页面重试并检查服务权限",
+            CaptureGateUiState("session_001", observation.runtimeFailure).message,
+        )
+        assertFalse(CaptureGateUiState("session_001", observation.runtimeFailure).canStart)
+    }
+
+    @Test
     fun notificationPermissionIsOnlyAStartGateFromApi33() {
         assertFalse(CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(32))
         assertTrue(CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(33))

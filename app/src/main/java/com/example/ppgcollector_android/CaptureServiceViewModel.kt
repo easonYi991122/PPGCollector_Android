@@ -40,6 +40,7 @@ data class CaptureServiceObservation(
     val recording: CaptureRecordingSnapshot = CaptureRecordingSnapshot(),
     val analysis: CaptureAnalysisSnapshot = CaptureAnalysisSnapshot(),
     val waveform: LiveWaveformSnapshot = LiveWaveformSnapshot(),
+    val runtimeFailure: CaptureStartFailure? = null,
     val error: String? = null,
 )
 
@@ -83,6 +84,7 @@ class CaptureServiceClient(
     private var recordingJob: Job? = null
     private var analysisJob: Job? = null
     private var waveformJob: Job? = null
+    private var runtimeFailureJob: Job? = null
 
     val state: StateFlow<CaptureServiceObservation> = _state.asStateFlow()
 
@@ -105,15 +107,18 @@ class CaptureServiceClient(
                     recording = localBinder.snapshot(),
                     analysis = localBinder.analysisSnapshot(),
                     waveform = localBinder.waveformSnapshot(),
+                    runtimeFailure = localBinder.runtimeFailureFlow().value,
                     error = null,
                 )
             }
             recordingJob?.cancel()
             analysisJob?.cancel()
             waveformJob?.cancel()
+            runtimeFailureJob?.cancel()
             recordingJob = observeRecording(localBinder)
             analysisJob = observeAnalysis(localBinder)
             waveformJob = observeWaveform(localBinder)
+            runtimeFailureJob = observeRuntimeFailure(localBinder)
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -200,6 +205,13 @@ class CaptureServiceClient(
             }
         }
 
+    private fun observeRuntimeFailure(localBinder: CaptureForegroundService.LocalBinder): Job =
+        scope.launch {
+            localBinder.runtimeFailureFlow().collect { failure ->
+                _state.update { it.copy(runtimeFailure = failure) }
+            }
+        }
+
     private fun clearObservers() {
         recordingJob?.cancel()
         analysisJob?.cancel()
@@ -207,6 +219,8 @@ class CaptureServiceClient(
         analysisJob = null
         waveformJob?.cancel()
         waveformJob = null
+        runtimeFailureJob?.cancel()
+        runtimeFailureJob = null
     }
 
     private fun fail(message: String) {
@@ -246,7 +260,9 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             ) { name, ble, service, notificationFailure ->
                 CaptureGateUiState(
                     sessionName = name,
-                    failure = evaluateGate(name, ble, service.recording) ?: notificationFailure,
+                    failure = evaluateGate(name, ble, service.recording)
+                        ?: notificationFailure
+                        ?: service.runtimeFailure,
                 )
             }.collect { _captureGate.value = it }
         }

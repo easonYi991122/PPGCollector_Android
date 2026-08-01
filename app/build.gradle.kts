@@ -71,6 +71,9 @@ val releaseApiContractReport = layout.buildDirectory.file("reports/release-api-c
 val captureServiceSource = layout.projectDirectory.file(
     "src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt",
 )
+val captureViewModelSource = layout.projectDirectory.file(
+    "src/main/java/com/example/ppgcollector_android/CaptureServiceViewModel.kt",
+)
 val releaseLifecycleContractReport = layout.buildDirectory.file(
     "reports/release-lifecycle-contract.txt",
 )
@@ -196,10 +199,12 @@ tasks.register("verifyReleaseApiContract") {
 tasks.register("verifyReleaseLifecycleContract") {
     dependsOn("compileReleaseKotlin")
     inputs.file(captureServiceSource)
+    inputs.file(captureViewModelSource)
     outputs.file(releaseLifecycleContractReport)
 
     doLast {
         val source = captureServiceSource.asFile.readText()
+        val viewModelSource = captureViewModelSource.asFile.readText()
         val requiredFragments = listOf(
             "return START_NOT_STICKY",
             "stopJob?.cancel()",
@@ -229,6 +234,19 @@ tasks.register("verifyReleaseLifecycleContract") {
         check(cleanupOrder.zipWithNext().all { (first, second) -> first >= 0 && first < second }) {
             "REL-003/REL-004 onDestroy cleanup order changed: $cleanupOrder"
         }
+        val requiredFailureFlowFragments = listOf(
+            "_runtimeFailure.value = CaptureStartFailure.ForegroundServiceStartRejected",
+            "fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?>",
+            "runtimeFailure = localBinder.runtimeFailureFlow().value",
+            "runtimeFailureJob = observeRuntimeFailure(localBinder)",
+            "?: service.runtimeFailure",
+        )
+        val missingFailureFlow = requiredFailureFlowFragments.filterNot { fragment ->
+            source.contains(fragment) || viewModelSource.contains(fragment)
+        }
+        check(missingFailureFlow.isEmpty()) {
+            "REL-007 runtime failure flow contract missing fragments: ${missingFailureFlow.joinToString()}"
+        }
 
         val report = buildString {
             appendLine("REL-003/REL-004 release lifecycle contract")
@@ -238,6 +256,7 @@ tasks.register("verifyReleaseLifecycleContract") {
             appendLine("stop_observer=capture_recording_snapshot_flow")
             appendLine("notification_action=immutable_stop_and_save")
             appendLine("on_destroy=cancel_observer_then_close_controller_then_remove_foreground")
+            appendLine("runtime_failure=service_stateflow_to_capture_gate")
             appendLine("status=passed")
         }
         releaseLifecycleContractReport.get().asFile.apply {

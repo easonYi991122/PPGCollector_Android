@@ -1792,6 +1792,43 @@ Continue M5 local hardening and, when an emulator/device is available, run the p
 
 Continue local release hardening; when an emulator/device is available, execute process recreation, FGS stop, API matrix, and vendor lifecycle tests without closing the runtime gate from static evidence alone.
 
+## 2026-08-02 · M5 · REL-007 foreground service runtime failure propagation
+
+### 本轮目标
+
+补齐服务内部 `startForeground()` 权限/类型拒绝的用户可见失败路径：即使异常发生在 `startForegroundService()` 返回之后，Activity 仍能通过 binder/StateFlow 收到 `ForegroundServiceStartRejected`，不把失败伪装成设备断连或静默停止。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-007`、`REL-003`；Phase 3 §6.2、Phase 5 §8.1/§8.3；架构 §9；风险 `R-003`。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` REL-007、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §9、Android FGS start/type requirements；`CaptureForegroundService.kt`/`CaptureServiceViewModel.kt`。
+- Android targets: service runtime failure StateFlow, local binder, `CaptureServiceClient`, `CaptureGateUiState`。
+- Non-goals: changing raw/CSV/session ownership, retrying a rejected FGS automatically, runtime permission dialogs, process/OEM behavior, or real-device validation.
+
+### 实现事实
+
+- `CaptureForegroundService` retains `ForegroundServiceStartRejected` in a `MutableStateFlow`; the failure is cleared only when a new start action begins, so a late Activity bind still observes it.
+- `LocalBinder.runtimeFailureFlow()` exposes the state; `CaptureServiceClient` observes it and includes the value in `CaptureServiceObservation`; `CaptureViewModel` folds it into the existing actionable capture gate.
+- Added JVM coverage proving the propagated failure remains non-startable and displays the existing permission/front-page retry guidance. Raw/session/CSV behavior is unchanged.
+- Release lifecycle static contract now also checks the service/ViewModel failure-flow fragments and reports `runtime_failure=service_stateflow_to_capture_gate`.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.CaptureGateUiStateTest :app:verifyReleaseLifecycleContract --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebugAndroidTest --no-daemon` → `BUILD SUCCESSFUL`；96 JVM tests、0 failures，release lint 0 errors，R8/resource shrinking and androidTest APK compilation passed。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；REL-005、REL-006/007 API、REL-003/004 lifecycle and runtime failure-flow reports passed。
+- `git diff --check` → passed。
+- Hardware validation: pending; this round does not run FGS runtime, permission dialog, process, emulator, OEM, or real-device tests.
+
+### 风险与决策变化
+
+- The retained flow closes the Activity-observation race but cannot prove system callback timing or vendor behavior; REL-007 runtime matrix remains open.
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open。
+
+### 下一轮
+
+Run the integrated release gate, then use an emulator/device when available to verify API 34/36 FGS rejection, permission revocation, notification visibility, process recreation, and vendor lifecycle behavior.
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
