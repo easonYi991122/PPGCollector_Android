@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.viewModels
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
@@ -61,10 +62,12 @@ class MainActivity : ComponentActivity() {
                 val capture by captureViewModel.serviceState.collectAsStateWithLifecycle()
                 val sessionName by captureViewModel.sessionName.collectAsStateWithLifecycle()
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
+                val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     BleHome(
                         snapshot = snapshot,
                         capture = capture,
+                        preview = preview,
                         sessionName = sessionName,
                         captureGate = captureGate,
                         onSessionNameChange = captureViewModel::setSessionName,
@@ -104,6 +107,7 @@ class MainActivity : ComponentActivity() {
 private fun BleHome(
     snapshot: BleCoordinatorSnapshot,
     capture: CaptureServiceObservation,
+    preview: BlePreviewSnapshot,
     sessionName: String,
     captureGate: CaptureGateUiState,
     onSessionNameChange: (String) -> Unit,
@@ -129,10 +133,22 @@ private fun BleHome(
         Text("录制服务：${capture.binding}")
         Text("录制：${capture.recording.state}")
         Text("分析：${capture.analysis.state}")
-        if (capture.waveform.red.isNotEmpty()) {
+        val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
+            capture.recording.state == CaptureRecordingState.STOPPING
+        val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
+            capture.waveform
+        } else {
+            preview.waveform
+        }
+        val metrics = if (recordingActive) {
+            capture.analysis.lastResult?.snapshot
+        } else {
+            preview.lastAnalysis?.snapshot
+        }
+        if (waveform.red.isNotEmpty()) {
             LiveWaveformAndMetrics(
-                waveform = capture.waveform,
-                metrics = capture.analysis.lastResult?.snapshot,
+                waveform = waveform,
+                metrics = metrics,
             )
         }
         if (capture.recording.state != CaptureRecordingState.RECORDING &&

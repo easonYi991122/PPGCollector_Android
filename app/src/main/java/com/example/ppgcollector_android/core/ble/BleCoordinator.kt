@@ -95,6 +95,7 @@ class BleCoordinator(
     profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
 ) {
     private val permissions = BlePermissionResultSeam(apiLevel)
+    private val previewRuntime = BlePreviewRuntime()
     private val owner = CupBleGattStateMachine(
         transport = transport,
         profile = profile,
@@ -108,14 +109,21 @@ class BleCoordinator(
     private val _snapshotFlow = MutableStateFlow(snapshot)
     val snapshotFlow: StateFlow<BleCoordinatorSnapshot> = _snapshotFlow.asStateFlow()
 
-    var onRawChunk: ((BleRawNotificationChunk) -> Unit)? = null
+    val previewFlow: StateFlow<BlePreviewSnapshot> = previewRuntime.snapshot
+
+    private var recordingRawSink: ((BleRawNotificationChunk) -> Unit)? = null
+    private var previewGeneration = snapshot.connectionGeneration
+    private var previewWasActive = false
+
+    var onRawChunk: ((BleRawNotificationChunk) -> Unit)?
+        get() = recordingRawSink
         set(value) {
-            field = value
-            owner.onRawChunk = value
+            recordingRawSink = value
         }
 
     init {
         // The coordinator is the sole event sink installed above the pure owner.
+        owner.onRawChunk = ::dispatchRawChunk
         transport.eventHandler = { event ->
             owner.handle(event, uptimeSeconds(), hostMonotonicNanos())
             publish()
@@ -184,8 +192,23 @@ class BleCoordinator(
     }
 
     private fun publish() {
-        snapshot = snapshotNow()
+        val next = snapshotNow()
+        val previewActive = next.phase is BleConnectionPhase.Subscribed ||
+            next.phase is BleConnectionPhase.Receiving
+        if (next.connectionGeneration != previewGeneration ||
+            (!previewActive && previewWasActive)
+        ) {
+            previewRuntime.reset(next.connectionGeneration)
+            previewGeneration = next.connectionGeneration
+        }
+        previewWasActive = previewActive
+        snapshot = next
         _snapshotFlow.value = snapshot
+    }
+
+    private fun dispatchRawChunk(chunk: BleRawNotificationChunk) {
+        previewRuntime.offer(chunk)
+        recordingRawSink?.invoke(chunk)
     }
 
     private fun snapshotNow() = BleCoordinatorSnapshot(

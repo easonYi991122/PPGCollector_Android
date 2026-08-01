@@ -1064,6 +1064,43 @@
 
 实现 coordinator-owned non-recording preview pipeline：BLE callback 继续只复制/投递，app-scope bounded decoder/sequence/waveform StateFlow 在停止录制后仍可供 Activity 观察；随后推进 Sessions catalog/detail。
 
+## 2026-08-02 · M4 · Coordinator-owned non-recording preview continuity
+
+### 本轮目标
+
+让 app-scope `BleCoordinator` 在未录制时也维护 bounded decoder/sequence/waveform/metrics preview；录制 FGS 只作为独立 recording sink，停止录制不关闭 BLE preview 数据链路。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-002/UI-003/UI-007、SIG-002、REL-003/004；停止 writer 不破坏仍 fresh 的实时预览，BLE callback 不做 I/O/DFT/Compose 更新，generation/gap 重新 warm up。
+- Primary source: `docs/01_ANDROID_MIGRATION_MASTER_PLAN.md` §5、`docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-002/UI-003/UI-007、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §1/§5/§7.2/§8/§10、`docs/05_SOURCE_REFERENCE_INDEX.md` BLECentralService/live scheduler/CUPWaveformSnapshot references。
+- Android targets: `core/ble/BlePreviewRuntime.kt`、`BleCoordinator.kt`、`CaptureServiceViewModel.kt`、`MainActivity.kt` 与 preview JVM test。
+- Non-goals: raw/session file writes in preview, second GATT owner, formal Sessions/detail/replay UI, CSV metric backfill, real BLE/device/system validation。
+
+### 实现事实
+
+- `BleCoordinator` keeps the single GATT owner callback and fans each already-copied notification into a bounded preview queue plus the optional recording sink; recording sink removal no longer removes preview processing.
+- `BlePreviewRuntime` runs on a daemon worker with bounded queue 256, production decoder and sequence tracker, independent 800/5 Hz waveform scheduler and existing 800/100 live metric scheduler; it exposes generation, waveform, last analysis, processed count, drop diagnostic and error through `previewFlow`.
+- Coordinator resets preview decoder/rings/results on connection generation changes and transition out of receiving; stale generation chunks cannot populate the new preview.
+- Activity chooses recording-owned snapshot while recording/stopping and coordinator preview after stop, so the UI can continue showing fresh data without coupling preview to the writer finalizer.
+- JVM test feeds 16 raw frames to the preview worker, verifies 800-sample waveform and first analysis window end 799, then resets generation and verifies old results are cleared.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`，82 个 JVM tests 全部通过。
+- `git diff --check`：通过。
+- 真 BLE callback latency、Activity stop/rebind、后台/锁屏、preview queue pressure、Canvas screenshot/perf、真机和长稳：pending instrumentation/system/hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- Preview queue overflow is diagnosed and does not use `DROP_OLDEST`; recording raw sink remains independent, but non-recording preview may show a gap and must surface the drop diagnostic rather than fabricate continuity.
+- Preview metrics remain provisional/diagnostic according to existing `MetricResult`; SpO2/BP remain unavailable and no values are written to CSV.
+- `D-001`、`D-002`、`D-003`、`D-005`、`D-006`、`D-007`、`D-008` 仍开放；用户修改 brief 和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+进入 M4 Sessions slice：从 filesystem catalog 构建 lifecycle-aware Sessions list/detail 状态，展示 complete/incomplete、stop reason、版本和 integrity findings；保持 preview/recording ownership 不变。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

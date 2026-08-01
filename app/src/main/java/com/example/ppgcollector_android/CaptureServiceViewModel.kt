@@ -8,6 +8,7 @@ import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
 import com.example.ppgcollector_android.data.session.CaptureStartContext
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
@@ -226,6 +227,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
     val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
+    val previewState: StateFlow<BlePreviewSnapshot> = collectorApplication.bleCoordinator.previewFlow
 
     init {
         viewModelScope.launch {
