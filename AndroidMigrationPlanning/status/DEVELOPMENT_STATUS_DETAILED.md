@@ -439,6 +439,42 @@
 
 进入 M1 ratio-of-ratios / MetricResult validity slice，继续保持 provisional 与 invalid 语义；live scheduler 另行切片。
 
+## 2026-08-02 · M1 · Ratio-of-ratios diagnostic parity JVM slice
+
+### 本轮目标
+
+按 SIG-006 移植 RED/IR ratio-of-ratios 诊断计算：长度与最小样本门槛、边缘 trim、RMS AC/mean DC 与明确 unavailable reason；不把 R 转换为 SpO2/BP，不接 UI/CSV/live scheduler。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-006；路线 §4.3、§4.4；架构文档 §7.1；风险 R-004/R-008。
+- Primary source: `reference_sources/ios_current/PPGCollector/SignalProcessing/RatioOfRatiosEstimator.swift`、`reference_sources/ios_current/PPGCollectorTests/SignalProcessing/RatioOfRatiosEstimatorTests.swift`。
+- Tests/golden: Swift synthetic cases；JVM tests cover valid sinusoidal ratio, 10% trim, input mismatch, short input, non-finite input, insufficient DC/AC and non-finite result.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt`、`app/src/test/java/com/example/ppgcollector_android/core/signal/ratio/RatioOfRatiosEstimatorTest.kt`。
+- Non-goals: SpO2/BP calibration/model, MetricResult/source time, live scheduler、BLE/FGS/UI、真机测试。
+
+### 实现事实
+
+- 固化 `ppg-ios-rr-0.1`；要求四路输入等长且至少 400 samples，按 `min(count / 10, count / 2 - 1)` 去除两端，再对 bandpassed RMS 与 raw mean DC 计算百分比和 R。
+- 保留 `inputLengthMismatch`、`insufficientSamples`、`nonFiniteInput`、`insufficientDC`、`insufficientAC`、`nonFiniteResult`；结果显式 `isProvisional=true`，仅为 diagnostic ratio，禁止冒充 SpO2/BP。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`48 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 该 estimator 只证明 Swift synthetic semantics；没有校准曲线、参考血氧或真实设备证据，不能生成 SpO2/BP。
+- D-001、D-005、D-006、D-007、D-008 仍开放；MetricResult validity/source time、live scheduler、BLE/FGS/UI 仍未实现。
+- `00_AGENT_MIGRATION_BRIEF.md` 的既有用户修改和 `.idea/` 均未纳入本轮提交。
+
+### 下一轮
+
+进入 M1 `MetricResult` validity/source-time contract 与 800/100 live window scheduler slice；保持 generation/gap/旧结果丢弃语义。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
