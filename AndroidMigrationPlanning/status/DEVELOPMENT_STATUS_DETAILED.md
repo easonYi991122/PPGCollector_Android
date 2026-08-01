@@ -845,6 +845,42 @@
 
 实现新目录 recovery service：流式复制完整 raw/CSV safe prefix、计算源 hash、写 recovery metadata provenance，并用 no-overwrite/staging/atomic move JVM tests 验收；之后接 SAF export。
 
+## 2026-08-02 · M3 · Streaming safe-prefix recovery and provenance
+
+### 本轮目标
+
+按 CAP-008/CAP-009 和 Phase 3 §6.3，实现不修改源会话的 recovery copy：扫描 raw/CSV safe prefix，流式复制到 staging，记录源文件 SHA-256 与 provenance，写新 session metadata，再 no-overwrite/atomic move 到新目录。
+
+### 需求/参考/Android 目标
+
+- Requirements: CAP-008、CAP-009、REL-004；raw 截尾只保留最后完整 record，CSV 截尾不复制，源目录只读，恢复副本 session ID 新建且 CSV 保留源 session ID。
+- Primary source: `docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §6.5、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.3/§6.4、`CaptureSessionRecoveryService.swift`、`CaptureSessionInspectionService.swift`。
+- Android targets: `data/session/CaptureSessionRecoveryService.kt` 与 `CaptureSessionRecoveryServiceTest.kt`。
+- Non-goals: SAF/FileProvider export、用户恢复页面、SIGKILL/真实文件系统故障注入、真机验证。
+
+### 实现事实
+
+- `CaptureSessionRecoveryService.assess` 检查源 raw/CSV 存在性、CUPRAW safe scan、CSV header/tail、metadata count；缺文件/header 错误不会伪造可恢复副本。
+- `recover` 通过合法名称和 destination no-overwrite gate，创建 `.recovery-<id>` staging；raw/CSV 使用 64 KiB bounded streaming copy，仅写 `validByteCount`，并分别 force。
+- metadata 创建新 session ID、`complete=false`、`crashRecovery`、`copy_safe_prefix_v1`，保留源 CSV session ID，并记录 source directory/session、全源 raw/CSV/metadata SHA-256、总字节/复制字节和 provenance。
+- staging 完成后使用 atomic move（不支持时 fallback move）；任意失败清理 staging，源 raw/CSV/metadata 内容保持不变。测试覆盖尾部、hash、source immutability、destination collision、invalid header。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机/进程崩溃/满盘/SAF provider/锁屏/FGS：pending hardware/system validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- recovery metadata 明确保持 incomplete；恢复副本需要后续 inspection/用户确认后才可考虑 verified，不能把 safe-prefix copy 宣称为数据完整修复。
+- 当前仍未实现 SAF 流式导出、FileProvider 临时 staging、导出取消/进度和正式 Sessions UI；SpO2/BP 与 ratio-of-ratios 语义不变。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+实现 SAF/export boundary：流式复制会话三文件、进度/取消、临时分享 staging 与不暴露内部路径；随后接正式 Sessions/Recovery Compose 页面。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
