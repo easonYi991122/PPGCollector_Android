@@ -326,6 +326,44 @@
 
 进入 M1 HR/peak 最小 fixture slice：先移植 peak detector/HR 输入输出契约，保持双极性、频带和 confidence/reason 语义；SQI 与 ratio 另行切片。
 
+## 2026-08-02 · M1 · SciPy-compatible peak detector slice
+
+### 本轮目标
+
+按 SIG-004 和 Phase 1 `:core:signal` 路线独立移植 HR/SQI 共用的 peak primitive；保持 SciPy 1.17.1 的 plateau midpoint、distance pruning、prominence base 和 half-prominence width 语义，不进入 HR estimator、DFT 或 SQI。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-004；路线 §4.3、§4.4；架构文档 §7.1；风险 R-004。
+- Primary source: `reference_sources/ios_current/PPGCollector/SignalProcessing/Shared/SciPyPeakDetector.swift`；HR 使用契约来自 `HeartRateEstimator.swift`。
+- Tests/golden: Swift detector implementation and HR/SQI peak trace semantics；JVM synthetic vectors cover plateau, higher/tie distance pruning, prominence bases, half-prominence linear width, height/prominence/width filters and short input.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/SciPyPeakDetector.kt`、`app/src/test/java/com/example/ppgcollector_android/core/signal/SciPyPeakDetectorTest.kt`。
+- Non-goals: HR spectral estimator, DFT/Hann, RR/confidence, SQI/template match, ratio-of-ratios, live scheduler, BLE/FGS/UI、真机测试。
+
+### 实现事实
+
+- 新增 `SciPyPeak`/`SciPyPeakDetectionResult`，保留 index、height、prominence、base indices 和可选 width trace 字段。
+- 候选峰严格按局部极大值与 plateau midpoint 生成；distance priority 按高度排序、等高按候选顺序处理，保留输入索引顺序输出。
+- prominence 从峰向两侧扫描至更高值/边界；width 使用 half-prominence height 的线性交点，并在 width filter 未启用时保持 Swift 的 null trace 字段。
+- 该 primitive 不做非协议性平滑、插值或“补峰”；后续 HR 只应复用此实现，不能另写近似 detector。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`38 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- 本轮仅证明 peak primitive 的合成边界语义；未证明 HR fixture 最终 BPM、spectral trace、RR 或 confidence parity。
+- SIG-001 profile、协议 profile 和 version 命名未改变；D-001、D-005、D-006、D-007 仍开放。
+- `00_AGENT_MIGRATION_BRIEF.md` 在恢复时已有用户修改，本轮未纳入提交；`.idea/` 也未跟踪。
+
+### 下一轮
+
+进入 M1 HR estimator fixture slice：先复用 preprocessing/peak primitive 实现 robust scale、linear detrend、Hann/DFT spectral trace、双极性 RR 和 confidence/reason，再用 `heart_rate_vectors.json` 验证。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
