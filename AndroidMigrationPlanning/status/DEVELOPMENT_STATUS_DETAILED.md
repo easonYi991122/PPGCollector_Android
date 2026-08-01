@@ -550,6 +550,43 @@
 
 继续 M2 Android BLE owner/fake GATT event state machine：扫描 CUP 过滤、connect→service→characteristic→CCCD→receiving、deadline callback 与 generation guard；保持 control passive 和 raw-first 边界。
 
+## 2026-08-02 · M2 · Fake GATT event/state owner parity slice
+
+### 本轮目标
+
+按 BLE-002/003/004/005/006 将 transport event seam 组织成单一有序 GATT owner：扫描 CUP 过滤、connect→service→characteristic→CCCD→subscribed/receiving 阶段、目标 notify 能力检查、deadline polling、旧 generation/错误阶段 callback 丢弃与原始 notification copy；保持 control characteristic passive。
+
+### 需求/参考/Android 目标
+
+- Requirements: BLE-002、BLE-003、BLE-004、BLE-005、BLE-006；Phase 2 路线与架构 §1/§2/§3；风险 R-002/R-003/R-004。
+- Primary sources: `reference_sources/ios_current/PPGCollector/Infrastructure/Bluetooth/BLECentralService.swift`、`BLETransport.swift`、对应 `BLECentralServiceIntegrationTests.swift`。
+- Tests/golden: JVM fake GATT tests cover happy path, non-CUP filtering, target service/notify/CCCD gates, failure disconnect, copied raw bytes, old callback generation, wrong-phase callback, timeout poll and no control write.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/BleGattStateMachine.kt`、`app/src/test/java/com/example/ppgcollector_android/core/ble/CupBleGattStateMachineTest.kt`。
+- Non-goals: concrete `BluetoothLeScanner`/`BluetoothGatt`, runtime permission UI, coroutine/FGS lifecycle, real GATT/MTU behavior, raw file writer、真机测试。
+
+### 实现事实
+
+- `CupBleGattStateMachine` 在 transport seam 上安装单一 ordered event handler，维护 availability、discovered CUP devices、connection phase、active generation、deadline/freshness 与 diagnostics。
+- 只有目标 service、notify/indicate characteristic 和成功 notification callback 才能进入 `Subscribed`；value callback 只接受 notify UUID 且复制 `ByteArray` 后交给 `BleRawNotificationChunk` sink；没有任何 START/STOP/control write。
+- callback generation 与 expected phase/device 双重校验；旧 callback 只计入 diagnostics，错误服务/特征/CCCD 会进入 failed 并 disconnect；`markValidFrame` 将 transport notification 与 decoder 合法帧 freshness 分开。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`61 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/扫描/CCCD/MTU/权限弹窗/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- `BleRawNotificationChunk` 已定义 generation/host monotonic/bytes 边界，但具体 Android callback 仍未接入 `elapsedRealtimeNanos`；不得把 fake event 视为真实接收证据。
+- NUS UUID、passive stream 与 408-byte protocol 仍为 bring-up draft；D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放。
+- `00_AGENT_MIGRATION_BRIEF.md` 的既有用户修改和 `.idea/` 均未纳入本轮提交。
+
+### 下一轮
+
+继续 M2 Android `BluetoothLeScanner`/`BluetoothGatt` adapter 与 runtime permission result seam；将系统 callback 转为上述 event、使用 `elapsedRealtimeNanos`、保持单一 owner、CCCD success gate 和 raw-first 投递。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
