@@ -624,6 +624,43 @@
 
 接入 runtime permission result seam 与 app-scope BLE coordinator；保持 Activity 不直接持有 GATT、单一 owner、freshness/generation 和 raw-first 事件边界。
 
+## 2026-08-02 · M2 · Permission result seam and app-scope BLE coordinator
+
+### 本轮目标
+
+按 BLE-001 与架构所有权规则提供可测试的 runtime permission result seam 和 app-scope coordinator：Activity 只请求/回传权限结果，coordinator 统一门控扫描/连接并暴露 immutable snapshot；不在 Activity 构造时弹权限、不让 UI 直接持有 GATT。
+
+### 需求/参考/Android 目标
+
+- Requirements: BLE-001、UI-001/UI-006 的 BLE gate 部分；架构 §1/§2/§8；风险 R-002/R-003。
+- Primary sources: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` BLE-001、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` ownership rules，以及当前 Swift `BLECentralService` gate/state 语义。
+- Tests/golden: JVM tests cover API 33 missing/denied/recovered permissions, API 30 location branch, scan/connect permission gate, powered-on gate, snapshot publication and raw callback seam.
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt`、`app/src/test/java/com/example/ppgcollector_android/core/ble/BleCoordinatorTest.kt`。
+- Non-goals: Activity Result launcher/Compose UI/FGS lifecycle、真实 permission dialog、真机 BLE 验证、raw file writer。
+
+### 实现事实
+
+- `BlePermissionResultSeam` 将 required/granted/missing 与 `UNKNOWN/REQUEST_REQUIRED/GRANTED/DENIED` 明确分开；`permissionsToRequest()` 只返回缺失 Manifest names，`applyResult()` 支持撤销后恢复。
+- `BleCoordinator` app-scope 单一持有 `BleTransport` 与 `CupBleGattStateMachine`，对外仅暴露 permission request/result、scan/connect/disconnect、freshness/deadline actions 和 immutable `BleCoordinatorSnapshot`。
+- scan/connect 在权限未授权或蓝牙未 powered-on 时不触发 transport；transport event 由 coordinator 转交 owner 并刷新 snapshot，raw chunk 通过注入 sink 继续保持 raw-first 边界。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`64 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机权限弹窗/扫描/GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- permission seam 尚未绑定 Activity Result API；当前测试证明的是结果归约和业务 gate，不是系统弹窗行为。
+- Coordinator 尚未接入 ViewModel/StateFlow/FGS；真实设备 profile、GATT callback 和 Android lifecycle 仍需平台门禁。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+接入 Activity Result permission launcher 与 Compose/StateFlow 只读观察，随后把 coordinator 绑定到 app scope；不创建第二 GATT owner，不把 UI 写操作混入 callback。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

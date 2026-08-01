@@ -3,11 +3,11 @@
 更新时间：2026-08-02
 当前迁移版本：`M2`
 当前规划阶段：Phase 2（BLE 真机垂直切片）
-状态：M1 protocol/raw/session/signal core 与 M2 BLE profile、权限策略、freshness、deadline、phase/fake transport、GATT event/state owner、Android scanner/GATT adapter slices 已实现并通过 JVM/build 验证；真实设备 profile 仍为 draft。
+状态：M1 protocol/raw/session/signal core 与 M2 BLE profile、权限策略、freshness、deadline、phase/fake transport、GATT event/state owner、Android scanner/GATT adapter、permission result seam/app-scope coordinator slices 已实现并通过 JVM/build 验证；真实设备 profile 仍为 draft。
 
 ## 当前一句话
 
-Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec、bounded raw replay、CSV audit、metadata cross-check、固定 SOS/DC/gap-reset preprocessing、SciPy-compatible peak detector、HR estimator、provisional SQI、diagnostic ratio-of-ratios、MetricResult/source-time 和 800/100 live window scheduler，以及 M2 BLE profile/权限/freshness/deadline/fake transport/GATT event-state core 和 Android scanner/GATT adapter。下一步是运行时权限/UI wiring 与真实设备门禁；不关闭真实设备协议风险。
+Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPRAW1、CSV、snake_case session metadata codec、bounded raw replay、CSV audit、metadata cross-check、固定 SOS/DC/gap-reset preprocessing、SciPy-compatible peak detector、HR estimator、provisional SQI、diagnostic ratio-of-ratios、MetricResult/source-time 和 800/100 live window scheduler，以及 M2 BLE profile/权限/freshness/deadline/fake transport/GATT event-state core、Android scanner/GATT adapter、permission result seam 和 app-scope coordinator。下一步是 runtime Activity/Compose wiring 与真实设备门禁；不关闭真实设备协议风险。
 
 ## 与 MigrationPlanning 对照
 
@@ -16,7 +16,7 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
 | `M1` | Phase 1 | CUP protocol、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler、数据完整性边界 JVM tests | protocol/raw/CSV/metadata/inspection-replay/preprocessing/peak/HR/SQI/ratio/live-core slices 已实现；Android async runner/lifecycle 未接入 | M2 BLE permissions/GATT/fake transport |
-| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | profile、权限策略、phase/deadline/freshness、fake transport、fake GATT state machine、Android scanner/GATT adapter 已实现并经 JVM/build 验证；运行时 UI/真机未开始 | runtime permission/UI wiring / hardware gate |
+| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | profile、权限策略、phase/deadline/freshness、fake transport、fake GATT state machine、Android scanner/GATT adapter、permission seam、app-scope coordinator 已实现并经 JVM/build 验证；运行时 UI/真机未开始 | Activity/Compose wiring / hardware gate |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | 未开始 | 依赖 M1/M2 的 accepted stream |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | 未开始 | 依赖可观察的数据链路 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 未开始 | 需要真机与发布证据 |
@@ -32,12 +32,12 @@ Android 工程仍是 Kotlin/Compose 默认壳；已交付 M1 CUP protocol、CUPR
 
 ## 当前未完成能力
 
-运行时权限 UI/Activity wiring、Android async analysis runner/lifecycle、raw-first session writer、前台服务、恢复/导出、正式 Compose 页面与真机长稳均未交付；M2 profile/freshness/deadline/fake transport/GATT owner 与 Android adapter 已实现但尚未接入产品 UI/服务，真实设备行为仍待硬件验证，preprocessing/peak/HR/SQI/ratio/live runtime 仍为纯 Kotlin parity core，SQI 与 ratio 明确为 provisional/diagnostic，inspection/replay 当前只提供 JVM 纯文件内核。
+运行时权限 UI/Activity wiring、Android async analysis runner/lifecycle、raw-first session writer、前台服务、恢复/导出、正式 Compose 页面与真机长稳均未交付；M2 profile/freshness/deadline/fake transport/GATT owner、Android adapter 与 app-scope coordinator 已实现但尚未接入产品 UI/服务，真实设备行为仍待硬件验证，preprocessing/peak/HR/SQI/ratio/live runtime 仍为纯 Kotlin parity core，SQI 与 ratio 明确为 provisional/diagnostic，inspection/replay 当前只提供 JVM 纯文件内核。
 
 ## 验证与真机策略
 
 - 本轮 M2 使用 Android Studio JDK 25 完成 `./gradlew test` 和 `./gradlew assembleDebug`。
-- `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、固定 SOS/DC/gap reset、四个 preprocessing fixture case、plateau midpoint、distance tie、prominence/width peak semantics、6 个 HR fixture case 的 BPM/DFT/RR/confidence/reason trace、8 个 SQI fixture case 的 peak/cycle/template/Pearson/grade trace、ratio-of-ratios 的 trim/RMS/ACDC/invalid paths、MetricResult invalid/calibration separation、800/100 cadence/window bound、gap generation、rejected frame、stale request/source timestamp、M2 NUS profile/name filter、API 30/31/33 permission branches、waiting/fresh/stale freshness、stage/device stale deadline、timeout clamp、phase flags、fake transport command order、fake GATT connect/service/characteristic/CCCD/receiving path、raw byte/timestamp copy、wrong phase/generation rejection、missing service/notify failure、deadline polling、Android adapter compile/Manifest merge、Locale.ROOT、RFC 4180 转义、metadata round-trip 和 JSON audit 均有 JVM 测试。
+- `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、固定 SOS/DC/gap reset、四个 preprocessing fixture case、plateau midpoint、distance tie、prominence/width peak semantics、6 个 HR fixture case 的 BPM/DFT/RR/confidence/reason trace、8 个 SQI fixture case 的 peak/cycle/template/Pearson/grade trace、ratio-of-ratios 的 trim/RMS/ACDC/invalid paths、MetricResult invalid/calibration separation、800/100 cadence/window bound、gap generation、rejected frame、stale request/source timestamp、M2 NUS profile/name filter、API 30/31/33 permission branches、waiting/fresh/stale freshness、stage/device stale deadline、timeout clamp、phase flags、fake transport command order、fake GATT connect/service/characteristic/CCCD/receiving path、raw byte/timestamp copy、wrong phase/generation rejection、missing service/notify failure、deadline polling、Android adapter compile/Manifest merge、permission result deny/recover、coordinator permission/availability/scan/connect gates、coordinator snapshot/raw seam、Locale.ROOT、RFC 4180 转义、metadata round-trip 和 JSON audit 均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
 
 ## 当前开放阻塞
