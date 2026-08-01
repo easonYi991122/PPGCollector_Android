@@ -808,6 +808,43 @@
 
 补 service lifecycle fake/instrumented contract 与 Activity Result notification/start flow，再接 LiveMetricWindowScheduler 异步分析快照；随后实现 incomplete session discovery/recovery/export。
 
+## 2026-08-02 · M3 · Filesystem session catalog and atomic checkpoints
+
+### 本轮目标
+
+按 CAP-005/CAP-006/CAP-008/CAP-009 与 Phase 3 recovery 入口，补足文件系统权威 catalog：启动/刷新时识别 complete、incomplete、缺文件和 metadata 损坏会话；同时让 writer 的 raw/CSV/metadata checkpoint 更接近崩溃可审计语义。
+
+### 需求/参考/Android 目标
+
+- Requirements: UI-009、CAP-006、CAP-008、CAP-009、REL-004；目录扫描不依赖数据库索引，inspection 不修改源，incomplete 可发现。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md`、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §7/§8、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §6.1/§6.3/§6.4、`CaptureSessionRepository.swift`、`CaptureSessionInspectionService.swift`、`CaptureSessionRecoveryService.swift`。
+- Android targets: `data/session/CaptureSessionRepository.kt`、`CaptureSessionWriter.kt`、`PpgCollectorApplication.kt` 与 JVM tests。
+- Non-goals: copying safe prefixes into a new recovery directory、hash/provenance export、SAF/FileProvider UI、real process-death/system test。
+
+### 实现事实
+
+- `CaptureSessionRepository` 直接扫描 sessions root，读取 snake_case metadata、检查三个预期文件、累计文件大小/修改时间，并按最新修改时间排序；`incompleteSessions` 将 incomplete、metadata unreadable、缺文件统一暴露为 recovery candidates。
+- `PpgCollectorApplication.incompleteSessions()` 提供 app-level startup/recovery discovery seam；`CaptureSessionRepository.inspect` 复用现有只读 streaming raw replay/CSV/metadata cross-check。
+- writer 每次 raw append 后调用 `CupRawWriter.flush()`；CSV append 使用 `FileChannel.force(true)`；metadata 使用同目录 temp 文件、`force(true)` 和 `ATOMIC_MOVE`（不支持时 fallback replace），并清理 temp 文件。
+- JVM tests 覆盖 complete/incomplete/malformed catalog、candidate discovery、无临时文件、source hash 不变、已有 safe-prefix inspection。没有修改 reference snapshot。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug --no-daemon`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机崩溃/满盘/锁屏/FGS/进程恢复、API/厂商矩阵：pending hardware/system validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- atomic checkpoint 已实现，但尚未做真正 SIGKILL/文件系统故障注入；`complete=true` 仍不能替代 inspection，recovery 仍必须复制安全前缀并记录 provenance/hash。
+- repository 当前是同步纯文件 catalog，尚未接正式 Compose Sessions 页面或 service 启动时的用户可见 recovery prompt。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+实现新目录 recovery service：流式复制完整 raw/CSV safe prefix、计算源 hash、写 recovery metadata provenance，并用 no-overwrite/staging/atomic move JVM tests 验收；之后接 SAF export。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

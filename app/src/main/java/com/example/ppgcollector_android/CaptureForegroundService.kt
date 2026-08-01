@@ -44,7 +44,7 @@ class CaptureForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val sessionsRoot = filesDir.toPath().resolve(SESSIONS_DIRECTORY)
+        val sessionsRoot = (application as PpgCollectorApplication).sessionsRoot
         recordingController = CaptureRecordingController(
             sessionsRoot = sessionsRoot,
             capacityProvider = CaptureStorageCapacityProvider { root ->

@@ -8,6 +8,8 @@ import com.example.ppgcollector_android.core.signal.MetricResult
 import java.nio.file.FileStore
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.channels.FileChannel
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.StandardOpenOption
 import java.time.Instant
 
@@ -181,6 +183,7 @@ class CaptureSessionWriter(
 
         // This call intentionally precedes decoder/CSV work.
         rawWriter.append(hostMonotonicNanoseconds, data)
+        rawWriter.flush()
         snapshot = snapshot.copy(
             rawChunkCount = snapshot.rawChunkCount + 1,
             rawPayloadBytes = snapshot.rawPayloadBytes + data.size,
@@ -234,7 +237,14 @@ class CaptureSessionWriter(
             }
         }
         if (csv.isNotEmpty()) {
-            Files.writeString(csvPath, csv.toString(), Charsets.UTF_8, StandardOpenOption.APPEND)
+            FileChannel.open(csvPath, StandardOpenOption.WRITE, StandardOpenOption.APPEND).use { channel ->
+                val bytes = csv.toString().toByteArray(Charsets.UTF_8)
+                var offset = 0
+                while (offset < bytes.size) {
+                    offset += channel.write(java.nio.ByteBuffer.wrap(bytes, offset, bytes.size - offset))
+                }
+                channel.force(true)
+            }
         }
         writeMetadata(null, null, false, null)
         return snapshot
@@ -310,8 +320,38 @@ class CaptureSessionWriter(
             files = CaptureSessionFilesMetadata(rawPath.fileName.toString(), csvPath.fileName.toString()),
             recovery = null,
         )
-        Files.writeString(metadataPath, CaptureSessionMetadataCodec.encode(metadata), Charsets.UTF_8,
-            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
+        val tempPath = metadataPath.resolveSibling(".${metadataPath.fileName}.tmp")
+        val bytes = CaptureSessionMetadataCodec.encode(metadata).toByteArray(Charsets.UTF_8)
+        try {
+            FileChannel.open(
+                tempPath,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE,
+            ).use { channel ->
+                var offset = 0
+                while (offset < bytes.size) {
+                    offset += channel.write(java.nio.ByteBuffer.wrap(bytes, offset, bytes.size - offset))
+                }
+                channel.force(true)
+            }
+            try {
+                Files.move(
+                    tempPath,
+                    metadataPath,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(
+                    tempPath,
+                    metadataPath,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+        } finally {
+            Files.deleteIfExists(tempPath)
+        }
     }
 }
 
