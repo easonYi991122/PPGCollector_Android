@@ -698,6 +698,42 @@
 
 进入 M3 raw-first writer/session start gate：在 accepted raw chunk 前置写入、CSV/metadata validity 追踪和 single finalizer 之前，先保持 coordinator/FGS ownership seam。
 
+## 2026-08-02 · M3 · Raw-first session writer and start gate
+
+### 本轮目标
+
+按 Phase 3 录制可靠性切片，先交付不依赖 Android Service 的可验收 writer core：raw-first、session no-overwrite、incomplete metadata、容量/名称 gate，以及首个 stop reason 的幂等 finalizer。
+
+### 需求/参考/Android 目标
+
+- Requirements: M3 recording/raw-first/session integrity；start preflight、single finalizer、no-overwrite、20 MiB capacity gate。
+- Primary source: `reference_sources/ios_current/PPGCollector/Infrastructure/Storage/CaptureSessionWriter.swift`、`Domain/Models/CaptureModels.swift`、`Features/LiveCapture/CaptureSessionController.swift`。
+- Android targets: `data/session/CaptureSessionWriter.kt`、`CaptureStartGate.kt` 与 `CaptureSessionWriterTest.kt`。
+- Non-goals: BLE coordinator integration、async analysis、FGS、crash recovery/export、real-device test。
+
+### 实现事实
+
+- `CaptureSessionWriter` 创建 `<name>/<name>.cupraw|csv|session.json`，拒绝覆盖，开始前写 `complete=false` metadata；使用现有 CUPRAW1 writer 和 25 列 CSV formatter。
+- append 严格先写原始 BLE chunk，再生成 accepted frame/sample CSV；保留 gap/duplicate/out-of-order 诊断计数，空 chunk 与超 64 KiB 受控处理。
+- `finish` 首次调用确定 summary/stop reason，后续调用返回同一 summary；正常停止才标记 complete，异常 reason/error 保持 incomplete 语义。`discardIfEmptyBeforeRecording` 支持 preflight 失败的空目录清理。
+- `CaptureStartGate` 对 recording、合法名称、freshness、Subscribed/Receiving phase、已有目录和容量进行纯函数 gate；不把 SpO2/BP 或 provisional metrics 宣称为产品结果。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test --no-daemon`：通过，`BUILD SUCCESSFUL`；新增 writer round-trip/no-overwrite/start-gate/idempotent-finish JVM tests。
+- `git diff --check`：待提交前执行。
+- 真机协议/后台/FGS/锁屏/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- writer 目前为同步 JVM core；BLE raw sink、accepted decoder event、async queue/backpressure 和 FGS ownership 尚未接入，因此不能宣称已交付产品录制。
+- 当前 metric 默认走 unavailable/invalid CSV cells；SpO2/BP 仍不可用，ratio-of-ratios 仍是 diagnostic/provisional。
+- D-001、D-002、D-003、D-005、D-006、D-007、D-008 仍开放；`00_AGENT_MIGRATION_BRIEF.md` 用户修改和 `.idea/` 未纳入本轮提交。
+
+### 下一轮
+
+把 writer 接到 coordinator 的 accepted stream 与 async analysis/lifecycle seam，再实现 FGS ownership；随后补 crash recovery/export，而不是先扩展正式页面。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
