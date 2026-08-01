@@ -59,6 +59,42 @@
 
 以 `M0.2` 继续工程基础和 Phase 0 ADR/测试门禁，或在不冻结生产协议的前提下进入 `M1` 的纯 Kotlin CUP protocol golden slice。不得把真实设备未确认的 draft profile 改名为 production。
 
+## 2026-08-01 · M0.2 · Android 基础工程与测试门禁
+
+### 本轮目标
+
+在进入 M1 纯 Kotlin 协议实现前，交付 Phase 0 的最小工程基础切片：记录架构/版本/所有权决策，并建立可重复的 JVM 与 debug assemble 门禁。
+
+### 需求/参考/Android 目标
+
+- Requirement: Phase 0 §3.1/§3.2；REL-006、REL-007；架构文档 §1–§3。
+- Primary source: `AndroidMigrationPlanning/docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md`、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md`、`docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md`。
+- Tests/golden: 当前默认 JUnit/Compose test 基线；M1 再接入 `golden_seq42.bin`。
+- Android target: `.github/workflows/android.yml`、`AndroidMigrationPlanning/docs/adr/ADR-0001-android-foundation-and-test-gates.md`。
+- Non-goals: BLE/GATT、CUP decoder、raw/CSV/session、信号算法、FGS 实现、Compose 产品页面和真机测试。
+
+### 实现事实
+
+- 新增 ADR-0001，明确 Java/SDK 当前基线、core 与平台层边界、录制单一 owner、draft protocol 约束以及 M0.2 的不选择项。
+- 新增 GitHub Actions workflow，在 Ubuntu/Temurin 11 上执行 `./gradlew test` 和 `./gradlew assembleDebug`；instrumented/真机门禁保持独立。
+- 更新简版状态至 M0.2；未关闭 D-001～D-008。
+
+### 验证
+
+- `git diff --check`：通过（无空白错误）。
+- `./gradlew test`：未执行，环境报告 `Unable to locate a Java Runtime`。
+- `./gradlew assembleDebug`：未执行，同一 Java Runtime 环境阻塞。
+- 真机 GATT、后台/锁屏、API/厂商矩阵、长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- ADR-0001 只冻结当前工程实施边界，不关闭 D-001（真实协议）或 D-002～D-008（产品/平台/兼容性决策）。
+- `.idea/` 为本轮开始前已存在的用户未跟踪内容，未纳入修改或提交。
+
+### 下一轮
+
+进入 M1 `:core:protocol` 最小 golden slice，优先实现 draft CUP frame model、流式 decoder、sequence tracker 及碎片/粘包/噪声/序号边界测试。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
