@@ -364,6 +364,45 @@
 
 进入 M1 HR estimator fixture slice：先复用 preprocessing/peak primitive 实现 robust scale、linear detrend、Hann/DFT spectral trace、双极性 RR 和 confidence/reason，再用 `heart_rate_vectors.json` 验证。
 
+## 2026-08-02 · M1 · Heart-rate estimator parity JVM fixture slice
+
+### 本轮目标
+
+按 SIG-003 和 Phase 1 `:core:signal` 路线移植 HR estimator：latest 8 s window、edge trim、robust scale、linear detrend/Hann exact DFT、35–200 BPM cardiac band、双极性 peak candidates、spectral interval filtering、RR regularity 和 confidence gate；复用 SIG-004 peak primitive，不进入 SQI/ratio/UI。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-003；路线 §4.3、§4.4；架构文档 §7.1；风险 R-004/R-012。
+- Primary source: `reference_sources/ios_current/PPGCollector/SignalProcessing/HeartRate/HeartRateEstimator.swift`、`SciPyPeakDetector.swift` 与对应 Swift tests。
+- Tests/golden: `reference_sources/signal_fixtures/heart_rate/heart_rate_vectors.json`；校验 6 cases 的 final BPM/peak BPM/spectral BPM/SNR/polarity/indices/RR/reason，以及 work/spectral/candidate trace。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/HeartRateEstimator.kt`、`app/src/test/java/com/example/ppgcollector_android/core/signal/HeartRateEstimatorTest.kt`。
+- Non-goals: SQI/template match、ratio-of-ratios、live scheduler、MetricResult/source time integration、BLE/FGS/UI、真机测试。
+
+### 实现事实
+
+- 固化 `ppg-ios-hr-0.1` configuration 与 4–8 s window semantics；长输入只取最新 800 samples，并保留 global window offset/peak indices。
+- 实现与 Swift 一致的 population robust scale、linear detrend、periodic Hann、exact one-sided DFT density scaling、cardiac bin/tie selection、near-peak SNR/concentration。
+- 双极性候选均复用 `SciPyPeakDetector`；保留 in-range/spectral masks、MAD 清理、longest valid RR run、peak BPM、regularity/coverage/agreement score 和 low-confidence reason。
+- `acceptedBpm` 仅复现 live display 的 peak/spectral 一致性辅助 gate；未把 HR 结果扩展为 SpO2、BP 或临床结论。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`42 tests completed`，`BUILD SUCCESSFUL`；HR fixture test 4 tests 覆盖 6 cases。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- fixture 是 synthetic numerical parity；HR 仍是算法 parity/provisional core，不是生理有效性或真实设备验证。
+- 当前 test fixture 从仓库 reference path 读取；未来 CI 若改变目录布局，应迁移到受控 test resource 并保持内容/hash 审计。
+- D-001、D-005、D-006、D-007 仍开放；SQI、ratio、MetricResult validity/source time 仍未实现。
+- `00_AGENT_MIGRATION_BRIEF.md` 的既有用户修改和 `.idea/` 均未纳入本轮提交。
+
+### 下一轮
+
+进入 M1 SQI fixture slice：移植周期 peak/template/Pearson/grade 与 provisional validity，复用同一 peak detector；ratio-of-ratios 另行切片。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
