@@ -287,6 +287,45 @@
 
 进入 M1 signal fixtures：先移植 preprocessing/gap reset 的纯 Kotlin 最小切片，再接 HR/SQI；继续保持 draft protocol 和未校准 ratio 语义。
 
+## 2026-08-01 · M1 · Preprocessing parity JVM fixture slice
+
+### 本轮目标
+
+按 SIG-001 和 Phase 1 `:core:signal` 路线移植固定 `ios_baseline_0.1` 的因果预处理最小切片：DC、三段 SOS、IR polarity、窗口 z-score、non-finite/constant reason 与 gap reset；不进入 HR、peak、SQI 或 ratio。
+
+### 需求/参考/Android 目标
+
+- Requirement: SIG-001；路线 §4.3、§4.4；架构文档 §7.1；风险 R-004/R-012。
+- Primary source: `reference_sources/ios_current/PPGCollector/SignalProcessing/Preprocessing/PPGPreprocessor.swift` 与 `PPGPreprocessorTests.swift`。
+- Tests/golden: `reference_sources/signal_fixtures/preprocessing/preprocessing_vectors.json`；校验 4 个 synthetic cases、SOS 系数 `1e-15`、中间/输出数组 `1e-8`、chunking、gap suffix、invalid/constant reason。
+- Android target: `app/src/main/java/com/example/ppgcollector_android/core/signal/PpgPreprocessing.kt`、`app/src/test/java/com/example/ppgcollector_android/core/signal/PpgPreprocessingTest.kt`。
+- Non-goals: HR/peak/DFT、SQI/template match、ratio-of-ratios、live scheduler、BLE/FGS/UI、真机测试。
+
+### 实现事实
+
+- 固化 `ios_baseline_0.1` profile 与三段 SciPy SOS，`a0` 归一化并使用与 Swift 相同的 transposed direct-form II delay recurrence。
+- `PpgPreprocessor` 保持 DC 与 section delay 的 causal state；gap 在当前样本前 reset，non-finite 输入返回 typed reason 并 reset 后续状态。
+- `PpgWindowNormalizer` 明确 polarity transform、population standard deviation、epsilon constant-signal gate 和 empty/non-finite failure reasons；不把 normalized failure 当作有效指标。
+- JVM 测试直接读取只读 reference fixture，覆盖 `pulse_down_8s`、`mixed_frequency_6s`、`gap_reset_5s`、`constant_4s`，并验证 chunking 不改变 causal state。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test`：通过，`34 tests completed`，`BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：待提交前执行。
+- 真机 GATT/后台/厂商矩阵/长录制：pending hardware validation，按约定本轮延期。
+
+### 风险与决策变化
+
+- fixture 是 synthetic numerical parity，不是生理有效性或真实设备验证；profile 仍为 iOS baseline draft，未改 `preprocess_profile` 命名。
+- 当前 fixture 测试从仓库 reference path 读取，若未来构建环境改变目录布局，应迁移为受控 test resource，同时保持 fixture hash/内容审计。
+- D-001、D-005、D-006、D-007 仍开放；HR/SQI/R 仍未实现，不能把 preprocessing 输出宣称为 HR/SpO2/BP。
+- `.idea/` 为既有用户未跟踪内容，未纳入本轮提交。
+
+### 下一轮
+
+进入 M1 HR/peak 最小 fixture slice：先移植 peak detector/HR 输入输出契约，保持双极性、频带和 confidence/reason 语义；SQI 与 ratio 另行切片。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
