@@ -49,6 +49,21 @@ class ReplayWaveformViewport(
         clamp(totalSampleCount)
     }
 
+    fun showWindow(
+        startSampleIndex: Int,
+        requestedSampleCount: Int,
+        totalSampleCount: Int,
+    ) {
+        if (totalSampleCount <= 0) {
+            reset()
+            return
+        }
+        val count = requestedSampleCount.coerceIn(1, totalSampleCount)
+        zoomScale = clampZoom(totalSampleCount.toDouble() / count.toDouble())
+        visibleStart = startSampleIndex.coerceAtLeast(0).toDouble()
+        clamp(totalSampleCount)
+    }
+
     /** Pure reducer used by Compose pinch/drag input; positive pan follows the finger. */
     fun applyGesture(
         zoomChange: Double,
@@ -91,7 +106,8 @@ class ReplayWaveformViewport(
 
     companion object {
         const val minimumZoom = 1.0
-        const val maximumZoom = 80.0
+        /** Supports an 8 s native view even for the 1.5 M-sample analysis cap. */
+        const val maximumZoom = 4096.0
 
         private fun clampZoom(value: Double): Double = when {
             value.isNaN() -> minimumZoom

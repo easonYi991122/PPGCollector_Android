@@ -101,7 +101,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
-| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | raw replay 驱动的版本化离线分析、Python segmented-pulse/SciPy SOS 对等、平均周期/CI/频谱/峰、任务历史/取消、独立 Sessions/detail/replay/compare 页面已实现并通过本地门禁；`D-014` 仍采用短任务 app-scope 假设，runtime/真机 UI 门禁待执行 |
+| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 版本化 raw replay 分析及独立 Sessions/compare 已实现；Replay/工作台现使用完整 accepted signal，支持按连续段全程 zero-phase、8 s/全幅触控视窗、Python 风格窗口审计/动态频谱/周期/诊断和全屏横屏布局。实时因果平滑仅完成规划；`D-014`、runtime/真机 UI 门禁待执行 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |
 
 ## 6. 不可破坏的核心契约

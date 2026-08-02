@@ -55,6 +55,52 @@ class OfflinePpgAnalysisTest {
     }
 
     @Test
+    fun fullSignalFilterCoversEveryContinuityRunWithoutCrossingGap() {
+        val count = 1_200
+        val time = DoubleArray(count) { index ->
+            index / 100.0 + if (index >= 600) 2.0 else 0.0
+        }
+        val red = DoubleArray(count) { index ->
+            100_000.0 + 800.0 * sin(2.0 * PI * 1.2 * index / 100.0)
+        }
+        val ir = DoubleArray(count) { index ->
+            120_000.0 + 1_000.0 * sin(2.0 * PI * 1.2 * index / 100.0)
+        }
+
+        val filtered = OfflinePpgAnalyzer.filterFullSignal(
+            OfflinePpgInput(time, red, ir, breakIndices = intArrayOf(600)),
+        )
+
+        assertEquals(count, filtered.red.size)
+        assertEquals(count, filtered.ir.size)
+        assertTrue(filtered.red.all(Double::isFinite))
+        assertTrue(filtered.ir.all(Double::isFinite))
+        assertArrayEquals(
+            ZeroPhasePpgFilter.filter(red.copyOfRange(0, 600)),
+            filtered.red.copyOfRange(0, 600),
+            0.0,
+        )
+        assertArrayEquals(
+            ZeroPhasePpgFilter.filter(red.copyOfRange(600, count)),
+            filtered.red.copyOfRange(600, count),
+            0.0,
+        )
+    }
+
+    @Test
+    fun displaySpectrumTracksTheVisibleFullSignalRange() {
+        val values = DoubleArray(4_000) { index ->
+            800.0 * sin(2.0 * PI * 1.2 * index / 100.0)
+        }
+
+        val spectrum = OfflineDisplaySpectrum.estimate(values, 800 until 3_200)
+        val peak = spectrum.power.indices.maxByOrNull(spectrum.power::get)
+
+        assertNotNull(peak)
+        assertEquals(1.25, spectrum.frequenciesHz[peak!!], 1e-10)
+    }
+
+    @Test
     fun stableSegmentsExcludeContactChangeAndRecoverDominantRate() {
         val count = 4_000
         val time = DoubleArray(count) { it / 100.0 }

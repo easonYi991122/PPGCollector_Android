@@ -184,10 +184,26 @@ object LiveWaveformBucketMath {
  */
 object LiveWaveformPlotMath {
     fun plot(values: DoubleArray, maximumPointCount: Int): WaveformPlot {
-        require(maximumPointCount >= 2)
-        if (values.isEmpty()) return WaveformPlot(emptyList(), 0.0, 1.0)
+        return plotRange(values, values.indices, maximumPointCount)
+    }
 
-        val points = ArrayList<WaveformPlotPoint>(min(values.size, maximumPointCount))
+    /**
+     * Downsamples only the requested source range and keeps absolute sample
+     * offsets. This avoids allocating a complete visible-range copy when an
+     * offline replay fits a long recording into one viewport.
+     */
+    fun plotRange(
+        values: DoubleArray,
+        visibleRange: IntRange,
+        maximumPointCount: Int,
+    ): WaveformPlot {
+        require(maximumPointCount >= 2)
+        if (values.isEmpty() || visibleRange.isEmpty()) return WaveformPlot(emptyList(), 0.0, 1.0)
+        val start = visibleRange.first.coerceIn(0, values.lastIndex)
+        val stop = visibleRange.last.coerceIn(start, values.lastIndex) + 1
+        val valueCount = stop - start
+
+        val points = ArrayList<WaveformPlotPoint>(min(valueCount, maximumPointCount))
         var overallMinimum = Double.POSITIVE_INFINITY
         var overallMaximum = Double.NEGATIVE_INFINITY
 
@@ -198,13 +214,13 @@ object LiveWaveformPlotMath {
             points += WaveformPlotPoint(offset, value)
         }
 
-        if (values.size <= maximumPointCount) {
-            values.forEachIndexed(::observe)
+        if (valueCount <= maximumPointCount) {
+            for (offset in start until stop) observe(offset, values[offset])
         } else {
             val binCount = maxOf(1, maximumPointCount / 2)
             repeat(binCount) { bin ->
-                val lowerOffset = bin * values.size / binCount
-                val upperOffset = ((bin + 1) * values.size / binCount).coerceAtMost(values.size)
+                val lowerOffset = start + bin * valueCount / binCount
+                val upperOffset = (start + (bin + 1) * valueCount / binCount).coerceAtMost(stop)
                 var minimumPoint: WaveformPlotPoint? = null
                 var maximumPoint: WaveformPlotPoint? = null
                 for (offset in lowerOffset until upperOffset) {

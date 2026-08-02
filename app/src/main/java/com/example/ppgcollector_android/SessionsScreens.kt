@@ -2,7 +2,6 @@ package com.example.ppgcollector_android
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,7 +40,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -50,7 +48,6 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
 import com.example.ppgcollector_android.data.session.CaptureInspectionSeverity
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
-import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import java.nio.file.Path as NioPath
 import java.time.Instant
 import java.time.ZoneId
@@ -256,6 +253,7 @@ internal fun SavedSessionDetailScreen(
     onClearAction: () -> Unit,
     onStartAnalysis: (SessionListItemUi) -> Unit,
     onCancelAnalysis: (NioPath) -> Unit,
+    onOpenFullscreenWorkbench: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val detail = state.selected
@@ -348,10 +346,21 @@ internal fun SavedSessionDetailScreen(
                 }
             }
         }
-        detail.inspection?.replay?.takeIf { it.recentSamples.isNotEmpty() }?.let { replay ->
-            item {
-                SectionCard("raw 重放波形", Modifier.padding(horizontal = 16.dp)) {
-                    ReplayWaveformPanel(replay)
+        item {
+            SectionCard("raw 重放波形", Modifier.padding(horizontal = 16.dp)) {
+                when {
+                    detail.isLoadingSignal -> {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                            Text("正在加载完整 accepted signal 与全程 zero-phase 波形…")
+                        }
+                    }
+                    detail.signalError != null -> StatusMessage("完整信号加载失败：${detail.signalError}", isError = true)
+                    detail.signal != null -> CompleteSignalReplayPanel(
+                        trace = detail.signal,
+                        artifact = artifacts.firstOrNull(),
+                    )
+                    else -> EmptyState("无可重放信号", "raw 中没有可接受的完整样本。")
                 }
             }
         }
@@ -362,6 +371,8 @@ internal fun SavedSessionDetailScreen(
                 task = task,
                 onStart = { onStartAnalysis(item) },
                 onCancel = { onCancelAnalysis(item.directory) },
+                signal = detail.signal,
+                onOpenFullscreenWorkbench = onOpenFullscreenWorkbench,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
@@ -419,49 +430,6 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
     )
 }
 
-@Composable
-private fun ReplayWaveformPanel(replay: CupRawReplayReport) {
-    val red = remember(replay.recentSamples) { replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray() }
-    val ir = remember(replay.recentSamples) { replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray() }
-    var viewport by remember(replay.recentSamples) { mutableStateOf(ReplayWaveformViewport()) }
-    val visibleRange = viewport.visibleRange(red.size)
-    fun update(update: ReplayWaveformViewport.() -> Unit) {
-        viewport = ReplayWaveformViewport(viewport.zoomScale, viewport.visibleStart).apply(update)
-    }
-    val gestureModifier = Modifier.pointerInput(red.size) {
-        detectTransformGestures { centroid, pan, zoom, _ ->
-            val width = size.width.toDouble().coerceAtLeast(1.0)
-            val next = ReplayWaveformViewport(viewport.zoomScale, viewport.visibleStart)
-            next.applyGesture(
-                zoomChange = zoom.toDouble(),
-                horizontalPanPixels = pan.x.toDouble(),
-                viewportWidthPixels = width,
-                centroidXPixels = centroid.x.toDouble(),
-                totalSampleCount = red.size,
-            )
-            viewport = next
-        }
-    }
-
-    Text(
-        "双指缩放 · 单指横向拖动 · RED/IR 共用视窗",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilledTonalButton(onClick = { update { setZoom(zoomScale * 2.0, red.size) } }) { Text("＋") }
-        FilledTonalButton(onClick = { update { setZoom(zoomScale / 2.0, red.size) } }) { Text("－") }
-        OutlinedButton(onClick = { update { reset() } }) { Text("适合全幅") }
-    }
-    Text(
-        "缩放 ×${"%.1f".format(Locale.ROOT, viewport.zoomScale)} · 样本 ${visibleRange.first}–${visibleRange.last} / ${red.size}",
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-    )
-    SessionWaveformChart("REPLAY RED", Color(0xFFD74747), red.sliceVisible(visibleRange), gestureModifier)
-    SessionWaveformChart("REPLAY IR", Color(0xFF3478C8), ir.sliceVisible(visibleRange), gestureModifier)
-}
-
 private enum class AnalysisPage { OVERVIEW, WORKBENCH, HISTORY }
 private enum class WorkbenchStage { DIAGNOSTICS, PPG, SPECTRUM, CYCLE }
 
@@ -472,6 +440,8 @@ private fun AnalysisWorkbenchCard(
     task: SessionAnalysisTaskUi?,
     onStart: () -> Unit,
     onCancel: () -> Unit,
+    signal: com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace?,
+    onOpenFullscreenWorkbench: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var page by remember(item.directory) { mutableStateOf(AnalysisPage.OVERVIEW) }
@@ -484,6 +454,13 @@ private fun AnalysisWorkbenchCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        OutlinedButton(
+            onClick = onOpenFullscreenWorkbench,
+            enabled = artifact != null && signal != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (signal == null) "完整信号加载中…" else "全屏横屏工作台")
+        }
         if (task?.status == SessionAnalysisTaskStatus.RUNNING) {
             val progress = task.progress
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -546,7 +523,7 @@ private fun AnalysisWorkbenchCard(
                 )
                 when (stage) {
                     WorkbenchStage.DIAGNOSTICS -> AnalysisDiagnostics(artifact)
-                    WorkbenchStage.PPG -> AnalysisPpg(artifact)
+                    WorkbenchStage.PPG -> AnalysisPpg(artifact, signal)
                     WorkbenchStage.SPECTRUM -> AnalysisSpectrum(artifact)
                     WorkbenchStage.CYCLE -> AnalysisCycle(artifact)
                 }
@@ -630,27 +607,11 @@ private fun AnalysisDiagnostics(artifact: CaptureSessionAnalysisArtifact) {
 }
 
 @Composable
-private fun AnalysisPpg(artifact: CaptureSessionAnalysisArtifact) {
-    val preview = artifact.report.preview
-    if (preview.rawRed.isEmpty()) {
-        EmptyState("无代表窗口", "当前结果没有通过质量门槛的稳定窗口。")
-        return
-    }
-    Text(
-        "最佳接受窗口 ${"%.2f".format(Locale.ROOT, preview.startSeconds)}–" +
-            "${"%.2f".format(Locale.ROOT, preview.startSeconds + 7.99)} s · 圆点为接受峰",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    SessionWaveformChart("RAW RED", Color(0xFFD74747), preview.rawRed)
-    SessionWaveformChart("RAW IR", Color(0xFF3478C8), preview.rawIr)
-    val filtered = if (artifact.report.metrics.selectedChannel == "RED") preview.filteredRed else preview.filteredIr
-    SessionWaveformChart(
-        "ZERO-PHASE ${artifact.report.metrics.selectedChannel ?: "PPG"}",
-        MaterialTheme.colorScheme.primary,
-        filtered,
-        peakIndices = preview.peakIndices,
-    )
+private fun AnalysisPpg(
+    artifact: CaptureSessionAnalysisArtifact,
+    signal: com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace?,
+) {
+    CompletePpgAnalysisPanel(artifact, signal)
 }
 
 @Composable
@@ -1037,9 +998,6 @@ private fun ComparisonRow(label: String, baseline: String, candidate: String) {
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
-
-private fun DoubleArray.sliceVisible(range: IntRange): DoubleArray =
-    if (range.isEmpty()) doubleArrayOf() else copyOfRange(range.first, range.last + 1)
 
 private fun normalized(values: DoubleArray): DoubleArray {
     if (values.isEmpty()) return values

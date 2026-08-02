@@ -2,8 +2,11 @@ package com.example.ppgcollector_android.core.signal
 
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 data class OfflinePpgInput(
@@ -18,6 +21,11 @@ data class OfflinePpgInput(
         }
     }
 }
+
+data class OfflineFilteredSignal(
+    val red: DoubleArray,
+    val ir: DoubleArray,
+)
 
 data class OfflineSignalSegment(
     val index: Int,
@@ -54,6 +62,82 @@ data class OfflineSpectrum(
     val frequenciesHz: DoubleArray = doubleArrayOf(),
     val power: DoubleArray = doubleArrayOf(),
 )
+
+/** Bounded Welch-style spectrum used only by the interactive display range. */
+object OfflineDisplaySpectrum {
+    private const val maximumSegments = 32
+
+    fun estimate(
+        values: DoubleArray,
+        visibleRange: IntRange,
+        sampleRateHz: Double = OfflinePpgAnalyzer.sampleRateHz,
+    ): OfflineSpectrum {
+        if (visibleRange.isEmpty() || values.isEmpty() || sampleRateHz <= 0.0) {
+            return OfflineSpectrum()
+        }
+        val start = visibleRange.first.coerceIn(0, values.lastIndex)
+        val stop = (visibleRange.last + 1).coerceIn(start + 1, values.size)
+        val count = stop - start
+        val segmentLength = min(800, count)
+        if (segmentLength < 32) return OfflineSpectrum()
+        val hop = max(1, segmentLength / 2)
+        val candidates = buildList {
+            var offset = start
+            while (offset + segmentLength <= stop) {
+                add(offset)
+                offset += hop
+            }
+            val finalStart = stop - segmentLength
+            if (isEmpty() || last() != finalStart) add(finalStart)
+        }
+        val selectedStarts = if (candidates.size <= maximumSegments) candidates else {
+            List(maximumSegments) { index ->
+                candidates[(index * (candidates.lastIndex).toDouble() /
+                    (maximumSegments - 1).toDouble()).toInt()]
+            }.distinct()
+        }
+        val firstBin = max(1, kotlin.math.ceil(0.3 * segmentLength / sampleRateHz).toInt())
+        val lastBin = min(segmentLength / 2, kotlin.math.floor(8.0 * segmentLength / sampleRateHz).toInt())
+        if (lastBin < firstBin) return OfflineSpectrum()
+        val power = DoubleArray(lastBin - firstBin + 1)
+        var acceptedSegments = 0
+        selectedStarts.forEach { segmentStart ->
+            val segment = values.copyOfRange(segmentStart, segmentStart + segmentLength)
+            if (segment.any { !it.isFinite() }) return@forEach
+            val xMean = (segmentLength - 1) / 2.0
+            val yMean = segment.average()
+            var numerator = 0.0
+            var denominator = 0.0
+            segment.indices.forEach { index ->
+                val centeredX = index - xMean
+                numerator += centeredX * (segment[index] - yMean)
+                denominator += centeredX * centeredX
+            }
+            val slope = if (denominator > 0.0) numerator / denominator else 0.0
+            val detrended = DoubleArray(segmentLength) { index ->
+                val trend = yMean + slope * (index - xMean)
+                (segment[index] - trend) * (0.5 - 0.5 * cos(2.0 * PI * index / (segmentLength - 1)))
+            }
+            for (bin in firstBin..lastBin) {
+                var real = 0.0
+                var imaginary = 0.0
+                detrended.indices.forEach { index ->
+                    val angle = 2.0 * PI * bin * index / segmentLength
+                    real += detrended[index] * cos(angle)
+                    imaginary -= detrended[index] * sin(angle)
+                }
+                power[bin - firstBin] += (real * real + imaginary * imaginary) / segmentLength
+            }
+            acceptedSegments += 1
+        }
+        if (acceptedSegments == 0) return OfflineSpectrum()
+        for (index in power.indices) power[index] /= acceptedSegments.toDouble()
+        val frequencies = DoubleArray(power.size) { index ->
+            (firstBin + index) * sampleRateHz / segmentLength
+        }
+        return OfflineSpectrum(frequencies, power)
+    }
+}
 
 data class OfflineAverageCycle(
     val phase: DoubleArray = doubleArrayOf(),
@@ -108,6 +192,50 @@ object OfflinePpgAnalyzer {
     const val sampleRateHz = 100.0
     const val windowSeconds = 8.0
     const val hopSeconds = 2.0
+
+    /**
+     * Produces a display-only zero-phase trace for every complete continuity run.
+     * Stable-segment guards still control analysis acceptance; they do not hide
+     * the rest of the recorded signal from the workbench.
+     */
+    fun filterFullSignal(
+        input: OfflinePpgInput,
+        cancellationCheck: () -> Unit = {},
+    ): OfflineFilteredSignal {
+        val count = input.timeSeconds.size
+        val red = DoubleArray(count) { Double.NaN }
+        val ir = DoubleArray(count) { Double.NaN }
+        if (count == 0) return OfflineFilteredSignal(red, ir)
+        val breaks = BooleanArray(count)
+        input.breakIndices.filter { it in 1 until count }.forEach { breaks[it] = true }
+        for (index in 1 until count) {
+            val delta = input.timeSeconds[index] - input.timeSeconds[index - 1]
+            if (!delta.isFinite() || delta <= 0.0 || delta > 0.015) breaks[index] = true
+        }
+
+        fun filterRun(start: Int, stop: Int) {
+            if (stop - start < 32) return
+            cancellationCheck()
+            ZeroPhasePpgFilter.filter(input.red.copyOfRange(start, stop)).copyInto(red, start)
+            cancellationCheck()
+            ZeroPhasePpgFilter.filter(input.ir.copyOfRange(start, stop)).copyInto(ir, start)
+        }
+
+        var runStart = -1
+        for (index in 0..count) {
+            val valid = index < count &&
+                input.timeSeconds[index].isFinite() &&
+                input.red[index].isFinite() &&
+                input.ir[index].isFinite()
+            val boundary = index == count || !valid || (index < count && breaks[index])
+            if (boundary && runStart >= 0) {
+                filterRun(runStart, index)
+                runStart = -1
+            }
+            if (valid && runStart < 0) runStart = index
+        }
+        return OfflineFilteredSignal(red, ir)
+    }
 
     fun analyze(
         input: OfflinePpgInput,

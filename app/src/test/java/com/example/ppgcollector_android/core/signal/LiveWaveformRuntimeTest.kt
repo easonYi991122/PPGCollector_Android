@@ -81,6 +81,15 @@ class LiveWaveformRuntimeTest {
         assertTrue(downsampled.points.zipWithNext().all { (left, right) -> left.offset <= right.offset })
         assertEquals(-50.0, downsampled.minimum, 0.0)
         assertEquals(100.0, downsampled.maximum, 0.0)
+
+        val ranged = LiveWaveformPlotMath.plotRange(
+            values = doubleArrayOf(-500.0, 9.0, 2.0, 8.0, 600.0),
+            visibleRange = 1..3,
+            maximumPointCount = 8,
+        )
+        assertEquals(listOf(1, 2, 3), ranged.points.map { it.offset })
+        assertEquals(2.0, ranged.minimum, 0.0)
+        assertEquals(9.0, ranged.maximum, 0.0)
     }
 
     private fun event(sequence: UByte, start: Int): CupDecodedFrameEvent =

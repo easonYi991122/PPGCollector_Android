@@ -102,6 +102,17 @@ data class CaptureSessionAnalysisArtifact(
     val report: CaptureSessionAnalysisReport,
 )
 
+data class CaptureSessionSignalTrace(
+    val timeSeconds: DoubleArray,
+    val rawRed: DoubleArray,
+    val rawIr: DoubleArray,
+    val filteredRed: DoubleArray,
+    val filteredIr: DoubleArray,
+    val breakIndices: IntArray,
+    val replay: CupRawReplayReport,
+    val preprocessProfile: String,
+)
+
 object CaptureSessionOfflineAnalysisService {
     const val schemaVersion = "ppgcollector_analysis_v1"
     private const val maximumAcceptedSamples = 1_500_000
@@ -204,6 +215,33 @@ object CaptureSessionOfflineAnalysisService {
 
     fun readArtifact(path: Path): CaptureSessionAnalysisArtifact =
         CaptureSessionAnalysisArtifact(path, CaptureSessionAnalysisCodec.decode(readBounded(path)))
+
+    /** Loads the complete accepted signal for interactive visualization only. */
+    fun loadSignalTrace(
+        session: StoredCaptureSession,
+        cancellationCheck: () -> Unit = {},
+    ): CaptureSessionSignalTrace {
+        val files = CaptureSessionRepository.expectedFiles(session.directory)
+        require(Files.isRegularFile(files.raw)) { "会话缺少 raw 文件" }
+        val loaded = loadRawInput(
+            path = files.raw,
+            expectedSampleCount = session.metadata?.sampleCount,
+            progress = {},
+            cancellationCheck = cancellationCheck,
+        )
+        cancellationCheck()
+        val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.input, cancellationCheck)
+        return CaptureSessionSignalTrace(
+            timeSeconds = loaded.input.timeSeconds,
+            rawRed = loaded.input.red,
+            rawIr = loaded.input.ir,
+            filteredRed = filtered.red,
+            filteredIr = filtered.ir,
+            breakIndices = loaded.input.breakIndices,
+            replay = loaded.replay,
+            preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
+        )
+    }
 
     private fun loadRawInput(
         path: Path,

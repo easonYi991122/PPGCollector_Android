@@ -2286,6 +2286,47 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 优先执行后续明确安排的 emulator/真机 M4/M6 UI runtime 验收与 M5 API/厂商/后台/长稳矩阵；若 `D-014` 要求跨进程续跑，先形成 execution-policy ADR 再实现 WorkManager/用户可见 FGS。完成这些门禁或有新证据后再进入 M7，不把专家/临床扩展提前混入 M6。
 
+## 2026-08-02 · M6 · Complete-signal landscape analysis workbench
+
+### 本轮目标
+
+把 Replay 和工作台的 PPG 从序列化的代表窗口/最近 800 点扩展为完整 accepted signal：默认仍可看 8 s，但必须能在整条记录上拖动、缩放、全幅查看 RAW 与 zero-phase RED/IR；进一步移植 Python GUI 的窗口审计和多视图工作台，并提供可全屏横屏使用的自适应布局。实时采集时的平滑因果波形仅做分析规划，不在本轮实现。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-009`、`UI-010`、`CAP-009`、`CAP-011`、`SIG-007`、`SIG-008`；Phase 4 replay 与 Phase 6 §9.1–§9.3。
+- Primary source: Swift `SessionReplayView.swift`、`SessionDetailView.swift`、`CUPDualWaveformPreview.swift`、`PPGPreprocessor.swift`、`CaptureSessionAnalysisService.swift`；Python `analysis_gui.py`、`offline.py`、`segmented_pulse.py`、`online.py`；docs/02/03/04/05/06。
+- Tests/golden: production CUPRAW1 replay/immutable SHA seam、SciPy-compatible zero-phase continuity runs、2 h viewport、bounded visible-range spectrum、ordered extrema plot math。
+- Android target: `OfflinePpgAnalysis.kt`、`CaptureSessionOfflineAnalysis.kt`、`ReplayWaveformViewport.kt`、`LiveWaveformRuntime.kt`、`SessionsViewModel.kt`、`SessionsScreens.kt`、`SessionSignalWorkbench.kt`、`MainActivity.kt` 和对应 JVM tests。
+- Non-goals: 不改变 CUPRAW1/CSV/session/analysis JSON schema、accepted sample/算法接受语义或 live metrics cadence；不把 zero-phase 用作实时滤波；不移植无数据契约的 IMU；不运行 emulator/真机。
+
+### 实现事实
+
+- `CaptureSessionOfflineAnalysisService.loadSignalTrace` 复用 production raw replay，最多加载 1,500,000 个 accepted samples，并返回完整时间轴、RAW RED/IR、gap 和 replay report。`OfflinePpgAnalyzer.filterFullSignal` 按显式 break、非单调/大于 15 ms 时间间隔和 non-finite 边界切分连续 run，对每个不少于 32 点的 run 分别执行现有 SciPy-compatible forward/backward SOS；不跨 gap，短 run 保持 NaN。该结果只用于显示，不改变稳定段、窗口接受、峰和 metrics，也不序列化进 analysis JSON。
+- `SessionsViewModel` 为当前选中会话在 Default dispatcher 上可取消地加载/滤波完整 trace，并用原子 StateFlow merge 与并行 inspection 协作，避免任一结果覆盖另一结果；切换/离开会话会取消旧 job，完整数组只由当前 detail state 持有。
+- 会话 Replay 和紧凑 PPG 工作台不再使用 recent/preview 截断数组。默认视窗是起始或最佳接受窗口的 800 点，RAW/ZERO-PHASE 与 RED/IR 共用完整时间轴，支持单指拖动、双指缩放、按钮缩放、8 s 复位和全幅；stable segment、accepted peak 和 continuity break 保持绝对 sample index。`LiveWaveformPlotMath.plotRange` 直接扫描可见源范围并返回绝对 offset，长记录全幅绘制不再分配完整范围副本，同时保持原有保序 extrema 语义。
+- 新增全屏横屏工作台：左侧可滚动控制/稳定段/历史，右侧提供 Workbench、PPG windows、Spectrum、Cycle、Diagnostics；支持 selected/RED/IR、RAW/ZERO-PHASE/PEAKS、峰/稳定段可见性、反相、精确窗口聚焦、当前可见范围最多抽取 32 段且每段至多 8 s 的 bounded Welch-style PSD、平均周期/95% CI 和不可变 raw/version/input findings。进入页面请求 sensor-landscape 并隐藏 system bars，退出恢复 unspecified orientation 与 bars；未通过 manifest 固定整个 app 方向。
+- 新增 `docs/07_LIVE_FILTERED_WAVEFORM_PLAN.md`，只分析未来 live causal 显示：zero-phase 因依赖未来样本不能实时使用；建议提取 `LivePpgSignalRuntime` 统一当前 metric preprocessor 与 waveform raw ring，同时发布 bounded RAW/causal snapshot，避免第三套滤波状态。规划保留 800/100/5 Hz、gap reset、warm-up、source index/generation 和 raw-first 边界；本轮未修改 live runtime、raw、CSV、指标或 FGS。
+- 完整信号显示不改变 `ppgcollector_analysis_v1`、`segmented-pulse-parity-0.3` 或 `scipy-sosfiltfilt-parity-0.1`：算法产物语义未改变，新增的是可取消的内存 display trace 和 bounded visible-range 派生视图。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；127 JVM tests/0 failures/0 errors，debug lint 0 errors/9 dependency update warnings，debug/release/androidTest APK、R8/resource shrink、REL-005 privacy 与既有 REL-002/003/004/006/007 静态契约通过。
+- 新增/扩展 JVM 证据：两个 continuity run 的全程滤波分别与独立 zero-phase 结果逐点一致；3,000 点 production raw trace 的原始 SHA 不变；当前范围 1.2 Hz 波形的 PSD 主峰落在 1.25 Hz bin；720,000 点/2 h 记录可精确显示 800 点、平移并复位全幅；单样本视窗安全；range plot 只取指定绝对范围并排除范围外 extrema。
+- `git diff --check` 和 production logging/TODO scan 通过；`CollectedData/` 未写回、未打包、未提交。
+- Hardware validation: pending；按项目约定本轮不执行 replay 多点触控、横屏沉浸/旋转恢复、长记录 GPU/heap/frame-time、动态字号/TalkBack、Activity recreation、emulator 或真机测试。
+
+### 风险与决策变化
+
+- 完整 trace 受 1,500,000 点上限保护，但当前选中会话同时持有 time、两条 raw 和两条 filtered `DoubleArray`，接近上限时约为 60 MiB 量级；range plot 避免全幅副本，但真实低内存设备仍需测 heap high-water、GC 和横屏帧时间。离开详情会释放引用，分析 JSON 不膨胀。
+- Android 强制横屏/沉浸行为在大屏、多窗口和 OEM 上可能被系统忽略或调整；本地编译/lint 不能替代 runtime orientation/insets 验收。
+- 实时平滑方案没有落地；当前 Live 页仍显示原有 RAW waveform，离线 zero-phase 不得被描述成实时能力。默认 RAW/CAUSAL、5/10 Hz 显示刷新和因果 trace 是否导出仍是后续产品/性能决策。
+- `D-001` 真实 CUP profile、`D-002` API/厂商矩阵和 `D-014` 跨进程分析继续开放；本轮不改变 schema/profile/algorithm version。
+
+### 下一轮
+
+优先在 emulator/真机运行完整 Replay/工作台的拖动缩放、8 s/全幅切换、全屏横屏/insets/旋转恢复和长会话性能；另轮按 `07_LIVE_FILTERED_WAVEFORM_PLAN.md` 先合并纯 Kotlin 因果状态机并做 fixture/gap/2 h 证据，再接 Compose，不能直接把 offline zero-phase 放进实时路径。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

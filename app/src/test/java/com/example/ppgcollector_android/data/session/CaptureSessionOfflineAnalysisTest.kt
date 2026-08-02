@@ -105,6 +105,27 @@ class CaptureSessionOfflineAnalysisTest {
         }
     }
 
+    @Test
+    fun completeSignalTraceReplaysAndFiltersEveryAcceptedSample() {
+        withSession { session ->
+            val files = CaptureSessionRepository.expectedFiles(session.directory)
+            val beforeRaw = sha256(files.raw)
+
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+
+            assertEquals(3_000, trace.timeSeconds.size)
+            assertEquals(3_000, trace.rawRed.size)
+            assertEquals(3_000, trace.rawIr.size)
+            assertEquals(3_000, trace.filteredRed.size)
+            assertEquals(3_000, trace.filteredIr.size)
+            assertTrue(trace.filteredRed.all(Double::isFinite))
+            assertTrue(trace.filteredIr.all(Double::isFinite))
+            assertEquals(3_000L, trace.replay.acceptedSamples)
+            assertEquals("scipy-sosfiltfilt-parity-0.1", trace.preprocessProfile)
+            assertEquals(beforeRaw, sha256(files.raw))
+        }
+    }
+
     private fun withSession(
         leadingPrefixBytes: Int = 0,
         block: (StoredCaptureSession) -> Unit,

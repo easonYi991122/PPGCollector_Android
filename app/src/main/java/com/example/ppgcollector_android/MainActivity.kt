@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android
 
 import android.content.pm.PackageManager
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -40,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -57,6 +59,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
@@ -76,7 +81,7 @@ import java.util.Locale
 
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
 
-private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, COMPARE }
+private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, WORKBENCH, COMPARE }
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
@@ -123,8 +128,23 @@ class MainActivity : ComponentActivity() {
                 val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
                 val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                 var page by rememberSaveable { mutableStateOf(AppPage.LIVE) }
+                LaunchedEffect(page) {
+                    val insets = WindowCompat.getInsetsController(window, window.decorView)
+                    if (page == AppPage.WORKBENCH) {
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        insets.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        insets.hide(WindowInsetsCompat.Type.systemBars())
+                    } else {
+                        if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE) {
+                            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                        }
+                        insets.show(WindowInsetsCompat.Type.systemBars())
+                    }
+                }
                 BackHandler(enabled = page != AppPage.LIVE) {
                     page = when (page) {
+                        AppPage.WORKBENCH -> AppPage.SESSION_DETAIL
                         AppPage.SESSION_DETAIL, AppPage.COMPARE -> AppPage.SESSIONS
                         AppPage.SESSIONS -> AppPage.LIVE
                         AppPage.LIVE -> AppPage.LIVE
@@ -179,7 +199,13 @@ class MainActivity : ComponentActivity() {
                             onClearAction = sessionsViewModel::clearAction,
                             onStartAnalysis = sessionsViewModel::startAnalysis,
                             onCancelAnalysis = sessionsViewModel::cancelAnalysis,
+                            onOpenFullscreenWorkbench = { page = AppPage.WORKBENCH },
                             modifier = Modifier.padding(innerPadding),
+                        )
+                        AppPage.WORKBENCH -> FullscreenSessionWorkbenchScreen(
+                            state = sessions,
+                            onBack = { page = AppPage.SESSION_DETAIL },
+                            modifier = Modifier.fillMaxSize(),
                         )
                         AppPage.COMPARE -> SessionComparisonScreen(
                             state = sessions,

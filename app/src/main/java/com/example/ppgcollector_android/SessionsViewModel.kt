@@ -11,6 +11,7 @@ import com.example.ppgcollector_android.data.session.CaptureSessionInspection
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisProgress
 import com.example.ppgcollector_android.data.session.CaptureSessionOfflineAnalysisService
+import com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace
 import com.example.ppgcollector_android.data.session.CaptureSessionRecoveryService
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
@@ -65,6 +66,9 @@ data class SessionDetailUi(
     val item: SessionListItemUi,
     val isInspecting: Boolean = true,
     val inspection: CaptureSessionInspection? = null,
+    val isLoadingSignal: Boolean = true,
+    val signal: CaptureSessionSignalTrace? = null,
+    val signalError: String? = null,
     val expectedFiles: List<String> = emptyList(),
     val error: String? = null,
 )
@@ -151,6 +155,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
     private val _state = MutableStateFlow(SessionsUiState())
     private var refreshJob: Job? = null
     private var inspectionJob: Job? = null
+    private var signalJob: Job? = null
     private var actionJob: Job? = null
     private val analysisJobs = ConcurrentHashMap<Path, Job>()
 
@@ -194,6 +199,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     fun select(item: SessionListItemUi) {
         inspectionJob?.cancel()
+        signalJob?.cancel()
         _state.value = _state.value.copy(
             action = SessionActionUi(),
             selected = SessionDetailUi(
@@ -205,19 +211,42 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
             val result = withContext(Dispatchers.IO) {
                 runCatchingCancellable { CaptureSessionRepository.inspect(item.directory) }
             }
-            val selected = _state.value.selected
-            if (selected?.item?.directory != item.directory) return@launch
             result.onSuccess { inspection ->
-                _state.value = _state.value.copy(
-                    selected = selected.copy(isInspecting = false, inspection = inspection),
-                )
+                updateSelected(item.directory) {
+                    it.copy(isInspecting = false, inspection = inspection)
+                }
             }.onFailure { error ->
-                _state.value = _state.value.copy(
-                    selected = selected.copy(
+                updateSelected(item.directory) {
+                    it.copy(
                         isInspecting = false,
                         error = error.message ?: error::class.simpleName,
-                    ),
+                    )
+                }
+            }
+        }
+        signalJob = viewModelScope.launch(Dispatchers.Default) {
+            val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            val result = runCatchingCancellable {
+                val session = withContext(Dispatchers.IO) { findSession(item.directory) }
+                    ?: error("session no longer exists")
+                CaptureSessionOfflineAnalysisService.loadSignalTrace(
+                    session = session,
+                    cancellationCheck = {
+                        if (workerJob?.isActive != true) throw CancellationException()
+                    },
                 )
+            }
+            result.onSuccess { signal ->
+                updateSelected(item.directory) {
+                    it.copy(isLoadingSignal = false, signal = signal, signalError = null)
+                }
+            }.onFailure { error ->
+                updateSelected(item.directory) {
+                    it.copy(
+                        isLoadingSignal = false,
+                        signalError = error.message ?: error::class.simpleName,
+                    )
+                }
             }
         }
     }
@@ -236,6 +265,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     fun clearSelection() {
         inspectionJob?.cancel()
+        signalJob?.cancel()
         actionJob?.cancel()
         _state.value = _state.value.copy(selected = null)
     }
@@ -450,6 +480,17 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     private fun setAction(action: SessionActionUi) {
         _state.update { it.copy(action = action) }
+    }
+
+    private fun updateSelected(
+        directory: Path,
+        update: (SessionDetailUi) -> SessionDetailUi,
+    ) {
+        _state.update { state ->
+            val selected = state.selected
+            if (selected?.item?.directory != directory) state
+            else state.copy(selected = update(selected))
+        }
     }
 
     private fun expectedFileNames(directory: Path): List<String> {
