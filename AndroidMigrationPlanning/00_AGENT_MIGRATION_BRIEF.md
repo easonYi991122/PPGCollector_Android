@@ -2,7 +2,7 @@
 
 版本：1.1（agent 执行基线）
 日期：2026-08-01
-当前迭代：`M4`（实时波形、录制 freshness gate 与连接态 UI 修复）
+当前迭代：`M6`（版本化离线分析、独立 Sessions 工作台与会话对比）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -101,7 +101,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
-| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 未开始 |
+| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | raw replay 驱动的版本化离线分析、Python segmented-pulse/SciPy SOS 对等、平均周期/CI/频谱/峰、任务历史/取消、独立 Sessions/detail/replay/compare 页面已实现并通过本地门禁；`D-014` 仍采用短任务 app-scope 假设，runtime/真机 UI 门禁待执行 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |
 
 ## 6. 不可破坏的核心契约

@@ -54,4 +54,27 @@ class ReplayWaveformViewportTest {
         viewport.reset()
         assertEquals(ReplayWaveformViewport(), viewport)
     }
+
+    @Test
+    fun pinchAndFingerDragShareOneDeterministicGestureReducer() {
+        val viewport = ReplayWaveformViewport()
+
+        viewport.applyGesture(
+            zoomChange = 2.0,
+            horizontalPanPixels = 0.0,
+            viewportWidthPixels = 400.0,
+            centroidXPixels = 100.0,
+            totalSampleCount = 1_000,
+        )
+        assertEquals(125 until 625, viewport.visibleRange(1_000))
+
+        viewport.applyGesture(
+            zoomChange = 1.0,
+            horizontalPanPixels = 80.0,
+            viewportWidthPixels = 400.0,
+            centroidXPixels = 200.0,
+            totalSampleCount = 1_000,
+        )
+        assertEquals(25 until 525, viewport.visibleRange(1_000))
+    }
 }

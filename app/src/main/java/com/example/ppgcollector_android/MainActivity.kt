@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,6 +75,8 @@ import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
 import java.util.Locale
 
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
+
+private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, COMPARE }
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
@@ -118,34 +122,71 @@ class MainActivity : ComponentActivity() {
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
                 val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
                 val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
+                var page by rememberSaveable { mutableStateOf(AppPage.LIVE) }
+                BackHandler(enabled = page != AppPage.LIVE) {
+                    page = when (page) {
+                        AppPage.SESSION_DETAIL, AppPage.COMPARE -> AppPage.SESSIONS
+                        AppPage.SESSIONS -> AppPage.LIVE
+                        AppPage.LIVE -> AppPage.LIVE
+                    }
+                }
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     containerColor = MaterialTheme.colorScheme.background,
                 ) { innerPadding ->
-                    BleHome(
-                        snapshot = snapshot,
-                        capture = capture,
-                        preview = preview,
-                        sessions = sessions,
-                        onRefreshSessions = sessionsViewModel::refresh,
-                        onSelectSession = sessionsViewModel::select,
-                        onClearSessionSelection = sessionsViewModel::clearSelection,
-                        onCancelSessionInspection = sessionsViewModel::cancelInspection,
-                        onRequestExport = ::requestSessionExport,
-                        onRecoverSession = sessionsViewModel::recoverSelected,
-                        onCancelSessionAction = sessionsViewModel::cancelAction,
-                        onClearSessionAction = sessionsViewModel::clearAction,
-                        sessionName = sessionName,
-                        captureGate = captureGate,
-                        onSessionNameChange = captureViewModel::setSessionName,
-                        onStartCapture = ::requestCaptureStart,
-                        onStopCapture = captureViewModel::stopRecording,
-                        onScan = ::requestScan,
-                        onStopScan = bleCoordinator::stopScanning,
-                        onConnect = bleCoordinator::connect,
-                        onDisconnect = bleCoordinator::disconnect,
-                        modifier = Modifier.padding(innerPadding),
-                    )
+                    when (page) {
+                        AppPage.LIVE -> BleHome(
+                            snapshot = snapshot,
+                            capture = capture,
+                            preview = preview,
+                            sessionName = sessionName,
+                            captureGate = captureGate,
+                            onSessionNameChange = captureViewModel::setSessionName,
+                            onStartCapture = ::requestCaptureStart,
+                            onStopCapture = captureViewModel::stopRecording,
+                            onScan = ::requestScan,
+                            onStopScan = bleCoordinator::stopScanning,
+                            onConnect = bleCoordinator::connect,
+                            onDisconnect = bleCoordinator::disconnect,
+                            onOpenSessions = {
+                                sessionsViewModel.refresh()
+                                page = AppPage.SESSIONS
+                            },
+                            modifier = Modifier.padding(innerPadding),
+                        )
+                        AppPage.SESSIONS -> SavedSessionsScreen(
+                            state = sessions,
+                            onBack = { page = AppPage.LIVE },
+                            onRefresh = sessionsViewModel::refresh,
+                            onSelect = { item ->
+                                sessionsViewModel.select(item)
+                                page = AppPage.SESSION_DETAIL
+                            },
+                            onCancelAnalysis = sessionsViewModel::cancelAnalysis,
+                            onOpenCompare = { page = AppPage.COMPARE },
+                            modifier = Modifier.padding(innerPadding),
+                        )
+                        AppPage.SESSION_DETAIL -> SavedSessionDetailScreen(
+                            state = sessions,
+                            onBack = {
+                                sessionsViewModel.clearSelection()
+                                page = AppPage.SESSIONS
+                            },
+                            onCancelInspection = sessionsViewModel::cancelInspection,
+                            onRequestExport = ::requestSessionExport,
+                            onRecover = sessionsViewModel::recoverSelected,
+                            onCancelAction = sessionsViewModel::cancelAction,
+                            onClearAction = sessionsViewModel::clearAction,
+                            onStartAnalysis = sessionsViewModel::startAnalysis,
+                            onCancelAnalysis = sessionsViewModel::cancelAnalysis,
+                            modifier = Modifier.padding(innerPadding),
+                        )
+                        AppPage.COMPARE -> SessionComparisonScreen(
+                            state = sessions,
+                            onBack = { page = AppPage.SESSIONS },
+                            modifier = Modifier.padding(innerPadding),
+                        )
+                    }
                 }
             }
         }
@@ -195,15 +236,6 @@ private fun BleHome(
     snapshot: BleCoordinatorSnapshot,
     capture: CaptureServiceObservation,
     preview: BlePreviewSnapshot,
-    sessions: SessionsUiState,
-    onRefreshSessions: () -> Unit,
-    onSelectSession: (SessionListItemUi) -> Unit,
-    onClearSessionSelection: () -> Unit,
-    onCancelSessionInspection: () -> Unit,
-    onRequestExport: (SessionListItemUi) -> Unit,
-    onRecoverSession: () -> Unit,
-    onCancelSessionAction: () -> Unit,
-    onClearSessionAction: () -> Unit,
     sessionName: String,
     captureGate: CaptureGateUiState,
     onSessionNameChange: (String) -> Unit,
@@ -213,6 +245,7 @@ private fun BleHome(
     onStopScan: () -> Unit,
     onConnect: (String) -> BleCoordinatorAction,
     onDisconnect: () -> Unit,
+    onOpenSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
@@ -235,17 +268,26 @@ private fun BleHome(
             .padding(horizontal = 16.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                "CUPCollector",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "PPG 实时采集与完整数据记录",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    "CUPCollector",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "PPG 实时采集与完整数据记录",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(onClick = onOpenSessions) {
+                Text("已保存会话")
+            }
         }
 
         Card(
@@ -439,17 +481,6 @@ private fun BleHome(
             }
         }
 
-        SessionsPanel(
-            state = sessions,
-            onRefresh = onRefreshSessions,
-            onSelect = onSelectSession,
-            onClearSelection = onClearSessionSelection,
-            onCancelInspection = onCancelSessionInspection,
-            onRequestExport = onRequestExport,
-            onRecover = onRecoverSession,
-            onCancelAction = onCancelSessionAction,
-            onClearAction = onClearSessionAction,
-        )
     }
 }
 

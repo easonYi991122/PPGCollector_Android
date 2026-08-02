@@ -34,6 +34,8 @@ data class CupRawReplayReport(
     val firstFrameHostNanoseconds: ULong?,
     val lastFrameHostNanoseconds: ULong?,
     val recentSamples: List<CupReplaySample>,
+    /** Bytes before the first decoded frame when recording began mid-frame. */
+    val leadingAlignmentBytes: Int = 0,
 ) {
     val trailingRawBytes: Long
         get() = maxOf(0L, totalRawBytes - validRawBytes)
@@ -49,15 +51,23 @@ data class CupRawReplayReport(
     val isStructurallyClean: Boolean
         get() = tailIssue == null &&
             structurallyInvalidFrames == 0 &&
-            discardedBytes == 0 &&
-            pendingDecoderBytes == 0
+            structuralDiscardedBytes == 0
+
+    val structuralDiscardedBytes: Int
+        get() = maxOf(0, discardedBytes - leadingAlignmentBytes)
 }
 
 object CupRawReplayEngine {
     const val recentSampleCapacity = 800
 
-    fun replay(path: Path): CupRawReplayReport {
-        val accumulator = ReplayAccumulator()
+    fun replay(path: Path): CupRawReplayReport = replay(path) {}
+
+    /** Streams every accepted sample while retaining the same bounded replay report. */
+    fun replay(
+        path: Path,
+        onAcceptedSample: (CupReplaySample) -> Unit,
+    ): CupRawReplayReport {
+        val accumulator = ReplayAccumulator(onAcceptedSample)
         val summary = CupRawReader.scan(path) { record ->
             accumulator.receive(record)
         }
@@ -72,7 +82,9 @@ object CupRawReplayEngine {
         return accumulator.report(summary)
     }
 
-    private class ReplayAccumulator {
+    private class ReplayAccumulator(
+        private val onAcceptedSample: (CupReplaySample) -> Unit = {},
+    ) {
         private val decoder = CupBatchStreamDecoder()
         private val sequenceTracker = CupFrameSequenceTracker()
         private val recentSamples = ArrayDeque<CupReplaySample>(recentSampleCapacity)
@@ -81,10 +93,20 @@ object CupRawReplayEngine {
         private var acceptedSamples = 0L
         private var firstFrameHostNanoseconds: ULong? = null
         private var lastFrameHostNanoseconds: ULong? = null
+        private var hasDecodedFrame = false
+        private var leadingAlignmentBytes = 0
 
         fun receive(record: CupRawRecord) {
             rawPayloadBytes += record.chunk.size.toLong()
-            decoder.feed(record.chunk).forEach { frame ->
+            val frames = decoder.feed(record.chunk)
+            if (!hasDecodedFrame && frames.isNotEmpty()) {
+                // Raw-first capture can attach while the shared live decoder is already
+                // inside a frame. Replay has no earlier context, so this prefix is an
+                // auditable alignment condition rather than post-alignment corruption.
+                leadingAlignmentBytes = decoder.stats.bytesDiscarded
+                hasDecodedFrame = true
+            }
+            frames.forEach { frame ->
                 when (sequenceTracker.observe(frame.sequence)) {
                     CupSequenceEvent.Duplicate,
                     CupSequenceEvent.OutOfOrder -> Unit
@@ -113,6 +135,7 @@ object CupRawReplayEngine {
                     recentSamples.removeFirst()
                 }
                 recentSamples.addLast(replaySample)
+                onAcceptedSample(replaySample)
                 acceptedSamples += 1
             }
         }
@@ -140,6 +163,7 @@ object CupRawReplayEngine {
                 firstFrameHostNanoseconds = firstFrameHostNanoseconds,
                 lastFrameHostNanoseconds = lastFrameHostNanoseconds,
                 recentSamples = recentSamples.toList(),
+                leadingAlignmentBytes = leadingAlignmentBytes,
             )
         }
     }

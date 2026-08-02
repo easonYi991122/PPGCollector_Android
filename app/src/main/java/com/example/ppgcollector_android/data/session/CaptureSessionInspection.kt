@@ -167,9 +167,25 @@ object CaptureSessionInspectionService {
             findings += finding("raw-tail", CaptureInspectionSeverity.WARNING,
                 "raw has a recoverable tail; safe prefix is ${replay.validRawBytes} bytes")
         }
+        if (replay.leadingAlignmentBytes > 0) {
+            findings += finding(
+                "raw-alignment-prefix",
+                CaptureInspectionSeverity.WARNING,
+                "录制从通知帧中途开始；重放已跳过 ${replay.leadingAlignmentBytes} 个前导字节并成功对齐，源文件未修改",
+            )
+        }
+        if (replay.pendingDecoderBytes > 0) {
+            findings += finding(
+                "raw-frame-suffix",
+                CaptureInspectionSeverity.WARNING,
+                "录制结束时下一协议帧尚未收满，保留 ${replay.pendingDecoderBytes} 个尾部字节；" +
+                    "完整 raw record 与已解码样本不受影响，源文件未修改",
+            )
+        }
         if (!replay.isStructurallyClean && replay.tailIssue == null) {
             findings += finding("raw-structure", CaptureInspectionSeverity.ERROR,
-                "raw replay has structural errors")
+                "raw 重放存在结构错误：无效帧=${replay.structurallyInvalidFrames}，" +
+                    "对齐后丢弃字节=${replay.structuralDiscardedBytes}")
         }
         if (replay.missingFrames > 0 || replay.duplicateFrames > 0 || replay.outOfOrderFrames > 0) {
             findings += finding("raw-sequence", CaptureInspectionSeverity.WARNING,

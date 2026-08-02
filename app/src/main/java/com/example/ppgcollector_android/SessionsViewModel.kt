@@ -8,12 +8,17 @@ import com.example.ppgcollector_android.data.session.CaptureExportProgress
 import com.example.ppgcollector_android.data.session.CaptureSafExportService
 import com.example.ppgcollector_android.data.session.CaptureSessionExportException
 import com.example.ppgcollector_android.data.session.CaptureSessionInspection
+import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
+import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisProgress
+import com.example.ppgcollector_android.data.session.CaptureSessionOfflineAnalysisService
 import com.example.ppgcollector_android.data.session.CaptureSessionRecoveryService
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +46,17 @@ data class SessionListItemUi(
     val stopReason: String?,
     val softVersion: String?,
     val algorithmVersion: String?,
+    val preprocessProfile: String?,
+    val protocolProfile: String?,
+    val transportProfile: String?,
+    val deviceName: String?,
+    val sessionId: String?,
+    val startedUtc: java.time.Instant?,
+    val endedUtc: java.time.Instant?,
+    val modifiedAt: java.time.Instant,
+    val frameCount: Long?,
+    val sampleCount: Long?,
+    val rawChunkCount: Long?,
     val totalBytes: Long,
     val findings: List<String>,
 )
@@ -74,8 +90,20 @@ data class SessionsUiState(
     val isLoading: Boolean = false,
     val sessions: List<SessionListItemUi> = emptyList(),
     val selected: SessionDetailUi? = null,
+    val artifactsBySession: Map<Path, List<CaptureSessionAnalysisArtifact>> = emptyMap(),
+    val analysisTasks: Map<Path, SessionAnalysisTaskUi> = emptyMap(),
     val error: String? = null,
     val action: SessionActionUi = SessionActionUi(),
+)
+
+enum class SessionAnalysisTaskStatus { RUNNING, COMPLETED, CANCELLED, FAILED }
+
+data class SessionAnalysisTaskUi(
+    val sessionBaseName: String,
+    val status: SessionAnalysisTaskStatus,
+    val progress: CaptureSessionAnalysisProgress? = null,
+    val artifactName: String? = null,
+    val error: String? = null,
 )
 
 object SessionListItemMapper {
@@ -101,6 +129,17 @@ object SessionListItemMapper {
             stopReason = metadata?.stopReason?.wireValue,
             softVersion = metadata?.softVersion,
             algorithmVersion = metadata?.algVersion,
+            preprocessProfile = metadata?.preprocessProfile,
+            protocolProfile = metadata?.protocolProfile,
+            transportProfile = metadata?.transportProfile,
+            deviceName = metadata?.device?.name,
+            sessionId = metadata?.sessionId,
+            startedUtc = metadata?.startedUtc,
+            endedUtc = metadata?.endedUtc,
+            modifiedAt = session.modifiedAt,
+            frameCount = metadata?.frameCount,
+            sampleCount = metadata?.sampleCount,
+            rawChunkCount = metadata?.rawChunkCount,
             totalBytes = session.totalBytes,
             findings = findings,
         )
@@ -113,6 +152,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
     private var refreshJob: Job? = null
     private var inspectionJob: Job? = null
     private var actionJob: Job? = null
+    private val analysisJobs = ConcurrentHashMap<Path, Job>()
 
     val state: StateFlow<SessionsUiState> = _state.asStateFlow()
 
@@ -122,12 +162,27 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
             _state.value = _state.value.copy(isLoading = true, error = null)
             val result = withContext(Dispatchers.IO) {
                 runCatchingCancellable {
-                    CaptureSessionRepository.listSessions(app.sessionsRoot)
-                        .map(SessionListItemMapper::map)
+                    val sessions = CaptureSessionRepository.listSessions(app.sessionsRoot)
+                    val items = sessions.map(SessionListItemMapper::map)
+                    val artifacts = sessions.associate { session ->
+                        session.directory to CaptureSessionOfflineAnalysisService.listArtifacts(session)
+                    }
+                    items to artifacts
                 }
             }
-            result.onSuccess { items ->
-                _state.value = _state.value.copy(isLoading = false, sessions = items)
+            result.onSuccess { (items, artifacts) ->
+                _state.update { current ->
+                    val mergedArtifacts = artifacts.mapValues { (directory, diskArtifacts) ->
+                        (diskArtifacts + current.artifactsBySession[directory].orEmpty())
+                            .distinctBy { it.path }
+                            .sortedByDescending { it.report.endedUtc }
+                    }
+                    current.copy(
+                        isLoading = false,
+                        sessions = items,
+                        artifactsBySession = mergedArtifacts,
+                    )
+                }
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     isLoading = false,
@@ -277,6 +332,97 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     fun clearAction() {
         setAction(SessionActionUi())
+    }
+
+    fun startAnalysis(item: SessionListItemUi) {
+        if (analysisJobs[item.directory]?.isActive == true) return
+        _state.update { state ->
+            state.copy(
+                analysisTasks = state.analysisTasks + (
+                    item.directory to SessionAnalysisTaskUi(
+                        sessionBaseName = item.baseName,
+                        status = SessionAnalysisTaskStatus.RUNNING,
+                    )
+                    ),
+            )
+        }
+        val job = viewModelScope.launch(Dispatchers.Default, start = CoroutineStart.LAZY) {
+            val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            try {
+                val session = withContext(Dispatchers.IO) { findSession(item.directory) }
+                    ?: error("session no longer exists")
+                val artifact = CaptureSessionOfflineAnalysisService.analyzeAndSave(
+                    session = session,
+                    progress = { update ->
+                        _state.update { state ->
+                            val current = state.analysisTasks[item.directory]
+                            if (current?.status != SessionAnalysisTaskStatus.RUNNING) state
+                            else state.copy(
+                                analysisTasks = state.analysisTasks + (
+                                    item.directory to current.copy(progress = update)
+                                    ),
+                            )
+                        }
+                    },
+                    cancellationCheck = {
+                        if (workerJob?.isActive != true) throw CancellationException()
+                    },
+                )
+                val artifacts = withContext(Dispatchers.IO) {
+                    CaptureSessionOfflineAnalysisService.listArtifacts(session)
+                }
+                _state.update { state ->
+                    state.copy(
+                        artifactsBySession = state.artifactsBySession + (item.directory to artifacts),
+                        analysisTasks = state.analysisTasks + (
+                            item.directory to SessionAnalysisTaskUi(
+                                sessionBaseName = item.baseName,
+                                status = SessionAnalysisTaskStatus.COMPLETED,
+                                artifactName = artifact.path.fileName.toString(),
+                            )
+                            ),
+                    )
+                }
+            } catch (_: CancellationException) {
+                _state.update { state ->
+                    state.copy(
+                        analysisTasks = state.analysisTasks + (
+                            item.directory to SessionAnalysisTaskUi(
+                                sessionBaseName = item.baseName,
+                                status = SessionAnalysisTaskStatus.CANCELLED,
+                            )
+                            ),
+                    )
+                }
+            } catch (error: Exception) {
+                _state.update { state ->
+                    state.copy(
+                        analysisTasks = state.analysisTasks + (
+                            item.directory to SessionAnalysisTaskUi(
+                                sessionBaseName = item.baseName,
+                                status = SessionAnalysisTaskStatus.FAILED,
+                                error = error.message ?: error::class.simpleName,
+                            )
+                            ),
+                    )
+                }
+            } finally {
+                analysisJobs.remove(item.directory)
+            }
+        }
+        analysisJobs[item.directory] = job
+        job.start()
+    }
+
+    fun cancelAnalysis(directory: Path) {
+        analysisJobs[directory]?.cancel()
+    }
+
+    fun clearFinishedAnalysis(directory: Path) {
+        if (_state.value.analysisTasks[directory]?.status == SessionAnalysisTaskStatus.RUNNING) return
+        _state.update { state ->
+            state.copy(analysisTasks = state.analysisTasks - directory)
+        }
     }
 
     private suspend fun findSession(directory: Path): StoredCaptureSession? =

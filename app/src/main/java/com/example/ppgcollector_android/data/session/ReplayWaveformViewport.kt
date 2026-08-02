@@ -49,6 +49,28 @@ class ReplayWaveformViewport(
         clamp(totalSampleCount)
     }
 
+    /** Pure reducer used by Compose pinch/drag input; positive pan follows the finger. */
+    fun applyGesture(
+        zoomChange: Double,
+        horizontalPanPixels: Double,
+        viewportWidthPixels: Double,
+        centroidXPixels: Double,
+        totalSampleCount: Int,
+    ) {
+        if (!viewportWidthPixels.isFinite() || viewportWidthPixels <= 0.0) return
+        val safeZoom = zoomChange.takeIf { it.isFinite() && it > 0.0 } ?: 1.0
+        setZoom(
+            requestedZoom = zoomScale * safeZoom,
+            totalSampleCount = totalSampleCount,
+            anchorFraction = centroidXPixels / viewportWidthPixels,
+        )
+        val pan = horizontalPanPixels.takeIf(Double::isFinite) ?: 0.0
+        pan(
+            sampleDelta = -pan / viewportWidthPixels * visibleSampleCount(totalSampleCount),
+            totalSampleCount = totalSampleCount,
+        )
+    }
+
     fun clamp(totalSampleCount: Int) {
         val count = visibleSampleCount(totalSampleCount)
         val maximumStart = maxOf(0, totalSampleCount - count)

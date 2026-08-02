@@ -332,7 +332,7 @@ object CaptureSessionMetadataCodec {
             ?: throw CaptureSessionMetadataJsonException("$name must be boolean"))
 }
 
-private sealed interface JsonValue {
+internal sealed interface JsonValue {
     data class ObjectValue(val fields: Map<String, JsonValue>) : JsonValue
     data class ArrayValue(val values: List<JsonValue>) : JsonValue
     data class StringValue(val value: String) : JsonValue
@@ -341,7 +341,7 @@ private sealed interface JsonValue {
     data object NullValue : JsonValue
 }
 
-private object JsonWriter {
+internal object JsonWriter {
     fun write(value: JsonValue): String = buildString { appendValue(value, 0) }
 
     private fun StringBuilder.appendValue(value: JsonValue, indent: Int) {
@@ -402,7 +402,7 @@ private object JsonWriter {
     }
 }
 
-private class JsonParser(private val input: String) {
+internal class JsonParser(private val input: String) {
     private var index = 0
 
     fun parse(): JsonValue {

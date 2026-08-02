@@ -56,6 +56,79 @@ class CaptureSessionInspectionTest {
     }
 
     @Test
+    fun replayTreatsMidFrameRecordingPrefixAsAuditedAlignmentNotCorruption() {
+        val previousFrame = referenceFrame(41u)
+        val firstCompleteFrame = referenceFrame(42u)
+        val secondCompleteFrame = referenceFrame(43u)
+        val prefix = previousFrame.copyOfRange(previousFrame.size - 28, previousFrame.size)
+        val bytes = rawBytes(
+            listOf(
+                1_000uL to prefix.copyOfRange(0, 20),
+                2_000uL to prefix.copyOfRange(20, prefix.size),
+                3_000uL to firstCompleteFrame,
+                4_000uL to secondCompleteFrame,
+            ),
+        )
+
+        val report = CupRawReplayEngine.replay(bytes)
+
+        assertEquals(28, report.leadingAlignmentBytes)
+        assertEquals(28, report.discardedBytes)
+        assertEquals(0, report.structuralDiscardedBytes)
+        assertEquals(2, report.decodedFrames)
+        assertEquals(100L, report.acceptedSamples)
+        assertTrue(report.isStructurallyClean)
+    }
+
+    @Test
+    fun replayTreatsIncompleteProtocolFrameAtRecordingStopAsAuditedSuffix() {
+        val frame = referenceFrame(42u)
+        val bytes = rawBytes(
+            listOf(
+                1_000uL to frame,
+                2_000uL to referenceFrame(43u).copyOfRange(0, 220),
+            ),
+        )
+
+        val report = CupRawReplayEngine.replay(bytes)
+
+        assertEquals(220, report.pendingDecoderBytes)
+        assertEquals(1, report.decodedFrames)
+        assertEquals(50L, report.acceptedSamples)
+        assertTrue(report.isStructurallyClean)
+    }
+
+    @Test
+    fun inspectionExplainsMidFramePrefixWithoutGenericStructureError() {
+        withSessionDirectory { directory ->
+            val base = directory.fileName.toString()
+            val previousFrame = referenceFrame(41u)
+            val frame = referenceFrame(42u)
+            CupRawWriter(directory.resolve("$base.cupraw")).use { writer ->
+                writer.append(1_000u, previousFrame.copyOfRange(previousFrame.size - 28, previousFrame.size))
+                writer.append(2_000u, frame)
+            }
+            Files.writeString(directory.resolve("$base.csv"), buildString {
+                append(CaptureCsvSchema.header)
+                repeat(CupBatchProtocolV1.samplesPerFrame) { index ->
+                    append(CaptureCsvFormatter.format(csvRow(frame, index), 0))
+                }
+            })
+            Files.writeString(
+                directory.resolve("$base.session.json"),
+                CaptureSessionMetadataCodec.encode(sampleMetadata().copy(rawChunkCount = 2)),
+            )
+
+            val inspection = CaptureSessionInspectionService.inspect(directory)
+            val findingIds = inspection.findings.map { it.id }
+
+            assertTrue("raw-alignment-prefix" in findingIds)
+            assertFalse("raw-structure" in findingIds)
+            assertEquals(CaptureInspectionSeverity.WARNING, inspection.findings.single().severity)
+        }
+    }
+
+    @Test
     fun csvScanIsStreamingAndClassifiesNonNewlineTerminatedTail() {
         val complete = CaptureCsvSchema.header + "row,1\n"
         val path = Files.createTempFile("capture-scan", ".csv")

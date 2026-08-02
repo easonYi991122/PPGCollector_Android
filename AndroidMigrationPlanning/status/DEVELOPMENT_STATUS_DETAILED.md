@@ -2242,6 +2242,50 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在后续明确的真机验收轮复验 RED/IR 连续波形、连接后红色断开、合法命名 + fresh stream 启用录制、停止后预览连续和 10 s 无设备扫描；随后继续 M5 API/厂商/runtime matrix，不把本轮本地证据表述为硬件通过。
 
+## 2026-08-02 · M6 · Versioned offline analysis and independent Sessions workbench
+
+### 本轮目标
+
+把已保存会话从实时录制页面拆成独立的 Swift 风格信息架构，修复真实采集文件被误报为 raw structural error 的问题，提升 replay 控件并支持指尖平移/缩放；在此基础上完成 Phase 6 的 raw replay、版本化离线 segmented-pulse、平均周期/CI、频谱、历史/取消和双会话对比本地切片。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-009`、`UI-010`、`CAP-009`、`CAP-011`、`SIG-007`、`SIG-008`；Phase 4 Sessions/detail/replay 与 Phase 6 §9.1–§9.3。
+- Primary source: Swift `SessionsListView.swift`、`SessionDetailView.swift`、`SessionReplayView.swift`、`CaptureSessionInspectionService.swift`、`CUPRawReplayEngine.swift`、`CaptureSessionAnalysisService.swift`；Python `segmented_pulse.py`、`offline.py:_average_waveform`、`analysis_gui.py`；docs/02/03/04/05/06。
+- Tests/golden: Python `segmented_pulse` 固定 synthetic 字段、SciPy `sosfiltfilt` 固定输出、Swift raw replay/inspection 不修改源文件契约，以及 JVM temp-directory immutable/cancel/history/gesture tests。
+- Android target: `SessionsScreens.kt`、`SessionsViewModel.kt`、`MainActivity.kt`、`OfflinePpgAnalysis.kt`、`CaptureSessionOfflineAnalysis.kt`、`CupRawReplay.kt`、`CaptureSessionInspection.kt`、`ReplayWaveformViewport.kt` 和对应 JVM/instrumentation tests。
+- Non-goals: 不改变 CUP draft wire、CUPRAW1/CSV/session schema 或 live causal 算法；不从 CSV 反推 raw；不增加无数据契约的 IMU；不宣称 SpO2/BP；不在本轮运行 emulator/真机或把短 app-scope coroutine 宣称为跨进程后台任务。
+
+### 实现事实
+
+- 解压并只读分析用户提供的 `CollectedData/test1.zip`、`test2.zip`。两份 CUPRAW1 的 notification record 都完整：test1 在首个可解 frame 前有 28 个前导协议字节，test1/test2 在录制停止时分别保留 220/60 个尚未凑满下一 408-byte frame 的 pending bytes。旧逻辑把 decoder 的全部 discarded/pending 一律作为 structural ERROR，因而误报；现将首帧前对齐和停止边界 suffix 分别记录为 `raw-alignment-prefix`/`raw-frame-suffix` warning，只有首个 frame 之后的丢弃、invalid frame 或 raw record 截尾仍为 structural ERROR。inspection/replay 始终只读，不修改源 raw/CSV/session。
+- `MainActivity` 增加 Live、Saved Sessions、Session Detail、Compare 独立页面路由和 back navigation。会话列表不再嵌在实时录制处理页；详情按 iOS inset-grouped 意图整理 summary、version/source、integrity、replay、analysis、export/recovery 信息，warning/error 使用不同视觉层级。
+- Replay 的 RED/IR 使用同一 immutable viewport；`detectTransformGestures` 将单指拖动、双指缩放和焦点位移归约到纯 Kotlin reducer，并提供缩小/放大/适配按钮。Canvas 继续使用 bounded replay samples，不复制或改写原始文件。
+- 新增 `OfflinePpgAnalyzer`：SciPy-compatible odd padding/SOS initial condition 的 zero-phase bandpass；settling/transition/break guards；8 s window/2 s hop；RED/IR 两通道与正负极性评估；窗口拒绝原因；dominant BPM cluster/weighted median；全局 accepted peaks、频谱、200 点平均周期/样本标准差/95% CI 和 8 s preview。gap 不跨段生成 peak/cycle，分析 profile 与 live causal profile 分离。
+- 新增 `CaptureSessionOfflineAnalysisService`，只从 production `CupRawReplayEngine` 流式接收 accepted samples，使用 sequence gap 形成 break indices，计算 raw SHA-256，并写入 `analysis/<timestamp>_<profile>_<uuid>.json`。`ppgcollector_analysis_v1` 产物包含 source session/raw hash、analysis/algorithm/preprocess/profile version、started/ended、input、warnings、metrics、segments/windows/peaks/spectrum/cycle/preview；先写隐藏临时文件再原子移动且不覆盖，取消不会留下冒充 complete 的 JSON。accepted samples 上限 1,500,000，analysis JSON 读取上限 8 MiB。
+- `SessionsViewModel` 增加 analysis task/progress/cancel/restart/history state，磁盘刷新会合并当前 task/artifact，避免并发 refresh 丢失刚完成结果。详情提供 Overview/Workbench/History，Workbench 呈现 Diagnostics/PPG/Spectrum/Cycle；Compare 可选两个会话，显示数值差异以及 stacked/full/unified normalized cycles，并明确 IMU unsupported。
+- 分析版本固定为 `analysis_profile=ppg-offline-segmented-0.1`、`algorithm_version=segmented-pulse-parity-0.3`、`preprocess_profile=scipy-sosfiltfilt-parity-0.1`；每次运行生成新文件。`CaptureSessionMetadata` 的内部 JSON AST/parser/writer 仅放宽模块可复用性，没有改变 session wire schema。
+- 用户采集 ZIP/raw 保持未跟踪且不纳入 APK/commit；运行 Python 参考时产生的 `reference_sources/.../__pycache__` 临时目录已精确删除，参考快照源文件没有修改。
+
+### 验证
+
+- Python `segmented_pulse.py` 与 Kotlin 对同一 40 s fixed synthetic 输入的字段级结果一致：stable segments `2.00–13.25 s`、`31.52–39.99 s`，stable ratio `0.4935`，4/4 windows accepted，RED/negative，22 peaks，HR `72.28915662650601 bpm`，spectral `75 bpm`，confidence `0.5945874257168716`，SNR `1.463671953699202 dB`，RR MAD `4.44e-16 s`。
+- Kotlin zero-phase SOS 对 SciPy fixed reference 的开头/中段输出在 `1e-8` 内一致；平均周期测试覆盖异常反相周期剔除、200 点 mean/std/CI 和 segment/gap 边界。Python reference 的低相关 fallback/constant-cycle 语义也已对齐。
+- production replay + Kotlin analyzer 对解压实际会话只读运行：test1 为 5,500 accepted samples、24 windows/23 accepted、57 peaks、HR `65.2174 bpm`；test2 为 3,350 samples、13/13 windows、36 peaks、HR `68.1818 bpm`。同一 raw 经 Python reference segmented-pulse 的 summary 字段一致；原 ZIP/raw SHA 和内容未变化。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；122 JVM tests、0 failures/0 errors，debug lint 0 errors/9 dependency update warnings，debug/release/androidTest APK 编译通过，REL-005 确认无 production logging API 且 APK 无测试/session fixture entries，既有 REL-002/003/004/006/007 contract 继续通过。
+- `git diff --check` → passed；`CollectedData/` 已由根 `.gitignore` 明确排除，是仅保留在本机的用户采集数据，不进入 staged diff。
+- Hardware validation: pending；按项目约定本轮不运行 Saved Sessions 页面、replay 指尖缩放、分析进度/取消/历史/compare、Activity recreation、后台/锁屏、SAF、BLE 或真机 runtime 门禁。
+
+### 风险与决策变化
+
+- `D-014` 保持 Open/Assumption：当前分析按 memory-bounded 短任务在 ViewModel app scope 执行；Activity recreation 可观察同一 ViewModel task，但进程终止不会自动续跑。若目标会话/设备要求跨进程或长时分析，必须另建 ADR 并迁移到 WorkManager 或用户可见 FGS。
+- 本地 Python/Kotlin 对等证明的是当前参考算法与两份实际 draft raw 的可复现性，不认证真实 CUP production wire；`D-001` 继续开放。两份会话停止边界 warning 不代表忽略真实结构损坏，首帧后 discard/invalid/raw truncation 仍阻断 structural clean。
+- Compose 和 instrumentation 只有编译/静态语义证据；多点触控、较大字体、TalkBack、GPU 性能和进程/后台行为仍需 emulator/device。M5 的 API/厂商/2 h/签名/正式隐私策略也未因此关闭。
+
+### 下一轮
+
+优先执行后续明确安排的 emulator/真机 M4/M6 UI runtime 验收与 M5 API/厂商/后台/长稳矩阵；若 `D-014` 要求跨进程续跑，先形成 execution-policy ADR 再实现 WorkManager/用户可见 FGS。完成这些门禁或有新证据后再进入 M7，不把专家/临床扩展提前混入 M6。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
