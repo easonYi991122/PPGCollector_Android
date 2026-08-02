@@ -14,6 +14,17 @@ data class LiveWaveformSnapshot(
     val measuredAt: Instant? = null,
     val red: DoubleArray = doubleArrayOf(),
     val ir: DoubleArray = doubleArrayOf(),
+    val causalRed: DoubleArray = doubleArrayOf(),
+    val causalIr: DoubleArray = doubleArrayOf(),
+    val preprocessProfile: String? = null,
+    val continuousSampleCount: Long = 0,
+    val metricWarmupSampleCount: Int = 800,
+    val settlingSampleCount: Int = 0,
+)
+
+data class WaveformVerticalRange(
+    val lower: Double,
+    val upper: Double,
 )
 
 data class WaveformBucket(
@@ -31,6 +42,35 @@ data class WaveformPlot(
     val minimum: Double,
     val maximum: Double,
 )
+
+/** Python live-GUI parity for autoscaling without hiding settling samples. */
+object LiveWaveformScaleMath {
+    fun verticalRange(
+        values: DoubleArray,
+        excludedLeadingSampleCount: Int = 0,
+        paddingRatio: Double = 0.08,
+    ): WaveformVerticalRange? {
+        if (values.isEmpty()) return null
+        val start = if (excludedLeadingSampleCount > 0 && values.size > excludedLeadingSampleCount) {
+            excludedLeadingSampleCount.coerceAtMost(values.lastIndex)
+        } else {
+            0
+        }
+        var minimum = Double.POSITIVE_INFINITY
+        var maximum = Double.NEGATIVE_INFINITY
+        for (index in start until values.size) {
+            val value = values[index]
+            if (!value.isFinite()) continue
+            minimum = minOf(minimum, value)
+            maximum = maxOf(maximum, value)
+        }
+        if (!minimum.isFinite() || !maximum.isFinite()) return null
+        var span = maximum - minimum
+        if (span <= 0.0) span = maxOf(kotlin.math.abs(minimum) * 0.05, 1.0)
+        val padding = span * paddingRatio.coerceAtLeast(0.0)
+        return WaveformVerticalRange(minimum - padding, maximum + padding)
+    }
+}
 
 /**
  * Bounded live waveform ring and wall-clock publisher. The publisher emits

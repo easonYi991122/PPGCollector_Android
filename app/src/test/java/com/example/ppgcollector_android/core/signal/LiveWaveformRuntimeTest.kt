@@ -92,6 +92,25 @@ class LiveWaveformRuntimeTest {
         assertEquals(9.0, ranged.maximum, 0.0)
     }
 
+    @Test
+    fun causalAutoscaleDrawsButExcludesOnlyVisibleSettlingPrefix() {
+        val values = DoubleArray(800) { 5.0 }.also {
+            it[0] = 1_000.0
+        }
+
+        val rawRange = LiveWaveformScaleMath.verticalRange(values)!!
+        val causalRange = LiveWaveformScaleMath.verticalRange(
+            values = values,
+            excludedLeadingSampleCount = 200,
+        )!!
+
+        assertTrue(rawRange.upper > 900.0)
+        assertTrue(causalRange.upper < 10.0)
+        assertEquals(4.92, causalRange.lower, 1e-12)
+        assertEquals(5.08, causalRange.upper, 1e-12)
+        assertEquals(null, LiveWaveformScaleMath.verticalRange(doubleArrayOf()))
+    }
+
     private fun event(sequence: UByte, start: Int): CupDecodedFrameEvent =
         CupDecodedFrameEvent(
             frame = CupBatchFrame(

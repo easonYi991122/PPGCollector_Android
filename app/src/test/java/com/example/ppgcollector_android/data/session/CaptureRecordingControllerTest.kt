@@ -218,6 +218,12 @@ class CaptureRecordingControllerTest {
             assertEquals(800, analysis.lastResult!!.request.rawIr.size)
             assertEquals(800, controller.waveformSnapshot.value.red.size)
             assertEquals(800, controller.waveformSnapshot.value.ir.size)
+            assertEquals(800, controller.waveformSnapshot.value.causalRed.size)
+            assertEquals(800, controller.waveformSnapshot.value.causalIr.size)
+            assertEquals(
+                analysis.lastResult!!.request.bandpassedIr,
+                controller.waveformSnapshot.value.causalIr.asList(),
+            )
             val csvRows = Files.readAllLines(summary!!.directory.resolve("controller_001.csv"))
                 .drop(1)
                 .map(CaptureCsvParser::parseRow)

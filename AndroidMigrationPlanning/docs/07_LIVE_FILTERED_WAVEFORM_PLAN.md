@@ -2,9 +2,9 @@
 
 日期：2026-08-02
 
-Migration 建议：后续 `M4/M6` UI 增量；若改变 live profile/version，再建立独立算法版本。
+Migration：`M6` live UI/runtime 增量；若未来改变 live profile/version，再建立独立算法版本。
 
-状态：分析与规划；本轮不修改实时采集、raw、CSV、指标或 FGS 链路。
+状态：A/B/C 已于 2026-08-02 的 `M6` 增量实现并有 JVM/构建证据；D 性能与真机门禁待执行。用户已明确实时页默认显示 CAUSAL，RAW 仍可随时切换。
 
 ## 1. 目标与非目标
 
@@ -17,7 +17,7 @@ Migration 建议：后续 `M4/M6` UI 增量；若改变 live profile/version，�
 - 不改变 HR/SQI/R 的有效性、版本或 cadence，不新增 SpO2/BP/医疗含义。
 - 不用 UI 插值制造设备没有采集的样本，也不让 Compose animation 掩盖 gap。
 
-## 2. 参考行为与当前 Android 差距
+## 2. 参考行为与实施前 Android 差距
 
 ### Python GUI
 
@@ -27,15 +27,15 @@ Migration 建议：后续 `M4/M6` UI 增量；若改变 live profile/version，�
 
 `PPGPreprocessor.swift` 固化 `ios_baseline_0.1`：100 Hz、DC alpha `0.019801326693244747`、三段 SOS、gap reset、RED preserve/IR polarity 仅按各算法要求处理。`PPGLiveMetricRuntime` 以 800 samples/100 samples cadence 使用因果 bandpass；`CUPDualWaveformPreview` 明确区分 raw、causallyPreprocessed 与 replay viewport，显示切换不改变 detector 输出。
 
-### 当前 Android
+### 实施前 Android（本轮已关闭）
 
 - `LiveMetricWindowScheduler` 已有 RED/IR 各自的 `PpgPreprocessor`，逐 accepted sample 生成 raw + causal bandpassed ring；但只在 800 samples warm-up 后、每 100 samples形成 analysis request。
 - `LiveWaveformSnapshotScheduler` 同时独立维护 raw RED/IR 800-sample ring，并按默认 5 Hz 发布。
 - `BlePreviewRuntime` 对同一 accepted frame 先调用 raw waveform scheduler，再调用 metric scheduler。因果输出已被计算，但没有进入 5 Hz waveform snapshot；若直接再加第三套 UI filter，会形成重复状态、gap reset 漂移和额外 CPU。
 
-## 3. 推荐架构
+## 3. 已实施架构
 
-新增纯 Kotlin `LivePpgSignalRuntime`，成为 preview 内唯一的逐样本 PPG 预处理状态所有者：
+新增纯 Kotlin `LivePpgSignalRuntime`，成为每个有序 preview/recording owner 内唯一的逐样本 PPG 预处理状态所有者：
 
 ```text
 accepted frame
@@ -49,7 +49,7 @@ accepted frame
           └── 800/100 LiveMetricAnalysisRequest
 ```
 
-建议接口：
+规划接口如下；实现复用扩展后的 `LiveWaveformSnapshot` 保持已有调用兼容：
 
 ```kotlin
 data class DualStageWaveformSnapshot(
@@ -76,7 +76,7 @@ data class LivePpgIngestResult(
 
 ## 4. 显示语义
 
-- Live 页新增 `RAW / CAUSAL 0.6–4 Hz` 切换，默认值需产品确认；第一版建议保留 RAW 默认，causal 作为显式视图，避免改变既有用户判断。
+- Live 页新增 `RAW / CAUSAL 0.6–4 Hz` 切换；用户已在本轮明确要求同步显示滤波后信号，因此默认 CAUSAL，RAW 仍为随时可切换的真源视图。
 - CAUSAL 模式显示 `ios_baseline_0.1 · 因果 · gap reset`，不得标为 zero-phase。离线 Sessions 工作台继续标 `scipy-sosfiltfilt-parity-0.1`。
 - RED/IR 共用 X 时间范围、独立 Y。Y 范围计算可采用 Python 意图：窗口超过 2 s 时，settling 前 2 s 仍画出，但不参与自动 Y；gap 后重新进入 warm-up 并显示半透明区域/状态。
 - 5 Hz snapshot 中每次携带完整 800-sample bounded ring；Canvas 继续按像素保序保留 extrema。不得把滤波结果逐 sample 发布到 StateFlow。
@@ -91,7 +91,7 @@ data class LivePpgIngestResult(
 - filter/profile 异常时回退 RAW 并显示状态；不得沿用旧 causal ring 冒充当前连接。
 - raw/CSV/session schema 不因显示能力改变。若未来导出 causal trace，必须作为独立 versioned analysis/display artifact，而不是改写源 CSV。
 
-## 6. 分阶段实施
+## 6. 分阶段实施状态
 
 ### A. 纯 Kotlin 合并状态机
 
@@ -132,9 +132,16 @@ data class LivePpgIngestResult(
 - 5 Hz scheduler 遇到延迟不 burst；StateFlow 不逐样本更新。
 - release privacy/APK audit 不包含真实 raw/causal 数据。
 
-## 8. 开放项
+## 8. 实施结果
 
-- Live 页默认 RAW 还是 CAUSAL，需要产品/用户确认；建议先 RAW。
+- 新增纯 Kotlin `LivePpgSignalRuntime`，每个有序 preview/recording owner 仅保留一组 RED/IR `PpgPreprocessor`，由同一 bounded ring 同时生成 RAW/CAUSAL 波形和 800/100 指标请求；旧 raw/metric scheduler 不再用于 production owner。
+- connection/sample discontinuity 与 sequence gap 会原子清空两通道滤波状态、RAW/CAUSAL ring、指标 warm-up 和发布 deadline；duplicate/out-of-order rejected frame 不进入状态。快照继续为 800 点上限、默认 5 Hz、延迟 tick 不 burst。
+- Live Compose 默认 CAUSAL 0.6–4 Hz，保留 RAW 切换；标注 `ios_baseline_0.1`、因果/gap-reset/settling 语义。起始 2 s 仍完整绘制，仅从动态 Y 轴估计中排除，并用浅色区域提示。
+- raw-first writer、CUPRAW1、CSV/session schema、1 Hz HR/SQI/R cadence 和离线 zero-phase profile 均未改变；没有插值、Compose 波形动画或实时 zero-phase。
+- 本地证据覆盖 single-state 精确一致、独立 preprocessor 对等、800 点滚动、gap/index discontinuity、rejected frame、5 Hz no-burst、30 min/2 h bounded simulation、preview/recording integration 和 Compose semantics/编译。真实设备帧率、GC、主线程、锁屏/旋转观感仍属于 D 门禁。
+
+## 9. 开放项
+
 - 是否开放 5/10 Hz 显示刷新设置仍受 `D-011` 约束；先用性能证据决策。
 - 因果波形是否作为导出字段属于 schema/version 产品变更，本规划默认不导出。
 - zero-phase 只属于离线完整信号工作台；任何“实时 zero-phase”需求必须明确允许的延迟与边缘重算语义后另立 ADR。

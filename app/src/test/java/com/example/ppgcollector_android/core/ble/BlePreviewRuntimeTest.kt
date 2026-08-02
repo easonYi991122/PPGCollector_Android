@@ -53,12 +53,22 @@ class BlePreviewRuntimeTest {
         try {
             runtime.reset(generation = 7)
             repeat(16) { frameIndex ->
+                val wire = encodeCupBatchFrame(frame(frameIndex.toUByte()))
                 assertTrue(
                     runtime.offer(
                         BleRawNotificationChunk(
                             connectionGeneration = 7,
                             hostMonotonicNanos = frameIndex * 500_000_000L,
-                            bytes = encodeCupBatchFrame(frame(frameIndex.toUByte())),
+                            bytes = wire.copyOfRange(0, 244),
+                        ),
+                    ),
+                )
+                assertTrue(
+                    runtime.offer(
+                        BleRawNotificationChunk(
+                            connectionGeneration = 7,
+                            hostMonotonicNanos = frameIndex * 500_000_000L + 1_000_000L,
+                            bytes = wire.copyOfRange(244, wire.size),
                         ),
                     ),
                 )
@@ -70,6 +80,13 @@ class BlePreviewRuntimeTest {
             val snapshot = runtime.snapshot.value
             assertEquals(7L, snapshot.connectionGeneration)
             assertEquals(800, snapshot.waveform.ir.size)
+            assertEquals(800, snapshot.waveform.causalRed.size)
+            assertEquals(800, snapshot.waveform.causalIr.size)
+            assertEquals("ios_baseline_0.1", snapshot.waveform.preprocessProfile)
+            assertEquals(
+                snapshot.lastAnalysis!!.request.bandpassedIr,
+                snapshot.waveform.causalIr.asList(),
+            )
             assertEquals(799L, snapshot.lastAnalysis!!.request.windowEndSampleIndex)
             assertEquals(0L, snapshot.droppedChunkCount)
 

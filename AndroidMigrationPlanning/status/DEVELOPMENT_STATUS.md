@@ -3,7 +3,13 @@
 更新时间：2026-08-02
 当前迁移版本：`M6`
 当前规划阶段：Phase 6（V1.1 离线分析与工作台）
-状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析和独立 Sessions/compare，本轮进一步让 Replay 与工作台使用完整 accepted signal，按连续段生成全程 zero-phase RED/IR，并加入 8 s/全幅触控视窗、Python 风格窗口审计/动态频谱/周期/诊断及全屏横屏布局。127 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过；实时因果平滑仅完成规划，真机 UI/runtime 与 `D-014` 跨进程后台策略仍待执行。
+状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。本轮新增统一 `LivePpgSignalRuntime`，让实时 RAW、因果 0.6–4 Hz RED/IR 与 800/100 指标窗口来自同一 bounded filter/ring state；Live 默认 CAUSAL 并可切回 RAW。132 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过；真机 UI/性能/runtime 与 `D-014` 跨进程后台策略仍待执行。
+
+本轮增量：`BlePreviewRuntime` 与录制 `CaptureRecordingController` 各自使用统一有序 `LivePpgSignalRuntime`，一次 ingest 同步生成 RAW/CAUSAL 800 点波形和既有指标请求；不再由 production owner 分别维护 raw waveform scheduler 与 metric preprocessor。sample-index discontinuity/sequence gap 原子清空两通道 DC/SOS、rings、warm-up 与 deadline，rejected frame 不进入状态；发布保持默认 5 Hz、延迟不 burst，指标保持 800/100。
+
+本轮增量：实时页默认显示实际 100 Hz accepted samples 的 CAUSAL 0.6–4 Hz RED/IR，可切换 RAW；明确标注 `ios_baseline_0.1`、因果、gap reset 和 settling。起始 2 s 仍完整绘制，仅从自动 Y 轴估计中排除并以浅色区域提示；不使用插值、Compose animation 或实时 zero-phase，不改 CUPRAW1、CSV/session、HR/SQI/R cadence/version。
+
+本轮增量：新增 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)，把未完成工作分为代码缺口、emulator/真机验收和外部产品/发布决策。最高优先级代码缺口是 production capture 的正式 algorithm/preprocess version 追踪、service-owned elapsed/write-health 通知与录制页、FileProvider 分享入口、动态空间预算及 CI/benchmark；M7 仍需新证据后再定可验收范围。
 
 本轮增量：会话详情在选择后通过 production `CUPRAW1` replay 加载最多 1,500,000 个完整 accepted samples，按 sequence/time continuity 对每个连续段执行 `scipy-sosfiltfilt-parity-0.1`，保留 RAW RED/IR、全程 zero-phase RED/IR、时间轴和 gap。大数组仅存在于当前选中会话内存，不写入 analysis JSON、不改 raw/CSV/session；取消选择会取消加载并释放引用。
 
@@ -49,7 +55,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 Compose 采集与独立会话工作台：M1–M5 本地切片均保留，M6 已具备完整 raw/全程 zero-phase 回放、版本化 segmented-pulse 分析、Python 风格窗口/频谱/周期/诊断、横屏全屏工作台、可取消历史和双会话对比。本地算法/数据/构建/隐私门禁通过；下一步是 emulator/真机运行触控/旋转/性能交互并继续 M5 API/厂商/后台/长稳矩阵，实时因果平滑按规划另轮实现。
+Android 工程已形成可运行的 Compose 采集与独立会话工作台：M6 同时具备统一实时 RAW/CAUSAL 因果显示和完整 raw/全程 zero-phase 离线分析。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步优先修复正式 capture version/profile 与动态 FGS 健康状态，再执行 emulator/真机触控、生命周期、API/厂商和真实长稳矩阵。
 
 ## 与 MigrationPlanning 对照
 
@@ -62,7 +68,7 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台：M1�
 | `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam、session catalog/checkpoint、safe-prefix recovery、export seam、async live-analysis seam | writer/session/controller/manifest/service/repository/recovery/export/analysis 已实现并经 JVM/build 验证；系统后台/重建行为、用户正式页面仍未验收 | formal capture/sessions UI、lifecycle binding、metrics CSV policy |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（0 errors）、静态 artifact scan、sessions backup exclusion、UI disclosure contract、REL-001 30 min/2 h JVM simulation、REL-007 FGS start rejection/permission manifest contract、API 33+ notification permission gate、REL-006 BLE permission API boundary matrix、CAP-007 writer failure injection、REL-005 privacy/log/APK static audit、REL-004 FGS 在 raw/CSV/session finalizer 结束后再退出，以及 REL-006/REL-007 merged-manifest/API target 静态报告；unsigned、API/厂商/真机/签名/正式隐私门禁未完成 | API emulator/厂商运行矩阵、真实生命周期/2 h、签名/隐私策略 |
-| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/动态频谱/周期/诊断、横屏全屏工作台、任务历史/取消及独立 Sessions/compare 已实现并经 JVM/build/privacy 与两份实际会话只读验证；实时因果平滑仅规划，runtime UI、长任务跨进程策略待验收 | emulator/真机运行完整信号触控、横屏与性能；另轮实施 live causal；按 `D-014` 决定 WorkManager/用户可见 FGS |
+| `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/频谱/周期/诊断、横屏工作台、历史/取消/Sessions/compare，以及统一实时 RAW/CAUSAL 0.6–4 Hz runtime 均已实现并经 JVM/build/privacy 证据；runtime UI/性能和长任务跨进程策略待验收 | emulator/真机运行实时 causal、完整信号触控、横屏与性能；按 `D-014` 决定 WorkManager/用户可见 FGS |
 | `M7` | 后续 V2 | 专家诊断和有证据支持的扩展 | 未开始 | 另行决策 |
 
 ## 当前 Android 工程事实
@@ -74,11 +80,11 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台：M1�
 
 ## 当前未完成能力
 
-Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实波形/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台；live causal 平滑仍未实现。metrics CSV 边界不变，SQI/ratio 仍为 provisional/diagnostic，SpO2/BP unavailable，IMU 不显示。
+Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。metrics CSV 边界不变，SQI/ratio 仍为 provisional/diagnostic，SpO2/BP unavailable，IMU 不显示。
 
 ## 验证与真机策略
 
-- 本轮 M6 使用 Android Studio JDK/Gradle wrapper 9.6.1 完成 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 127 tests/0 failures/0 errors、debug lint 0 errors/9 个依赖版本提示、debug/release/androidTest APK 及 REL-002/003/004/005/006/007 静态契约通过。新增 full-signal continuity-run filter、完整 replay raw SHA 不变、visible-range spectrum、2 h/单样本 viewport 和无整段复制的 range plot 断言；用户采集数据未写回、未打包、未提交。
+- 本轮 M6 使用 Android Studio JDK/Gradle wrapper 9.6.1 完成 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 132 tests/0 failures/0 errors、debug lint 0 issues、debug/release/androidTest APK 及 REL-002/003/004/005/006/007 静态契约通过。新增统一 causal/raw state、独立 preprocessor 精确对等、gap/index discontinuity/rejected frame、5 Hz no-burst、preview/recording 同窗、Python-style settling Y-scale 与 2 h bounded ring 证据；用户采集数据未写回、未打包、未提交。
 - 最近 M4 使用 Android Studio JDK 25/Gradle wrapper 9.6.1 完成 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 109 tests/0 failures、debug lint 0 errors/9 个依赖版本提示、debug/androidTest APK 通过。可处理的 API/manifest/resource warning 已清理，BLE Kotlin deprecated warning 未再出现；生成的 Windows wrapper 保留 CRLF，除 `gradlew.bat` 行尾格式外 `git diff --check` 通过。
 - 本轮 M2 使用 Android Studio JDK 25/用户当前 Gradle wrapper 9.6.1 完成 `./gradlew test lintRelease assembleRelease assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 106 tests/0 failures、release lint 0 errors、R8/resource shrinking、debug/release/androidTest APK 和 REL-002/003/004/005/006/007 静态契约通过。新增 scan timeout/平台失败/coordinator retry JVM tests 和设备列表嵌套滚动 instrumentation seam；本轮不运行 emulator/真机，修复后的 CUP 扫描/连接与厂商行为待复验。
 - 最近 M5 使用 Android Studio JDK 25 完成 release artifact、REL-001 30 min/2 h simulation、checkpoint 预算、raw/CSV/replay 对齐断言、REL-007 FGS 启动失败映射和 target/permission/service 静态 contract、API 33+ notification permission gate、REL-006 BLE permission API boundary matrix、CAP-007 写入失败升级与 incomplete-prefix 断言、REL-004 service finalization wait、merged-manifest/API target report，以及 `:app:verifyReleasePrivacy --no-configuration-cache` 的源码日志/APK 内容审计；本轮 M4 不重复关闭这些证据。
@@ -87,6 +93,6 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 当前开放阻塞
 
-`D-001` 真实 CUP 协议/固件抓包；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` SpO2/BP 产品文案；`D-014` 离线分析目前按短任务 app scope 执行，跨进程/长任务需 WorkManager 或用户可见 FGS。
+`D-001` 真实 CUP 协议/固件抓包；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。代码/运行时/发布余项详见 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)。
 
 详细事实记录见 [`DEVELOPMENT_STATUS_DETAILED.md`](DEVELOPMENT_STATUS_DETAILED.md)。

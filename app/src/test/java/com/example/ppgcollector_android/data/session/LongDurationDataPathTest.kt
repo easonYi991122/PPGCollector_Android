@@ -11,9 +11,8 @@ import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest
 import com.example.ppgcollector_android.core.signal.LiveMetricRuntimeProfile
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
-import com.example.ppgcollector_android.core.signal.LiveMetricWindowScheduler
+import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
 import com.example.ppgcollector_android.core.signal.MetricResult
-import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshotScheduler
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -50,7 +49,7 @@ class LongDurationDataPathTest {
             val writer = CaptureSessionWriter(longConfiguration(profile), root) { Long.MAX_VALUE }
             val decoder = CupBatchStreamDecoder()
             val sequenceTracker = CupFrameSequenceTracker()
-            val scheduler = LiveMetricWindowScheduler(profile)
+            val signalRuntime = LivePpgSignalRuntime(profile)
             val frames = Array(256) { sequence -> encodedFrame(sequence) }
             val metricWindowEnds = ArrayList<Long>(expectedMetricRequestCount)
             var currentMetrics = LiveMetricSnapshot.warmingUp()
@@ -77,11 +76,12 @@ class LongDurationDataPathTest {
                     val request = if (acceptedInChunk == 0) {
                         null
                     } else {
-                        scheduler.ingest(
+                        signalRuntime.ingest(
                             decodedFrames = events,
+                            acceptedSampleStartIndex = acceptedSamples,
                             measuredAt = longMeasuredAt(frameIndex),
-                            acceptedSampleStartIndex = acceptedSampleStartIndex,
-                        )
+                            nowNanos = frameIndex.toLong() * 500_000_000L,
+                        ).metricRequest
                     }
 
                     writer.append(
@@ -125,8 +125,15 @@ class LongDurationDataPathTest {
             assertEquals(0, sequenceStats.missingFrames)
             assertEquals(0, sequenceStats.duplicateFrames)
             assertEquals(0, sequenceStats.outOfOrderFrames)
-            assertEquals(800, scheduler.bufferedSampleCount)
-            assertEquals(sampleCount, scheduler.continuousSamples)
+            assertEquals(800, signalRuntime.bufferedSampleCount)
+            assertEquals(sampleCount.toLong(), signalRuntime.continuousSamples)
+            val finalWaveform = signalRuntime.publishNow(
+                nowNanos = durationSeconds.toLong() * 1_000_000_000L,
+                measuredAt = Instant.EPOCH,
+            )!!
+            assertEquals(800, finalWaveform.red.size)
+            assertEquals(800, finalWaveform.causalRed.size)
+            assertEquals(800, finalWaveform.causalIr.size)
             assertEquals(expectedMetricRequestCount, metricWindowEnds.size)
             assertEquals(799L, metricWindowEnds.first())
             assertEquals((sampleCount - 1).toLong(), metricWindowEnds.last())
@@ -322,7 +329,7 @@ class LongDurationDataPathTest {
     )
 
     private fun countWaveformPublications(durationSeconds: Int): Int {
-        val scheduler = LiveWaveformSnapshotScheduler()
+        val runtime = LivePpgSignalRuntime()
         val seed = CupDecodedFrameEvent(
             frame = CupBatchFrame(
                 sequence = 0u,
@@ -334,10 +341,10 @@ class LongDurationDataPathTest {
             isAccepted = true,
         )
         var publications = if (
-            scheduler.ingest(listOf(seed), 0L, Instant.EPOCH, 0L) != null
+            runtime.ingest(listOf(seed), 0L, Instant.EPOCH, 0L).waveform != null
         ) 1 else 0
         for (tick in 1 until durationSeconds * 5) {
-            if (scheduler.poll(tick * 200_000_000L, Instant.EPOCH) != null) publications++
+            if (runtime.poll(tick * 200_000_000L, Instant.EPOCH) != null) publications++
         }
         return publications
     }

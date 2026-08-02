@@ -14,5 +14,9 @@ class WaveformAccessibilityTest {
             "REPLAY IR 波形，200 个样本",
             waveformContentDescription("REPLAY IR", 200),
         )
+        assertEquals(
+            "RED 波形，800 个样本，因果滤波 0.6–4 Hz",
+            waveformContentDescription("RED", 800, "因果滤波 0.6–4 Hz"),
+        )
     }
 }

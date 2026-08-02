@@ -33,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
@@ -69,6 +70,7 @@ import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.core.ble.DiscoveredBleDevice
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
+import com.example.ppgcollector_android.core.signal.LiveWaveformScaleMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
 import com.example.ppgcollector_android.core.signal.StreamFreshness
@@ -82,6 +84,7 @@ import java.util.Locale
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
 
 private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, WORKBENCH, COMPARE }
+private enum class LiveWaveformDisplayMode { RAW, CAUSAL }
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
@@ -274,6 +277,9 @@ private fun BleHome(
     onOpenSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var waveformDisplayMode by rememberSaveable {
+        mutableStateOf(LiveWaveformDisplayMode.CAUSAL)
+    }
     val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
         capture.recording.state == CaptureRecordingState.STOPPING
     val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
@@ -431,10 +437,15 @@ private fun BleHome(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("实时原始波形", style = MaterialTheme.typography.titleMedium)
+                    Text("实时 PPG 波形", style = MaterialTheme.typography.titleMedium)
                     FreshnessPill(snapshot.freshness)
                 }
-                LiveWaveformAndMetrics(waveform = waveform, metrics = metrics)
+                LiveWaveformAndMetrics(
+                    waveform = waveform,
+                    metrics = metrics,
+                    displayMode = waveformDisplayMode,
+                    onDisplayModeChange = { waveformDisplayMode = it },
+                )
             }
         }
 
@@ -871,12 +882,86 @@ private fun DoubleArray.sliceVisible(range: IntRange): DoubleArray {
 private fun LiveWaveformAndMetrics(
     waveform: LiveWaveformSnapshot,
     metrics: LiveMetricSnapshot?,
+    displayMode: LiveWaveformDisplayMode,
+    onDisplayModeChange: (LiveWaveformDisplayMode) -> Unit,
 ) {
-    WaveformPanel("RED", Color(0xFFD32F2F), waveform.red)
-    WaveformPanel("IR", Color(0xFF1565C0), waveform.ir)
+    val causalAvailable = waveform.causalRed.size == waveform.red.size &&
+        waveform.causalIr.size == waveform.ir.size && waveform.causalRed.isNotEmpty()
+    val effectiveMode = if (displayMode == LiveWaveformDisplayMode.CAUSAL && causalAvailable) {
+        LiveWaveformDisplayMode.CAUSAL
+    } else {
+        LiveWaveformDisplayMode.RAW
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (displayMode == LiveWaveformDisplayMode.RAW) {
+            FilledTonalButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.RAW) },
+                modifier = Modifier.weight(1f),
+            ) { Text("RAW") }
+        } else {
+            OutlinedButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.RAW) },
+                modifier = Modifier.weight(1f),
+            ) { Text("RAW") }
+        }
+        if (displayMode == LiveWaveformDisplayMode.CAUSAL) {
+            FilledTonalButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.CAUSAL) },
+                enabled = causalAvailable,
+                modifier = Modifier.weight(1f),
+            ) { Text("CAUSAL 0.6–4 Hz") }
+        } else {
+            OutlinedButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.CAUSAL) },
+                enabled = causalAvailable,
+                modifier = Modifier.weight(1f),
+            ) { Text("CAUSAL 0.6–4 Hz") }
+        }
+    }
+    val red = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) waveform.causalRed else waveform.red
+    val ir = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) waveform.causalIr else waveform.ir
+    val settlingSamples = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
+        waveform.settlingSampleCount
+    } else {
+        0
+    }
+    val modeDescription = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
+        "因果滤波 0.6–4 Hz"
+    } else {
+        "原始数据"
+    }
+    WaveformPanel(
+        "RED",
+        Color(0xFFD32F2F),
+        red,
+        excludedLeadingSampleCount = settlingSamples,
+        semanticsDetail = modeDescription,
+    )
+    WaveformPanel(
+        "IR",
+        Color(0xFF1565C0),
+        ir,
+        excludedLeadingSampleCount = settlingSamples,
+        semanticsDetail = modeDescription,
+    )
     Text(
-        "最近 ${waveform.red.size}/800 个样本 · 通道独立纵向缩放 · " +
-            "源 ${waveform.sourceSampleStartIndex ?: "—"}–${waveform.sourceSampleEndIndex ?: "—"}",
+        if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
+            "${waveform.preprocessProfile ?: "ios_baseline_0.1"} · 因果 0.6–4 Hz · gap reset · " +
+                if (settlingSamples > 0) "浅色区为滤波 settling" else "滤波状态稳定"
+        } else {
+            "100 Hz accepted RAW · 不插值、不重算"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "最近 ${red.size}/${waveform.metricWarmupSampleCount} 个样本 · " +
+            "指标 ${minOf(waveform.continuousSampleCount, waveform.metricWarmupSampleCount.toLong())}/" +
+            "${waveform.metricWarmupSampleCount} · 源 " +
+            "${waveform.sourceSampleStartIndex ?: "—"}–${waveform.sourceSampleEndIndex ?: "—"}",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -885,7 +970,13 @@ private fun LiveWaveformAndMetrics(
 }
 
 @androidx.compose.runtime.Composable
-private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
+private fun WaveformPanel(
+    label: String,
+    color: Color,
+    values: DoubleArray,
+    excludedLeadingSampleCount: Int = 0,
+    semanticsDetail: String? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -906,12 +997,16 @@ private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
         )
     }
     val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val settlingColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f)
+    val verticalRange = remember(values, excludedLeadingSampleCount) {
+        LiveWaveformScaleMath.verticalRange(values, excludedLeadingSampleCount)
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .height(92.dp)
             .semantics {
-                contentDescription = waveformContentDescription(label, values.size)
+                contentDescription = waveformContentDescription(label, values.size, semanticsDetail)
             },
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
@@ -933,17 +1028,23 @@ private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
                         strokeWidth = 1.dp.toPx(),
                     )
                 }
+                if (excludedLeadingSampleCount > 0 && values.isNotEmpty()) {
+                    drawRect(
+                        color = settlingColor,
+                        size = androidx.compose.ui.geometry.Size(
+                            width = size.width *
+                                excludedLeadingSampleCount.coerceAtMost(values.size).toFloat() /
+                                values.size.toFloat(),
+                            height = size.height,
+                        ),
+                    )
+                }
                 val maximumPointCount = maxOf(2, (size.width * 2f).toInt())
                 val plot = LiveWaveformPlotMath.plot(values, maximumPointCount)
                 if (plot.points.isEmpty()) return@Canvas
-                val range = plot.maximum - plot.minimum
-                val verticalPadding = if (range.isFinite() && range > 0.0) {
-                    range * 0.08
-                } else {
-                    maxOf(kotlin.math.abs(plot.maximum) * 0.08, 1.0)
-                }
-                val lower = plot.minimum - verticalPadding
-                val upper = plot.maximum + verticalPadding
+                val scale = verticalRange ?: return@Canvas
+                val lower = scale.lower
+                val upper = scale.upper
                 val span = (upper - lower).coerceAtLeast(1e-9)
                 fun pointOffset(pointIndex: Int): Offset {
                     val point = plot.points[pointIndex]
@@ -990,8 +1091,14 @@ private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
     }
 }
 
-internal fun waveformContentDescription(label: String, sampleCount: Int): String =
-    "$label 波形，$sampleCount 个样本"
+internal fun waveformContentDescription(
+    label: String,
+    sampleCount: Int,
+    detail: String? = null,
+): String = buildString {
+    append("$label 波形，$sampleCount 个样本")
+    if (!detail.isNullOrBlank()) append("，$detail")
+}
 
 @androidx.compose.runtime.Composable
 private fun LiveMetricsPanel(metrics: LiveMetricSnapshot?) {

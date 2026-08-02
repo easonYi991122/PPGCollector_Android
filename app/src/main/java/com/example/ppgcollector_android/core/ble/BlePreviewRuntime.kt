@@ -6,9 +6,8 @@ import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
-import com.example.ppgcollector_android.core.signal.LiveMetricWindowScheduler
+import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
-import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshotScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,8 +53,7 @@ class BlePreviewRuntime(
     private var lastClockTickNanos = System.nanoTime()
     private var decoder = CupBatchStreamDecoder()
     private var sequenceTracker = CupFrameSequenceTracker()
-    private var waveformScheduler = LiveWaveformSnapshotScheduler()
-    private var metricScheduler = LiveMetricWindowScheduler()
+    private var signalRuntime = LivePpgSignalRuntime()
     private val worker = thread(start = true, isDaemon = true, name = "ppg-ble-preview") { loop() }
 
     val snapshot: StateFlow<BlePreviewSnapshot> = _snapshot.asStateFlow()
@@ -83,8 +81,7 @@ class BlePreviewRuntime(
             queue.clear()
             decoder = CupBatchStreamDecoder()
             sequenceTracker = CupFrameSequenceTracker()
-            waveformScheduler = LiveWaveformSnapshotScheduler()
-            metricScheduler = LiveMetricWindowScheduler()
+            signalRuntime = LivePpgSignalRuntime()
             acceptedSampleIndex = 0L
             lastClockTickNanos = System.nanoTime()
             _snapshot.value = BlePreviewSnapshot(connectionGeneration = generation)
@@ -104,7 +101,7 @@ class BlePreviewRuntime(
             var tickGeneration: Long? = null
             var shouldStop = false
             synchronized(lock) {
-                waveformScheduler.poll(now, Instant.now())?.let { publishWaveform(it) }
+                signalRuntime.poll(now, Instant.now())?.let { publishWaveform(it) }
                 if (_snapshot.value.processedSampleCount > 0 &&
                     now - lastClockTickNanos >= clockTickIntervalNanos
                 ) {
@@ -134,17 +131,14 @@ class BlePreviewRuntime(
                 }
                 acceptedFrame = events.any { it.isAccepted }
                 val acceptedBefore = acceptedSampleIndex
-                waveformScheduler.ingest(
+                val signal = signalRuntime.ingest(
                     decodedFrames = events,
                     acceptedSampleStartIndex = acceptedBefore,
                     measuredAt = Instant.now(),
                     nowNanos = System.nanoTime(),
-                )?.let { publishWaveform(it) }
-                val request = metricScheduler.ingest(
-                    decodedFrames = events,
-                    measuredAt = Instant.now(),
-                    acceptedSampleStartIndex = acceptedBefore,
                 )
+                signal.waveform?.let { publishWaveform(it) }
+                val request = signal.metricRequest
                 acceptedSampleIndex += events.filter { it.isAccepted }
                     .sumOf { it.frame.samples.size.toLong() }
                 val next = _snapshot.value.copy(

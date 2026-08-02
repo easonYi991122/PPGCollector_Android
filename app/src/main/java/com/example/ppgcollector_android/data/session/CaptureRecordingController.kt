@@ -9,9 +9,8 @@ import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
-import com.example.ppgcollector_android.core.signal.LiveMetricWindowScheduler
+import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
-import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshotScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,8 +92,7 @@ class CaptureRecordingController(
     private var worker: Thread? = null
     private var analysisWorker: Thread? = null
     private var analysisStopRequested = false
-    private var analysisScheduler = LiveMetricWindowScheduler()
-    private var waveformScheduler = LiveWaveformSnapshotScheduler()
+    private var signalRuntime = LivePpgSignalRuntime()
     private val _analysisSnapshot = MutableStateFlow(CaptureAnalysisSnapshot())
     private val _waveformSnapshot = MutableStateFlow(LiveWaveformSnapshot())
 
@@ -147,8 +145,7 @@ class CaptureRecordingController(
                 queue.clear()
                 analysisQueue.clear()
                 analysisStopRequested = false
-                analysisScheduler = LiveMetricWindowScheduler()
-                waveformScheduler = LiveWaveformSnapshotScheduler()
+                signalRuntime = LivePpgSignalRuntime()
                 _analysisSnapshot.value = CaptureAnalysisSnapshot(
                     state = CaptureAnalysisState.WARMING,
                 )
@@ -311,22 +308,19 @@ class CaptureRecordingController(
                 if (input != null) {
                     try {
                         val nowNanos = System.nanoTime()
-                        waveformScheduler.ingest(
+                        val signal = signalRuntime.ingest(
                             decodedFrames = input.frames,
                             acceptedSampleStartIndex = input.acceptedSampleStartIndex,
                             measuredAt = input.measuredAt,
                             nowNanos = nowNanos,
-                        )?.let { _waveformSnapshot.value = it }
-                        val request = analysisScheduler.ingest(
-                            decodedFrames = input.frames,
-                            measuredAt = input.measuredAt,
-                            acceptedSampleStartIndex = input.acceptedSampleStartIndex,
                         )
+                        signal.waveform?.let { _waveformSnapshot.value = it }
+                        val request = signal.metricRequest
                         _analysisSnapshot.value = _analysisSnapshot.value.copy(
                             state = if (request == null) CaptureAnalysisState.WARMING
                             else CaptureAnalysisState.ANALYZING,
-                            generation = analysisScheduler.generation,
-                            processedSampleCount = analysisScheduler.continuousSamples.toLong(),
+                            generation = signalRuntime.generation,
+                            processedSampleCount = signalRuntime.continuousSamples,
                             error = null,
                         )
                         if (request != null) {
@@ -334,7 +328,7 @@ class CaptureRecordingController(
                             _analysisSnapshot.value = CaptureAnalysisSnapshot(
                                 state = CaptureAnalysisState.READY,
                                 generation = request.generation,
-                                processedSampleCount = analysisScheduler.continuousSamples.toLong(),
+                                processedSampleCount = signalRuntime.continuousSamples,
                                 lastResult = result,
                                 error = null,
                             )
@@ -346,7 +340,7 @@ class CaptureRecordingController(
                         )
                     }
                 }
-                waveformScheduler.poll(System.nanoTime(), Instant.now())?.let {
+                signalRuntime.poll(System.nanoTime(), Instant.now())?.let {
                     _waveformSnapshot.value = it
                 }
                 synchronized(lock) {
@@ -354,7 +348,7 @@ class CaptureRecordingController(
                 }
             }
         } finally {
-            waveformScheduler.publishNow(Instant.now())?.let {
+            signalRuntime.publishNow(System.nanoTime(), Instant.now())?.let {
                 _waveformSnapshot.value = it
             }
             if (_analysisSnapshot.value.state != CaptureAnalysisState.FAILED) {

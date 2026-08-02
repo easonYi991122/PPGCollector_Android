@@ -36,6 +36,7 @@ class MainActivitySystemTest {
     private fun assertLiveSurfacesVisible() {
         composeRule.onNodeWithText("CUPCollector").assertIsDisplayed()
         composeRule.onNodeWithText("扫描 CUP").assertIsDisplayed()
+        composeRule.onNodeWithText("CAUSAL 0.6–4 Hz").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithContentDescription(
             "RED 波形",
             substring = true,

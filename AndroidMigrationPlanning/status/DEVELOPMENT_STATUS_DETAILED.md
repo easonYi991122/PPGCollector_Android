@@ -2327,6 +2327,48 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 优先在 emulator/真机运行完整 Replay/工作台的拖动缩放、8 s/全幅切换、全屏横屏/insets/旋转恢复和长会话性能；另轮按 `07_LIVE_FILTERED_WAVEFORM_PLAN.md` 先合并纯 Kotlin 因果状态机并做 fixture/gap/2 h 证据，再接 Compose，不能直接把 offline zero-phase 放进实时路径。
 
+## 2026-08-02 · M6 · Unified live causal waveform runtime
+
+### 本轮目标
+
+把采集期间已经为 HR/SQI/R 计算的 causal 0.6–4 Hz RED/IR 同步用于实时可视化，避免另建第三套滤波状态；保持 raw-first、100 Hz accepted samples、800/100 指标 cadence、默认 5 Hz snapshot、gap reset 和数据完整性边界。完成后审计 M0–M7 仍未闭环的代码、运行时证据和外部决策。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-002`、`UI-003`、`PROTO-004`、`SIG-001`、`SIG-002`、`SIG-004`；Phase 4 live waveform 与 Phase 5 bounded/long-run gate。
+- Primary source: Swift `PPGPreprocessor.swift`、`PPGLiveMetricRuntime.swift`、`CUPDualWaveformPreview.swift`；Python `online.py:OnlineProcessor._push_ppg`/`visible_y_range`；`docs/02/03/04/05/07`。
+- Tests/golden: production `PpgPreprocessor`/existing fixtures、single-state exact arrays、gap/index discontinuity/rejected frame、5 Hz no-burst、preview/recording integration、30 min/2 h bounded simulation、waveform scale math/semantics。
+- Android target: `LivePpgSignalRuntime.kt`、`LiveWaveformRuntime.kt`、`BlePreviewRuntime.kt`、`CaptureRecordingController.kt`、`MainActivity.kt` 及 JVM/instrumentation seams。
+- Non-goals: 不改变 CUP draft wire、CUPRAW1、25 列 CSV、session/analysis schema、HR/SQI/R 算法与 1 Hz cadence；不导出 causal trace；不使用实时 zero-phase、插值或 UI animation；不在本轮运行 emulator/真机。
+
+### 实现事实
+
+- Added `LivePpgSignalRuntime` as the single per-owner ordered PPG state. One RED/IR preprocessor pair and five fixed 800-sample circular arrays now produce raw/causal waveform snapshots and metric requests together. Preview and recording owners no longer run production `LiveWaveformSnapshotScheduler` and `LiveMetricWindowScheduler` in parallel; the legacy classes remain only for focused compatibility tests.
+- The runtime preserves 800-sample/100-sample/5 Hz behavior. A delayed poll publishes at most one current snapshot, accepted sample index mismatch or sequence gap atomically resets both preprocessors/rings/warm-up/deadline and advances generation, and rejected duplicate/out-of-order events do not enter state. Waveform/request raw and causal arrays are exact copies of the same ring; 2 h simulation remains bounded.
+- `LiveWaveformSnapshot` now carries causal RED/IR, preprocess profile, continuous/warm-up and visible settling counts. Python-style Y scaling draws the complete settling prefix but excludes only that prefix from autoscale once enough stable values exist.
+- Live Compose defaults to user-requested `CAUSAL 0.6–4 Hz` with RAW available. It labels `ios_baseline_0.1`, causal/gap-reset/settling semantics, shades settling without removing samples, retains ordered extrema Canvas paths and adds TalkBack detail. Display switching only selects arrays already in the immutable snapshot and never recomputes history.
+- raw-first writer ordering, CSV/session values, capture/preview queue ownership, metric cadence/results and offline `scipy-sosfiltfilt-parity-0.1` are unchanged. Recording intentionally starts a clean per-session causal state while app-scope preview retains its own connection state.
+- Updated `docs/07_LIVE_FILTERED_WAVEFORM_PLAN.md` from planning to A/B/C implemented and recorded the user's CAUSAL default decision. Added `docs/08_REMAINING_MIGRATION_AUDIT.md`, separating concrete code gaps from hardware/runtime gates and product/release inputs.
+- Audit found these highest-priority code gaps: capture service still records `algorithmVersion="unavailable"` and a preprocess profile spelling inconsistent with the runtime; FGS notification/capture UI do not yet expose elapsed/write health; FileProvider staging is not connected to a share chooser; dynamic duration storage budget and CI/benchmark remain missing. `D-014` remains conditional on the chosen cross-process analysis policy.
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.signal.LivePpgSignalRuntimeTest --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；new runtime 4 tests passed。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 2m 9s`；132 JVM tests/0 failures/0 errors/skips，debug lint XML 0 issues，debug/release/androidTest APK、R8/resource shrink、REL-002/003/004/005/006/007 contracts passed。
+- Full suite includes 30 min/2 h simulated data path with 800 raw/causal rings, exact source counts, no-burst waveform cadence and existing raw/CSV/metadata/replay alignment/privacy assertions.
+- `git diff --check` and production TODO/log scan → passed before commit；`CollectedData/` remains ignored and untouched。
+- Hardware validation: pending；按项目约定未运行真实 CUP causal 波形、gap、RAW 切换、录制切换、5 Hz frame/GC、动态字号/TalkBack、后台/锁屏、emulator 或真机测试。
+
+### 风险与决策变化
+
+- 用户本轮明确 Live 默认 CAUSAL，关闭 `docs/07` 的 RAW/CAUSAL default open item；RAW 始终可切回。`D-011` 的 5/10 Hz 用户配置仍开放，默认继续 5 Hz，不能在无 trace 证据时提高。
+- Causal display 复用已验证 preprocessor，但真实视觉平滑度、filter settling、Canvas frame time 和 OEM GC 仍需真机；本地 2 h 数据模拟不等于 2 h UI/GATT/power evidence。
+- 本轮没有改变 schema/algorithm/profile wire version。`D-001`–`D-014`/`D-016` 的剩余事实与顺序见 `docs/08_REMAINING_MIGRATION_AUDIT.md`。
+
+### 下一轮
+
+优先实施 capture 正式 algorithm/preprocess version 追溯和 service-owned elapsed/write-health notification/UI，随后接通 FileProvider share 与动态空间预算；再进入 emulator/真实 CUP/API/OEM/lifecycle/SAF/accessibility/2 h 验收矩阵。没有新固件/校准/产品证据前不扩张 M7 的 IMU、SpO2/BP 或医疗语义。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
