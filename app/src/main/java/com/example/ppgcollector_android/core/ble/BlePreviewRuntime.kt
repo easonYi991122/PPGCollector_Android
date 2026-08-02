@@ -29,9 +29,13 @@ data class BlePreviewSnapshot(
 /** App-scope, bounded preview pipeline. It never writes session files. */
 class BlePreviewRuntime(
     queueCapacity: Int = 256,
+    private val onAcceptedFrame: (Long) -> Unit = {},
+    private val onClockTick: (Long) -> Unit = {},
+    private val clockTickIntervalNanos: Long = 250_000_000L,
 ) : AutoCloseable {
     init {
         require(queueCapacity > 0)
+        require(clockTickIntervalNanos > 0)
     }
 
     private data class Input(
@@ -47,6 +51,7 @@ class BlePreviewRuntime(
     private var droppedChunkCount = 0L
     private var acceptedSampleIndex = 0L
     private var stopRequested = false
+    private var lastClockTickNanos = System.nanoTime()
     private var decoder = CupBatchStreamDecoder()
     private var sequenceTracker = CupFrameSequenceTracker()
     private var waveformScheduler = LiveWaveformSnapshotScheduler()
@@ -81,6 +86,7 @@ class BlePreviewRuntime(
             waveformScheduler = LiveWaveformSnapshotScheduler()
             metricScheduler = LiveMetricWindowScheduler()
             acceptedSampleIndex = 0L
+            lastClockTickNanos = System.nanoTime()
             _snapshot.value = BlePreviewSnapshot(connectionGeneration = generation)
         }
     }
@@ -95,14 +101,25 @@ class BlePreviewRuntime(
             val input = queue.poll(100, TimeUnit.MILLISECONDS)
             if (input != null) process(input)
             val now = System.nanoTime()
+            var tickGeneration: Long? = null
+            var shouldStop = false
             synchronized(lock) {
                 waveformScheduler.poll(now, Instant.now())?.let { publishWaveform(it) }
-                if (stopRequested && queue.isEmpty()) return
+                if (_snapshot.value.processedSampleCount > 0 &&
+                    now - lastClockTickNanos >= clockTickIntervalNanos
+                ) {
+                    lastClockTickNanos = now
+                    tickGeneration = activeGeneration
+                }
+                shouldStop = stopRequested && queue.isEmpty()
             }
+            tickGeneration?.let { generation -> runCatching { onClockTick(generation) } }
+            if (shouldStop) return
         }
     }
 
     private fun process(input: Input) {
+        var acceptedFrame = false
         synchronized(lock) {
             if (input.generation != activeGeneration) return
             try {
@@ -115,6 +132,7 @@ class BlePreviewRuntime(
                             sequence !is CupSequenceEvent.OutOfOrder,
                     )
                 }
+                acceptedFrame = events.any { it.isAccepted }
                 val acceptedBefore = acceptedSampleIndex
                 waveformScheduler.ingest(
                     decodedFrames = events,
@@ -141,6 +159,7 @@ class BlePreviewRuntime(
                 )
             }
         }
+        if (acceptedFrame) runCatching { onAcceptedFrame(input.generation) }
     }
 
     private fun publishWaveform(snapshot: LiveWaveformSnapshot) {

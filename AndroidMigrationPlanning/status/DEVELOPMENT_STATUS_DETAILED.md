@@ -2201,6 +2201,47 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在后续明确的真机验收轮复验：无设备 10 s 停止并可重试、首个 CUP 广播稳定渲染、连接/CCCD/receiving；随后继续 M5 API/厂商/runtime matrix，不把本轮 fake/compile 证据表述为硬件通过。
 
+## 2026-08-02 · M4 · Restore live waveform, freshness gate and connected UI
+
+### 本轮目标
+
+修复用户真机联调暴露的 Phase 4 实时页问题：指标正常但 RED/IR 波形不可见；输入合法录制名后开始按钮仍被错误 freshness 状态永久禁用；连接完成后设备行必须改为明确的断开操作；同时按当前 iOS Swift 页面提升主要信息层级和视觉一致性，不改变协议、raw、CSV 或算法语义。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-001`、`UI-002`、`UI-003`、`UI-005`、`UI-006`、`UI-007`、`BLE-006`；Phase 4 §7.1/§7.2 的 realtime/capture/accessibility gate。
+- Primary source: `DeviceListView.swift` 的 `statusHeader`/`DeviceRow`/capture/metrics sections，`CUPDualWaveformPreview.swift` 的 `WaveformPanel.makePlot`，`CaptureSessionController.swift` 的 `canStart`，以及 docs/02/03/04/05。
+- Tests/golden: `BleCoordinatorTest` valid frame/fresh/stale/capture gate integration、`BlePreviewRuntimeTest` accepted-frame generation callback、`LiveWaveformRuntimeTest` ordered extrema path、`CupDeviceListTest` first-device/disconnect state、`MainActivitySystemTest` persistent RED/IR surfaces。
+- Android target: `BlePreviewRuntime`/`BleCoordinator`/`CupBleGattStateMachine` freshness feedback，`PpgCollectorApplication` monotonic clock/main dispatcher，`LiveWaveformPlotMath`，`MainActivity`/theme/manifest/resources 和 Compose instrumentation seams。
+- Non-goals: changing CUP draft frame/UUID/sequence semantics, raw/CSV/session formats, HR/RR/SQI algorithms, adding SpO2/BP claims, real-device execution, dependency major-version upgrades or FGS ownership changes。
+
+### 实现事实
+
+- 波形不可见根因是 Canvas 将每个 min/max bucket 画成竖线；早期/常见的一样本 bucket 满足 `minimum == maximum`，因此全部是零长度线。现移植 Swift `makePlot`：窗口较小时按时间顺序连点，较大时每 bin 保留最小/最大值并按其原始 offset 顺序组成连续 `Path`；RED/IR 独立动态 Y、圆角线段、网格和空窗口占位保持可见，ring/5 Hz/800 样本契约不变。
+- 录制 gate 根因是 app-scope preview 解码了合法帧并计算指标，却从未调用 BLE owner 的 `markValidFrame`；因此 UI 可看到 HR/RR/SQI，freshness 仍为 `WAITING/STALE`。preview 现仅在 accepted frame 后携带 connection generation 回调 coordinator；coordinator 在 owner dispatcher 上拒绝旧 generation、推进 `FRESH` 并定时刷新为 `STALE`。Application 改用 `SystemClock.elapsedRealtimeNanos`，避免 production clock 默认为 0。
+- 设备列表按 Swift `DeviceRow` 区分当前设备：建链时显示进度，`Subscribed/Receiving` 时使用红色“断开”，其他设备在活动连接期间禁用；仍保持非滚动子列表，避免恢复首设备嵌套滚动崩溃。
+- 首页改为稳定蓝/绿/红品牌色、grouped background、白色分组卡片、freshness pill、空态双轨波形、2×2 metrics 和全宽 capture action；录制区明确展示唯一 gate 原因。RR 继续标为 Red/IR 诊断比值、SQI 为暂定评分，SpO2/BP 仍 unavailable。
+- 清理了 lint 可处理项：受 API policy 保护的通知权限使用稳定 wire string、冗余 Activity label、minSdk 26 下多余 O 判断和未使用模板颜色。剩余 9 条 lint warning 全是已有依赖更新提示，未在 UI 修复轮冒险升级。
+- 按用户明确要求，本次提交同时纳入用户已有的 `AGENTS.md`、Gradle wrapper 9.6.1 和非易失 `.idea` project settings；`.idea/workspace.xml`/`caches` 仍按 ignore 保持本地。协议/raw/CSV/算法文件未改变。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests 'com.example.ppgcollector_android.core.ble.BleCoordinatorTest' --tests 'com.example.ppgcollector_android.core.ble.BlePreviewRuntimeTest' --tests 'com.example.ppgcollector_android.core.signal.LiveWaveformRuntimeTest' --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；JVM 109 tests/0 failures，debug/androidTest APK 编译通过。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew lintDebug assembleDebug --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；lint 从 20 warnings 降为 0 errors/9 dependency update notices，BLE Kotlin deprecated warnings 未再出现。
+- `git diff --check -- . ':(exclude)gradlew.bat'` → passed；完整检查仅报告用户生成的 Windows wrapper CRLF 行尾，不改写该跨平台脚本。
+- Hardware validation: pending；按约定本轮不运行真实 CUP 波形、录制开始/停止、连接/断开、动态字号/TalkBack、后台/锁屏、emulator 或真机测试。
+
+### 风险与决策变化
+
+- JVM 与 Compose 编译证据证明合法帧→freshness→gate 和折线采样数学，但真实设备振幅、刷新观感、厂商 Canvas/GATT 时序及按钮交互仍需原设备复验；不能以指标正常替代 raw/protocol wire 认证。
+- Gradle/IDE 配置随用户要求纳入版本控制；依赖版本提示暂不升级，避免把工具链迁移混入 M4 UI correctness fix。
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；本轮没有改变 schema/profile/algorithm version。
+
+### 下一轮
+
+在后续明确的真机验收轮复验 RED/IR 连续波形、连接后红色断开、合法命名 + fresh stream 启用录制、停止后预览连续和 10 s 无设备扫描；随后继续 M5 API/厂商/runtime matrix，不把本轮本地证据表述为硬件通过。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

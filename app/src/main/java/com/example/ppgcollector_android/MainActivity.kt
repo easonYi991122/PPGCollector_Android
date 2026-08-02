@@ -1,6 +1,5 @@
 package com.example.ppgcollector_android
 
-import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,51 +7,72 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.activity.viewModels
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.core.ble.DiscoveredBleDevice
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
-import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
+import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
+import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
 import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
+import java.util.Locale
+
+private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
@@ -98,7 +118,10 @@ class MainActivity : ComponentActivity() {
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
                 val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
                 val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    containerColor = MaterialTheme.colorScheme.background,
+                ) { innerPadding ->
                     BleHome(
                         snapshot = snapshot,
                         capture = capture,
@@ -120,6 +143,7 @@ class MainActivity : ComponentActivity() {
                         onScan = ::requestScan,
                         onStopScan = bleCoordinator::stopScanning,
                         onConnect = bleCoordinator::connect,
+                        onDisconnect = bleCoordinator::disconnect,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }
@@ -151,13 +175,13 @@ class MainActivity : ComponentActivity() {
         val requiresNotificationPermission =
             CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(Build.VERSION.SDK_INT)
         if (!requiresNotificationPermission ||
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            checkSelfPermission(POST_NOTIFICATIONS_PERMISSION) ==
             PackageManager.PERMISSION_GRANTED
         ) {
             captureViewModel.setNotificationPermissionResult(granted = true)
             captureViewModel.startRecording()
         } else {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            notificationPermissionLauncher.launch(POST_NOTIFICATIONS_PERMISSION)
         }
     }
 
@@ -188,85 +212,233 @@ private fun BleHome(
     onScan: () -> Unit,
     onStopScan: () -> Unit,
     onConnect: (String) -> BleCoordinatorAction,
+    onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
+        capture.recording.state == CaptureRecordingState.STOPPING
+    val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
+        capture.waveform
+    } else {
+        preview.waveform
+    }
+    val metrics = if (recordingActive) {
+        capture.analysis.lastResult?.snapshot
+    } else {
+        preview.lastAnalysis?.snapshot
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.Top,
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("CUPCollector", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(12.dp))
-        Text("权限：${snapshot.permission.gateState}")
-        Text("蓝牙：${snapshot.availability.title}")
-        Text("连接：${snapshot.phase}")
-        Text("数据流：${snapshot.freshness}")
-        Text("录制服务：${capture.binding}")
-        Text("录制：${capture.recording.state}")
-        Text("分析：${capture.analysis.state}")
-        val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
-            capture.recording.state == CaptureRecordingState.STOPPING
-        val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
-            capture.waveform
-        } else {
-            preview.waveform
-        }
-        val metrics = if (recordingActive) {
-            capture.analysis.lastResult?.snapshot
-        } else {
-            preview.lastAnalysis?.snapshot
-        }
-        if (waveform.red.isNotEmpty()) {
-            LiveWaveformAndMetrics(
-                waveform = waveform,
-                metrics = metrics,
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "CUPCollector",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "PPG 实时采集与完整数据记录",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (capture.recording.state != CaptureRecordingState.RECORDING &&
-            capture.recording.state != CaptureRecordingState.STOPPING
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         ) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = sessionName,
-                onValueChange = onSessionNameChange,
-                label = { Text("录制名称") },
-                singleLine = true,
-                enabled = !snapshot.phase.isBusy,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(onClick = onStartCapture, enabled = captureGate.canStart) {
-                Text("开始录制")
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        StatusDot(
+                            if (snapshot.phase.isReadyToDisconnect) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.outline
+                            },
+                        )
+                        Column {
+                            Text(
+                                snapshot.availability.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                connectionStatusText(snapshot.phase, snapshot.isScanning),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    FreshnessPill(snapshot.freshness)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text(
+                    "权限 ${snapshot.permission.gateState} · 录制 ${capture.recording.state} · 服务 ${capture.binding}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            captureGate.message?.let { Text("开始条件：$it") }
         }
-        if (capture.recording.state == CaptureRecordingState.RECORDING ||
-            capture.recording.state == CaptureRecordingState.STOPPING
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
-            Button(onClick = onStopCapture) { Text("停止并保存") }
-        }
-        capture.error?.let { Text("服务：$it", color = MaterialTheme.colorScheme.error) }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = onScan, enabled = !snapshot.isScanning) {
-                Text("扫描 CUP")
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("附近设备", style = MaterialTheme.typography.titleMedium)
+                    if (snapshot.isScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onScan, enabled = !snapshot.isScanning) {
+                        Text("扫描 CUP")
+                    }
+                    OutlinedButton(onClick = onStopScan, enabled = snapshot.isScanning) {
+                        Text("停止扫描")
+                    }
+                }
+                if (snapshot.discoveredDevices.isEmpty()) {
+                    Text(
+                        if (snapshot.isScanning) {
+                            "正在查找名称以 CUP 开头的设备…"
+                        } else {
+                            "暂无 CUP 设备，扫描会在 10 秒后自动停止。"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    CupDeviceList(
+                        devices = snapshot.discoveredDevices,
+                        phase = snapshot.phase,
+                        onConnect = onConnect,
+                        onDisconnect = onDisconnect,
+                    )
+                }
+                snapshot.lastError?.let {
+                    Text("蓝牙：$it", color = MaterialTheme.colorScheme.error)
+                }
             }
-            Button(onClick = onStopScan, enabled = snapshot.isScanning) {
-                Text("停止扫描")
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("实时原始波形", style = MaterialTheme.typography.titleMedium)
+                    FreshnessPill(snapshot.freshness)
+                }
+                LiveWaveformAndMetrics(waveform = waveform, metrics = metrics)
             }
         }
-        Spacer(Modifier.height(12.dp))
-        if (snapshot.discoveredDevices.isEmpty()) {
-            Text("暂无 CUP 设备")
-        } else {
-            CupDeviceList(
-                devices = snapshot.discoveredDevices,
-                connectionBusy = snapshot.phase.isBusy,
-                onConnect = onConnect,
-            )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("数据记录", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        capture.recording.state.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (recordingActive) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                if (!recordingActive) {
+                    OutlinedTextField(
+                        value = sessionName,
+                        onValueChange = onSessionNameChange,
+                        label = { Text("录制名称") },
+                        supportingText = { Text("仅支持字母、数字、下划线和短横线") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = onStartCapture,
+                        enabled = captureGate.canStart,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("开始录制")
+                    }
+                    Text(
+                        if (captureGate.canStart) {
+                            "设备与数据流已就绪，可以开始录制。"
+                        } else {
+                            "开始条件：${captureGate.message ?: "正在检查"}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (captureGate.canStart) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                } else {
+                    Button(
+                        onClick = onStopCapture,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                    ) {
+                        Text("停止并保存")
+                    }
+                }
+                capture.error?.let { Text("服务：$it", color = MaterialTheme.colorScheme.error) }
+            }
         }
-        snapshot.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
+
         SessionsPanel(
             state = sessions,
             onRefresh = onRefreshSessions,
@@ -289,31 +461,138 @@ private fun BleHome(
 @androidx.compose.runtime.Composable
 internal fun CupDeviceList(
     devices: List<DiscoveredBleDevice>,
-    connectionBusy: Boolean,
+    phase: BleConnectionPhase,
     onConnect: (String) -> BleCoordinatorAction,
+    onDisconnect: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        devices.forEach { device ->
+        devices.forEachIndexed { index, device ->
             key(device.id) {
+                val isActive = phase.deviceId == device.id
+                val isBusy = isActive && phase.isBusy
+                val isConnected = isActive && phase.isReadyToDisconnect
+                val anotherDeviceIsActive = phase.deviceId != null && !isActive
+                val signalColor = when {
+                    device.rssi == null -> MaterialTheme.colorScheme.outline
+                    device.rssi >= -60 -> MaterialTheme.colorScheme.tertiary
+                    device.rssi >= -75 -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.error
+                }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Column {
-                        Text(device.name)
-                        Text("RSSI ${device.rssi ?: "—"}")
-                    }
-                    Button(
-                        onClick = { onConnect(device.id) },
-                        enabled = device.isConnectable && !connectionBusy,
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text("连接")
+                        StatusDot(signalColor)
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                device.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "${device.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${device.id.take(8)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
+                    when {
+                        isBusy -> Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Text("连接中…", style = MaterialTheme.typography.labelMedium)
+                        }
+                        isConnected -> Button(
+                            onClick = onDisconnect,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) {
+                            Text("断开")
+                        }
+                        else -> Button(
+                            onClick = { onConnect(device.id) },
+                            enabled = device.isConnectable && !anotherDeviceIsActive,
+                        ) {
+                            Text("连接")
+                        }
+                    }
+                }
+                if (index != devices.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
     }
 }
+
+@androidx.compose.runtime.Composable
+private fun StatusDot(color: Color) {
+    Surface(
+        modifier = Modifier.size(10.dp),
+        shape = RoundedCornerShape(50),
+        color = color,
+    ) {}
+}
+
+@androidx.compose.runtime.Composable
+private fun FreshnessPill(freshness: StreamFreshness) {
+    val color = when (freshness) {
+        StreamFreshness.FRESH -> MaterialTheme.colorScheme.tertiary
+        StreamFreshness.WAITING -> MaterialTheme.colorScheme.primary
+        StreamFreshness.STALE -> MaterialTheme.colorScheme.error
+        StreamFreshness.UNAVAILABLE -> MaterialTheme.colorScheme.outline
+    }
+    val label = when (freshness) {
+        StreamFreshness.FRESH -> "数据新鲜"
+        StreamFreshness.WAITING -> "等待数据"
+        StreamFreshness.STALE -> "数据超时"
+        StreamFreshness.UNAVAILABLE -> "未连接"
+    }
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = color.copy(alpha = 0.12f),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            color = color,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+private fun connectionStatusText(phase: BleConnectionPhase, isScanning: Boolean): String =
+    if (isScanning) {
+        "正在扫描 CUP 设备"
+    } else {
+        when (phase) {
+            BleConnectionPhase.Idle -> "等待扫描或连接"
+            is BleConnectionPhase.Connecting -> "正在连接设备"
+            is BleConnectionPhase.DiscoveringServices -> "正在发现服务"
+            is BleConnectionPhase.DiscoveringCharacteristics -> "正在发现特征"
+            is BleConnectionPhase.Subscribing -> "正在订阅通知"
+            is BleConnectionPhase.Subscribed -> "通知已订阅，等待 CUP 数据"
+            is BleConnectionPhase.Receiving -> "正在接收 CUP 通知"
+            is BleConnectionPhase.Disconnecting -> "正在安全断开"
+            is BleConnectionPhase.Failed -> "连接失败：${phase.message}"
+        }
+    }
 
 @androidx.compose.runtime.Composable
 private fun SessionsPanel(
@@ -327,14 +606,22 @@ private fun SessionsPanel(
     onCancelAction: () -> Unit,
     onClearAction: () -> Unit,
 ) {
-    Spacer(Modifier.height(20.dp))
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
         Text("已保存会话", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
+        OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
     }
     Text(
         "会话仅保存在本应用内部；卸载应用会删除未导出的会话。请选择会话后使用“导出 ZIP”保存副本。",
         style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     state.error?.let { Text("会话目录：$it", color = MaterialTheme.colorScheme.error) }
     if (state.isLoading) {
@@ -441,6 +728,8 @@ private fun SessionsPanel(
         Button(onClick = onClearSelection) { Text("关闭详情") }
         Text("导出只写入用户选择的目标；恢复只创建新目录，不修改源会话。", style = MaterialTheme.typography.bodySmall)
     }
+        }
+    }
 }
 
 @androidx.compose.runtime.Composable
@@ -526,54 +815,120 @@ private fun LiveWaveformAndMetrics(
     waveform: LiveWaveformSnapshot,
     metrics: LiveMetricSnapshot?,
 ) {
-    Spacer(Modifier.height(12.dp))
-    Text("实时波形（最近 ${waveform.red.size}/800 个样本）")
     WaveformPanel("RED", Color(0xFFD32F2F), waveform.red)
     WaveformPanel("IR", Color(0xFF1565C0), waveform.ir)
     Text(
-        "源样本 ${waveform.sourceSampleStartIndex ?: "—"}–${waveform.sourceSampleEndIndex ?: "—"} · 发布 #${waveform.publicationSequence}",
+        "最近 ${waveform.red.size}/800 个样本 · 通道独立纵向缩放 · " +
+            "源 ${waveform.sourceSampleStartIndex ?: "—"}–${waveform.sourceSampleEndIndex ?: "—"}",
         style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     LiveMetricsPanel(metrics)
 }
 
 @androidx.compose.runtime.Composable
 private fun WaveformPanel(label: String, color: Color, values: DoubleArray) {
-    Text(label, style = MaterialTheme.typography.labelMedium)
-    Canvas(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(72.dp)
+            .padding(bottom = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = color,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            values.lastOrNull()?.let { "%.0f".format(Locale.ROOT, it) } ?: "—",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(92.dp)
             .semantics {
                 contentDescription = waveformContentDescription(label, values.size)
             },
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
     ) {
-        val buckets = LiveWaveformBucketMath.bucket(values, size.width.toInt())
-        if (buckets.isEmpty()) return@Canvas
-        val minimum = buckets.minOf { it.minimum }
-        val maximum = buckets.maxOf { it.maximum }
-        val range = maximum - minimum
-        val padding = if (range.isFinite() && range > 0.0) {
-            range * 0.08
-        } else {
-            maxOf(kotlin.math.abs(maximum) * 0.08, 1.0)
-        }
-        val lower = minimum - padding
-        val upper = maximum + padding
-        val span = (upper - lower).coerceAtLeast(1e-9)
-        buckets.forEachIndexed { index, bucket ->
-            val x = if (buckets.size == 1) 0f
-            else index.toFloat() / (buckets.size - 1).toFloat() * size.width
-            val top = ((upper - bucket.maximum) / span * size.height)
-                .toFloat().coerceIn(0f, size.height)
-            val bottom = ((upper - bucket.minimum) / span * size.height)
-                .toFloat().coerceIn(0f, size.height)
-            drawLine(
-                color = color,
-                start = Offset(x, top),
-                end = Offset(x, bottom),
-                strokeWidth = 1f,
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                repeat(3) { index ->
+                    val y = size.height * (index + 1) / 4f
+                    drawLine(
+                        color = gridColor,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                }
+                val maximumPointCount = maxOf(2, (size.width * 2f).toInt())
+                val plot = LiveWaveformPlotMath.plot(values, maximumPointCount)
+                if (plot.points.isEmpty()) return@Canvas
+                val range = plot.maximum - plot.minimum
+                val verticalPadding = if (range.isFinite() && range > 0.0) {
+                    range * 0.08
+                } else {
+                    maxOf(kotlin.math.abs(plot.maximum) * 0.08, 1.0)
+                }
+                val lower = plot.minimum - verticalPadding
+                val upper = plot.maximum + verticalPadding
+                val span = (upper - lower).coerceAtLeast(1e-9)
+                fun pointOffset(pointIndex: Int): Offset {
+                    val point = plot.points[pointIndex]
+                    val x = if (values.size <= 1) {
+                        size.width / 2f
+                    } else {
+                        point.offset.toFloat() / (values.size - 1).toFloat() * size.width
+                    }
+                    val y = ((upper - point.value) / span * size.height)
+                        .toFloat()
+                        .coerceIn(0f, size.height)
+                    return Offset(x, y)
+                }
+                if (plot.points.size == 1) {
+                    drawCircle(color = color, radius = 2.5.dp.toPx(), center = pointOffset(0))
+                    return@Canvas
+                }
+                val path = Path().apply {
+                    val first = pointOffset(0)
+                    moveTo(first.x, first.y)
+                    for (index in 1 until plot.points.size) {
+                        val point = pointOffset(index)
+                        lineTo(point.x, point.y)
+                    }
+                }
+                drawPath(
+                    path = path,
+                    color = color,
+                    style = Stroke(
+                        width = 1.75.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+            }
+            if (values.isEmpty()) {
+                Text(
+                    "等待 CUP 样本",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -583,46 +938,129 @@ internal fun waveformContentDescription(label: String, sampleCount: Int): String
 
 @androidx.compose.runtime.Composable
 private fun LiveMetricsPanel(metrics: LiveMetricSnapshot?) {
-    Text("实时指标", style = MaterialTheme.typography.titleSmall)
+    Text("实时指标", style = MaterialTheme.typography.titleMedium)
     if (metrics == null) {
-        Text("等待 8 秒窗口；当前没有可用指标")
+        Text(
+            "等待完整 8 秒窗口；当前没有可用指标。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         return
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        MetricValue(Modifier.weight(1f), "HR", metrics.heartRateBpm, "bpm")
-        MetricValue(Modifier.weight(1f), "SQI", metrics.signalQuality, "")
-        MetricValue(Modifier.weight(1f), "R（诊断）", metrics.ratioOfRatios, "")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        MetricValue(
+            Modifier.weight(1f),
+            "心率",
+            metrics.heartRateBpm,
+            "bpm",
+        ) { "%.0f".format(Locale.ROOT, it) }
+        MetricValue(
+            Modifier.weight(1f),
+            "RR（Red/IR）",
+            metrics.ratioOfRatios,
+            "",
+        ) { "%.3f".format(Locale.ROOT, it) }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        MetricValue(
+            Modifier.weight(1f),
+            "信号质量 SQI",
+            metrics.signalQuality,
+            "",
+        ) { "%.2f".format(Locale.ROOT, it) }
+        UnavailableMetricValue(
+            modifier = Modifier.weight(1f),
+            label = "血压",
+            reason = metrics.bloodPressure.unavailableReason?.message ?: "未提供模型",
+        )
     }
     Text(
-        "SpO₂：不可用（缺少正式标定） · BP：不可用（未提供模型）",
+        "RR 仅为 Red/IR 诊断比值；SQI 为暂定评分。SpO₂ 缺少正式标定，当前不可用。",
         style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 
 @androidx.compose.runtime.Composable
-private fun <T : Any> MetricValue(
+private fun MetricValue(
     modifier: Modifier,
     label: String,
-    metric: MetricResult<T>,
+    metric: MetricResult<Double>,
     suffix: String,
+    formatter: (Double) -> String,
 ) {
     val value = if (metric.value != null && metric.isValid) {
-        "${metric.value}${if (suffix.isEmpty()) "" else " $suffix"}"
+        "${formatter(metric.value)}${if (suffix.isEmpty()) "" else " $suffix"}"
     } else {
-        "不可用"
+        "—"
     }
     val state = when {
         metric.value == null || !metric.isValid -> metric.unavailableReason?.message ?: "无效"
-        metric.isProvisional -> "临时"
+        metric.isProvisional -> "暂定评分"
         else -> "有效"
     }
-    Column(modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
-        Text(state, style = MaterialTheme.typography.bodySmall)
-        Text(
-            "源 ${metric.sourceSampleIndex ?: "—"} · ${metric.algorithmVersion}",
-            style = MaterialTheme.typography.labelSmall,
-        )
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(
+                value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                state,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (metric.isValid) {
+                    if (metric.isProvisional) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                "源 ${metric.sourceSampleIndex ?: "—"} · ${metric.algorithmVersion}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun UnavailableMetricValue(
+    modifier: Modifier,
+    label: String,
+    reason: String,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text("—", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

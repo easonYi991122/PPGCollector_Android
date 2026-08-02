@@ -21,6 +21,17 @@ data class WaveformBucket(
     val maximum: Double,
 )
 
+data class WaveformPlotPoint(
+    val offset: Int,
+    val value: Double,
+)
+
+data class WaveformPlot(
+    val points: List<WaveformPlotPoint>,
+    val minimum: Double,
+    val maximum: Double,
+)
+
 /**
  * Bounded live waveform ring and wall-clock publisher. The publisher emits
  * at most one snapshot per due poll; delayed polls advance from `now` so a
@@ -163,5 +174,66 @@ object LiveWaveformBucketMath {
             }
             WaveformBucket(minimum, maximum)
         }
+    }
+}
+
+/**
+ * Builds an ordered waveform path while preserving each downsample bin's
+ * extrema. Unlike min/max vertical bars, this remains visible when a bucket
+ * contains one sample and preserves the temporal order of sharp pulses.
+ */
+object LiveWaveformPlotMath {
+    fun plot(values: DoubleArray, maximumPointCount: Int): WaveformPlot {
+        require(maximumPointCount >= 2)
+        if (values.isEmpty()) return WaveformPlot(emptyList(), 0.0, 1.0)
+
+        val points = ArrayList<WaveformPlotPoint>(min(values.size, maximumPointCount))
+        var overallMinimum = Double.POSITIVE_INFINITY
+        var overallMaximum = Double.NEGATIVE_INFINITY
+
+        fun observe(offset: Int, value: Double) {
+            if (!value.isFinite()) return
+            overallMinimum = minOf(overallMinimum, value)
+            overallMaximum = maxOf(overallMaximum, value)
+            points += WaveformPlotPoint(offset, value)
+        }
+
+        if (values.size <= maximumPointCount) {
+            values.forEachIndexed(::observe)
+        } else {
+            val binCount = maxOf(1, maximumPointCount / 2)
+            repeat(binCount) { bin ->
+                val lowerOffset = bin * values.size / binCount
+                val upperOffset = ((bin + 1) * values.size / binCount).coerceAtMost(values.size)
+                var minimumPoint: WaveformPlotPoint? = null
+                var maximumPoint: WaveformPlotPoint? = null
+                for (offset in lowerOffset until upperOffset) {
+                    val value = values[offset]
+                    if (!value.isFinite()) continue
+                    if (minimumPoint == null || value < minimumPoint!!.value) {
+                        minimumPoint = WaveformPlotPoint(offset, value)
+                    }
+                    if (maximumPoint == null || value > maximumPoint!!.value) {
+                        maximumPoint = WaveformPlotPoint(offset, value)
+                    }
+                    overallMinimum = minOf(overallMinimum, value)
+                    overallMaximum = maxOf(overallMaximum, value)
+                }
+                val minimum = minimumPoint
+                val maximum = maximumPoint
+                if (minimum != null && maximum != null) {
+                    if (minimum.offset <= maximum.offset) {
+                        points += minimum
+                        if (maximum.offset != minimum.offset) points += maximum
+                    } else {
+                        points += maximum
+                        points += minimum
+                    }
+                }
+            }
+        }
+
+        if (points.isEmpty()) return WaveformPlot(emptyList(), 0.0, 1.0)
+        return WaveformPlot(points, overallMinimum, overallMaximum)
     }
 }

@@ -93,15 +93,19 @@ class BleCoordinator(
     apiLevel: Int,
     private val uptimeSeconds: () -> Double = { 0.0 },
     private val hostMonotonicNanos: () -> Long = { 0L },
+    private val ownerDispatcher: ((() -> Unit) -> Unit) = { action -> action() },
     profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
-) {
+) : AutoCloseable {
     private val permissions = BlePermissionResultSeam(apiLevel)
-    private val previewRuntime = BlePreviewRuntime()
     private val owner = CupBleGattStateMachine(
         transport = transport,
         profile = profile,
         uptimeSeconds = uptimeSeconds,
         monotonicNanos = hostMonotonicNanos,
+    )
+    private val previewRuntime = BlePreviewRuntime(
+        onAcceptedFrame = ::handlePreviewAcceptedFrame,
+        onClockTick = ::handlePreviewClockTick,
     )
 
     var snapshot: BleCoordinatorSnapshot = snapshotNow()
@@ -196,8 +200,11 @@ class BleCoordinator(
     }
 
     fun markValidFrame() {
-        owner.markValidFrame(uptimeSeconds())
-        publish()
+        if (owner.markValidFrame(uptimeSeconds())) publish()
+    }
+
+    override fun close() {
+        previewRuntime.close()
     }
 
     private fun publish() {
@@ -218,6 +225,22 @@ class BleCoordinator(
     private fun dispatchRawChunk(chunk: BleRawNotificationChunk) {
         previewRuntime.offer(chunk)
         recordingRawSink?.invoke(chunk)
+    }
+
+    private fun handlePreviewAcceptedFrame(generation: Long) {
+        ownerDispatcher {
+            if (owner.connectionGeneration != generation) return@ownerDispatcher
+            if (owner.markValidFrame(uptimeSeconds())) publish()
+        }
+    }
+
+    private fun handlePreviewClockTick(generation: Long) {
+        ownerDispatcher {
+            if (owner.connectionGeneration != generation) return@ownerDispatcher
+            val previous = owner.freshness
+            val current = owner.refreshFreshness(uptimeSeconds())
+            if (current != previous) publish()
+        }
     }
 
     private fun snapshotNow() = BleCoordinatorSnapshot(

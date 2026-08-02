@@ -241,7 +241,6 @@ class CaptureForegroundService : Service() {
             .build()
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
             "CUP 录制",

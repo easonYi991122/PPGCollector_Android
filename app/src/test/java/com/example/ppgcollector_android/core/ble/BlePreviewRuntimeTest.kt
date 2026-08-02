@@ -4,11 +4,49 @@ import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BlePreviewRuntimeTest {
+    @Test
+    fun acceptedFrameCallbackOnlyFiresAfterAValidDecodedFrame() {
+        val acceptedCallbacks = AtomicInteger()
+        val acceptedGeneration = AtomicLong(-1L)
+        val runtime = BlePreviewRuntime(
+            onAcceptedFrame = { generation ->
+                acceptedGeneration.set(generation)
+                acceptedCallbacks.incrementAndGet()
+            },
+        )
+        try {
+            runtime.reset(generation = 1)
+            runtime.offer(
+                BleRawNotificationChunk(
+                    connectionGeneration = 1,
+                    hostMonotonicNanos = 1L,
+                    bytes = byteArrayOf(0x01, 0x02, 0x03),
+                ),
+            )
+            Thread.sleep(20)
+            assertEquals(0, acceptedCallbacks.get())
+
+            runtime.offer(
+                BleRawNotificationChunk(
+                    connectionGeneration = 1,
+                    hostMonotonicNanos = 2L,
+                    bytes = encodeCupBatchFrame(frame(1u)),
+                ),
+            )
+            awaitTrue { acceptedCallbacks.get() == 1 }
+            assertEquals(1L, acceptedGeneration.get())
+        } finally {
+            runtime.close()
+        }
+    }
+
     @Test
     fun previewWorkerDecodesBoundedStreamAndSurvivesRecordingSinkChanges() {
         val runtime = BlePreviewRuntime()

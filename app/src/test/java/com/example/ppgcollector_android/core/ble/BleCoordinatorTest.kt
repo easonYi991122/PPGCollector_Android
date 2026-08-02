@@ -1,6 +1,14 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
+import com.example.ppgcollector_android.core.signal.StreamFreshness
+import com.example.ppgcollector_android.data.session.CaptureStartContext
+import com.example.ppgcollector_android.data.session.CaptureStartGate
 import java.time.Instant
+import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -134,5 +142,112 @@ class BleCoordinatorTest {
         coordinator.applyPermissionResult(mapOf("android.permission.ACCESS_FINE_LOCATION" to false))
         assertFalse(coordinator.snapshot.permission.canUseBle)
         assertEquals(BlePermissionGateState.DENIED, coordinator.snapshot.permission.gateState)
+    }
+
+    @Test
+    fun decodedPreviewFrameMakesCaptureFreshThenClockTickMarksItStale() {
+        val transport = FakeBleTransport()
+        var uptime = 10.0
+        val coordinator = BleCoordinator(
+            transport = transport,
+            apiLevel = 33,
+            uptimeSeconds = { uptime },
+            hostMonotonicNanos = { (uptime * 1_000_000_000.0).toLong() },
+        )
+        try {
+            coordinator.applyPermissionResult(
+                mapOf(
+                    "android.permission.BLUETOOTH_SCAN" to true,
+                    "android.permission.BLUETOOTH_CONNECT" to true,
+                ),
+            )
+            transport.emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON))
+            transport.emit(
+                BleTransportEvent.Discovered(
+                    BleTransportDiscovery(deviceId, "CUP-SIM", -40, true, Instant.EPOCH),
+                ),
+            )
+            assertEquals(BleCoordinatorAction.STARTED, coordinator.connect(deviceId))
+            transport.emit(BleTransportEvent.Connected(deviceId))
+            val profile = CupBleDeviceProfile.cupNusBringUp
+            transport.emit(
+                BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null),
+            )
+            transport.emit(
+                BleTransportEvent.CharacteristicsDiscovered(
+                    deviceId = deviceId,
+                    serviceUuid = profile.serviceUuid,
+                    characteristics = listOf(
+                        BleTransportCharacteristic(
+                            uuid = profile.notifyCharacteristicUuid,
+                            properties = listOf("notify"),
+                            supportsNotifications = true,
+                            isNotifying = false,
+                        ),
+                    ),
+                    errorMessage = null,
+                ),
+            )
+            transport.emit(
+                BleTransportEvent.NotificationStateChanged(
+                    deviceId,
+                    profile.notifyCharacteristicUuid,
+                    true,
+                    null,
+                ),
+            )
+            assertEquals(StreamFreshness.WAITING, coordinator.snapshot.freshness)
+
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId = deviceId,
+                    characteristicUuid = profile.notifyCharacteristicUuid,
+                    data = encodeCupBatchFrame(
+                        CupBatchFrame(
+                            sequence = 1u,
+                            samples = List(50) { index ->
+                                CupPpgSample(
+                                    red = (10_000 + index).toUInt(),
+                                    ir = (20_000 + index).toUInt(),
+                                )
+                            },
+                        ),
+                    ),
+                    errorMessage = null,
+                ),
+            )
+            awaitTrue { coordinator.snapshot.freshness == StreamFreshness.FRESH }
+            val sessionsRoot = Files.createTempDirectory("capture-gate-fresh")
+            try {
+                assertEquals(
+                    null,
+                    CaptureStartGate.validate(
+                        CaptureStartContext(
+                            isRecording = false,
+                            phase = coordinator.snapshot.phase,
+                            freshness = coordinator.snapshot.freshness,
+                            sessionsRoot = sessionsRoot,
+                            sessionName = "session_001",
+                            availableBytes = Long.MAX_VALUE,
+                        ),
+                    ),
+                )
+            } finally {
+                Files.deleteIfExists(sessionsRoot)
+            }
+
+            uptime = 12.1
+            awaitTrue { coordinator.snapshot.freshness == StreamFreshness.STALE }
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    private fun awaitTrue(predicate: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline && !predicate()) {
+            Thread.sleep(1)
+        }
+        assertTrue(predicate())
     }
 }

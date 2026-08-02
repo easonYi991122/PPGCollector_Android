@@ -1,6 +1,5 @@
 package com.example.ppgcollector_android.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -9,35 +8,44 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = CollectorBlueDark,
+    onPrimary = Color.White,
+    tertiary = CollectorGreenDark,
+    error = CollectorRedDark,
+    background = GroupedBackgroundDark,
+    onBackground = CollectorOnSurfaceDark,
+    surface = GroupedSurfaceDark,
+    onSurface = CollectorOnSurfaceDark,
+    surfaceVariant = GroupedSurfaceVariantDark,
+    onSurfaceVariant = CollectorSecondaryTextDark,
+    outline = Color(0xFF636366),
+    outlineVariant = Color(0xFF38383A),
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = CollectorBlue,
     onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    tertiary = CollectorGreen,
+    error = CollectorRed,
+    background = GroupedBackground,
+    onBackground = CollectorOnSurface,
+    surface = GroupedSurface,
+    onSurface = CollectorOnSurface,
+    surfaceVariant = GroupedSurfaceVariant,
+    onSurfaceVariant = CollectorSecondaryText,
+    outline = Color(0xFF8E8E93),
+    outlineVariant = Color(0xFFD1D1D6),
 )
 
 @Composable
 fun PPGCollector_AndroidTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    // Keep the collector identity stable by default; callers may opt into dynamic color.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

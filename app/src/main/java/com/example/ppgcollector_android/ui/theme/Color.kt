@@ -2,10 +2,20 @@ package com.example.ppgcollector_android.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
+val CollectorBlue = Color(0xFF007AFF)
+val CollectorBlueDark = Color(0xFF0A84FF)
+val CollectorGreen = Color(0xFF248A3D)
+val CollectorGreenDark = Color(0xFF30D158)
+val CollectorRed = Color(0xFFFF3B30)
+val CollectorRedDark = Color(0xFFFF453A)
 
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+val GroupedBackground = Color(0xFFF2F2F7)
+val GroupedBackgroundDark = Color(0xFF000000)
+val GroupedSurface = Color(0xFFFFFFFF)
+val GroupedSurfaceDark = Color(0xFF1C1C1E)
+val GroupedSurfaceVariant = Color(0xFFEFEFF4)
+val GroupedSurfaceVariantDark = Color(0xFF2C2C2E)
+val CollectorOnSurface = Color(0xFF1C1C1E)
+val CollectorOnSurfaceDark = Color(0xFFF2F2F7)
+val CollectorSecondaryText = Color(0xFF636366)
+val CollectorSecondaryTextDark = Color(0xFFAEAEB2)

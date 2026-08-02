@@ -7,6 +7,7 @@ import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveWaveformRuntimeTest {
@@ -54,6 +55,32 @@ class LiveWaveformRuntimeTest {
         assertEquals(9.0, buckets[0].maximum, 0.0)
         assertEquals(3.0, buckets[1].minimum, 0.0)
         assertEquals(7.0, buckets[1].maximum, 0.0)
+    }
+
+    @Test
+    fun orderedPlotConnectsSingleSampleBucketsAndPreservesDownsampledExtrema() {
+        val direct = LiveWaveformPlotMath.plot(
+            values = doubleArrayOf(10.0, 15.0, 12.0, 18.0),
+            maximumPointCount = 8,
+        )
+        assertEquals(listOf(0, 1, 2, 3), direct.points.map { it.offset })
+        assertEquals(10.0, direct.minimum, 0.0)
+        assertEquals(18.0, direct.maximum, 0.0)
+
+        val downsampled = LiveWaveformPlotMath.plot(
+            values = DoubleArray(800) { index ->
+                when (index % 40) {
+                    10 -> 100.0
+                    20 -> -50.0
+                    else -> index.toDouble() / 800.0
+                }
+            },
+            maximumPointCount = 40,
+        )
+        assertTrue(downsampled.points.size <= 40)
+        assertTrue(downsampled.points.zipWithNext().all { (left, right) -> left.offset <= right.offset })
+        assertEquals(-50.0, downsampled.minimum, 0.0)
+        assertEquals(100.0, downsampled.maximum, 0.0)
     }
 
     private fun event(sequence: UByte, start: Int): CupDecodedFrameEvent =

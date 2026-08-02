@@ -2,7 +2,7 @@
 
 版本：1.1（agent 执行基线）
 日期：2026-08-01
-当前迭代：`M2`（有限 BLE 扫描与设备发现崩溃修复）
+当前迭代：`M4`（实时波形、录制 freshness gate 与连接态 UI 修复）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -59,7 +59,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 |---|---|---|
 | 语言/构建 | Kotlin、Gradle Kotlin DSL、version catalog | 目标实现语言；不把 Python/C++ 嵌入 app runtime |
 | Android | `minSdk=26`、`compileSdk=37`、`targetSdk=37` | 以 `app/build.gradle.kts` 为事实来源；发布前重新审查平台政策 |
-| 工具链 | AGP `9.3.1`、Kotlin `2.2.10`、Gradle `9.5.0`、Compose BOM `2026.02.01`、Java source/target `11` | 版本以当前工程文件为准，更新时同步状态记录 |
+| 工具链 | AGP `9.3.1`、Kotlin `2.2.10`、Gradle `9.6.1`、Compose BOM `2026.02.01`、Java source/target `11` | 版本以当前工程文件为准，更新时同步状态记录 |
 | app 身份 | `com.example.ppgcollector_android`、`PPGCollector_Android`、`versionName=1.0` | 基础工程占位值；不是最终产品身份或迁移里程碑 |
 | 当前代码 | 默认 `MainActivity`、Material 3 主题、示例 unit/instrumented test | 目前没有 Android 迁移业务能力 |
 | 当前验证 | 本轮尝试 `./gradlew test assembleDebug`，因环境没有 Java Runtime 未执行 | 后续安装/配置 JDK 后必须重跑；不能把该命令标为通过 |
@@ -99,7 +99,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core、固定种子随机分片/中间噪声 resync evidence 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、10 s 有限扫描、scan failure/late-result 边界、分步 permission callback merge、permission/Compose seam 已实现；设备列表嵌套滚动崩溃已修复，修复后真机门禁未过 |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
-| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、bounded waveform/metrics、Sessions/replay、scroll/accessibility、确定性 SAF cancel、可取消 inspection/refresh 和 instrumentation seam 已实现；runtime/SAF provider/可访问性仍待验收 |
+| `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 未开始 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |

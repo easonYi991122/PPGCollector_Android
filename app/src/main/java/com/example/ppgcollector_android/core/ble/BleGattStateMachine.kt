@@ -143,9 +143,13 @@ class CupBleGattStateMachine(
         }
     }
 
-    fun markValidFrame(atUptimeSeconds: Double) {
+    fun markValidFrame(atUptimeSeconds: Double): Boolean {
+        if (phase !is BleConnectionPhase.Subscribed && phase !is BleConnectionPhase.Receiving) {
+            return false
+        }
         freshnessTracker.observeValidFrame(atUptimeSeconds)
         freshness = freshnessTracker.freshness(atUptimeSeconds)
+        return true
     }
 
     fun refreshFreshness(atUptimeSeconds: Double): com.example.ppgcollector_android.core.signal.StreamFreshness {
