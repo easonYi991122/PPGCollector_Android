@@ -287,6 +287,10 @@ tasks.register("verifyReleaseBleTransportContract") {
     doLast {
         val source = releaseBleTransportSource.asFile.readText()
         val requiredFragments = listOf(
+            "private val scanTimeoutMillis: Long = DEFAULT_SCAN_TIMEOUT_MILLIS",
+            "mainHandler.postDelayed(scanTimeout, scanTimeoutMillis)",
+            "finishScanning(BleScanStopReason.TIMEOUT)",
+            "if (!scanning) return@post",
             "private fun releaseGatt(deviceId: String, gatt: BluetoothGatt, disconnect: Boolean)",
             "if (gattsById[deviceId] !== gatt) {",
             "val ownsSlot = gattsById[deviceId] === gatt",
@@ -322,6 +326,8 @@ tasks.register("verifyReleaseBleTransportContract") {
         }
         val report = buildString {
             appendLine("REL-002 Android BLE transport lifecycle contract")
+            appendLine("scan_timeout_ms=10000")
+            appendLine("late_scan_result=ignored_after_stop")
             appendLine("gatt_release=map+connected_ids+pending_descriptor+BluetoothGatt.close")
             appendLine("replacement_release=before_connecting_new_device")
             appendLine("security_exception_release=disconnect_failure_path")

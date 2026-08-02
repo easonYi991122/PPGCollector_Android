@@ -35,6 +35,7 @@ class AndroidBleTransport(
     private val profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
     private val mainHandler: Handler = Handler(Looper.getMainLooper()),
     private val monotonicNanos: () -> Long = System::nanoTime,
+    private val scanTimeoutMillis: Long = DEFAULT_SCAN_TIMEOUT_MILLIS,
 ) : BleTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager =
@@ -48,20 +49,33 @@ class AndroidBleTransport(
     private var scanner: BluetoothLeScanner? = null
     private var scanning = false
 
+    init {
+        require(scanTimeoutMillis > 0) { "scanTimeoutMillis must be positive" }
+    }
+
     override var eventHandler: ((BleTransportEvent) -> Unit)? = null
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            val name = result.scanRecord?.deviceName ?: runCatching { device.name }.getOrNull()
+            val deviceId = try {
+                device.address
+            } catch (_: SecurityException) {
+                post {
+                    emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNAUTHORIZED))
+                }
+                return
+            }
+            val name = runCatching { result.scanRecord?.deviceName ?: device.name }.getOrNull()
             val rssi = result.rssi
-            val isConnectable = if (Build.VERSION.SDK_INT >= 26) result.isConnectable else true
+            val isConnectable = result.isConnectable
             post {
-                devicesById[device.address] = device
+                if (!scanning) return@post
+                devicesById[deviceId] = device
                 emit(
                     BleTransportEvent.Discovered(
                         BleTransportDiscovery(
-                            deviceId = device.address,
+                            deviceId = deviceId,
                             name = name,
                             rssi = rssi,
                             isConnectable = isConnectable,
@@ -74,10 +88,22 @@ class AndroidBleTransport(
 
         override fun onScanFailed(errorCode: Int) {
             post {
+                if (!scanning) return@post
+                mainHandler.removeCallbacks(scanTimeout)
                 scanning = false
-                emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNKNOWN))
+                scanner = null
+                emit(
+                    BleTransportEvent.ScanStopped(
+                        reason = BleScanStopReason.PLATFORM_FAILURE,
+                        message = "蓝牙扫描失败（code=$errorCode），请重试。",
+                    ),
+                )
             }
         }
+    }
+
+    private val scanTimeout = Runnable {
+        finishScanning(BleScanStopReason.TIMEOUT)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -159,7 +185,9 @@ class AndroidBleTransport(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
         ) {
-            emitCharacteristicValue(gatt, characteristic, characteristic.value)
+            @Suppress("DEPRECATION")
+            val value = characteristic.value
+            emitCharacteristicValue(gatt, characteristic, value)
         }
 
         override fun onCharacteristicChanged(
@@ -221,28 +249,33 @@ class AndroidBleTransport(
                     return@post
                 }
                 scanner = activeScanner
+                scanning = true
                 activeScanner.startScan(
                     null,
                     ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
                     scanCallback,
                 )
-                scanning = true
+                if (scanning) mainHandler.postDelayed(scanTimeout, scanTimeoutMillis)
             } catch (_: SecurityException) {
+                scanning = false
+                scanner = null
                 emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNAUTHORIZED))
+            } catch (error: IllegalStateException) {
+                scanning = false
+                scanner = null
+                emit(
+                    BleTransportEvent.ScanStopped(
+                        reason = BleScanStopReason.PLATFORM_FAILURE,
+                        message = error.message,
+                    ),
+                )
             }
         }
     }
 
     override fun stopScanning() {
         post {
-            if (!scanning) return@post
-            try {
-                scanner?.stopScan(scanCallback)
-            } catch (_: SecurityException) {
-                emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNAUTHORIZED))
-            } finally {
-                scanning = false
-            }
+            finishScanning()
         }
     }
 
@@ -257,7 +290,7 @@ class AndroidBleTransport(
                 gattsById.values.filter { it.device.address != deviceId }.forEach {
                     releaseGatt(it.device.address, it, disconnect = true)
                 }
-                val gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                val gatt = connectGattCompat(device)
                 if (gatt == null) {
                     emit(BleTransportEvent.FailedToConnect(deviceId, "无法创建 GATT"))
                 } else {
@@ -394,6 +427,38 @@ class AndroidBleTransport(
         if (Looper.myLooper() == mainHandler.looper) block() else mainHandler.post(block)
     }
 
+    /** API 26-compatible bridge; compileSdk 37 deprecates every legacy overload. */
+    @Suppress("DEPRECATION")
+    private fun connectGattCompat(device: BluetoothDevice): BluetoothGatt? =
+        device.connectGatt(
+            appContext,
+            false,
+            gattCallback,
+            BluetoothDevice.TRANSPORT_LE,
+            BluetoothDevice.PHY_LE_1M_MASK,
+        )
+
+    private fun finishScanning(
+        reason: BleScanStopReason? = null,
+        message: String? = null,
+    ) {
+        mainHandler.removeCallbacks(scanTimeout)
+        val activeScanner = scanner
+        val wasScanning = scanning
+        scanner = null
+        scanning = false
+        if (!wasScanning) return
+        try {
+            activeScanner?.stopScan(scanCallback)
+        } catch (_: SecurityException) {
+            emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.UNAUTHORIZED))
+            return
+        }
+        reason?.let {
+            emit(BleTransportEvent.ScanStopped(it, message))
+        }
+    }
+
     private fun emit(event: BleTransportEvent) {
         eventHandler?.invoke(event)
     }
@@ -420,6 +485,7 @@ class AndroidBleTransport(
     )
 
     private companion object {
+        const val DEFAULT_SCAN_TIMEOUT_MILLIS = 10_000L
         val CLIENT_CHARACTERISTIC_CONFIG: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
     }

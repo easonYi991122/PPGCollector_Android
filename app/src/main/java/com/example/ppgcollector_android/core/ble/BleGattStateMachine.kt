@@ -72,15 +72,16 @@ class CupBleGattStateMachine(
         lastError = null
         if (clearPreviousResults) discoveredDevices.clear()
         if (availability == BluetoothAvailability.POWERED_ON && !isScanning) {
-            transport.startScanning()
             isScanning = true
+            transport.startScanning()
         }
     }
 
     fun stopScanning() {
         shouldScanWhenReady = false
-        if (isScanning) transport.stopScanning()
+        val wasScanning = isScanning
         isScanning = false
+        if (wasScanning) transport.stopScanning()
     }
 
     fun connect(deviceId: String): Boolean {
@@ -123,7 +124,7 @@ class CupBleGattStateMachine(
         callbackGeneration: Long = connectionGeneration,
     ) {
         if (callbackGeneration != connectionGeneration && event !is BleTransportEvent.AvailabilityChanged &&
-            event !is BleTransportEvent.Discovered
+            event !is BleTransportEvent.Discovered && event !is BleTransportEvent.ScanStopped
         ) {
             incrementStaleCallback()
             return
@@ -131,6 +132,7 @@ class CupBleGattStateMachine(
         when (event) {
             is BleTransportEvent.AvailabilityChanged -> handleAvailability(event.availability)
             is BleTransportEvent.Discovered -> updateDiscovered(event.discovery)
+            is BleTransportEvent.ScanStopped -> handleScanStopped(event)
             is BleTransportEvent.Connected -> handleConnected(event.deviceId, nowUptimeSeconds)
             is BleTransportEvent.FailedToConnect -> handleFailedToConnect(event.deviceId, event.message)
             is BleTransportEvent.Disconnected -> handleDisconnected(event.deviceId, event.message)
@@ -168,8 +170,8 @@ class CupBleGattStateMachine(
         availability = value
         if (value == BluetoothAvailability.POWERED_ON) {
             if (shouldScanWhenReady && !isScanning) {
-                transport.startScanning()
                 isScanning = true
+                transport.startScanning()
             }
             return
         }
@@ -182,6 +184,19 @@ class CupBleGattStateMachine(
         }
         freshnessTracker.reset()
         freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.UNAVAILABLE
+    }
+
+    private fun handleScanStopped(event: BleTransportEvent.ScanStopped) {
+        isScanning = false
+        shouldScanWhenReady = false
+        lastError = when (event.reason) {
+            BleScanStopReason.TIMEOUT -> if (discoveredDevices.isEmpty()) {
+                "扫描超时，未发现 CUP 设备。"
+            } else {
+                null
+            }
+            BleScanStopReason.PLATFORM_FAILURE -> event.message ?: "蓝牙扫描失败，请重试。"
+        }
     }
 
     private fun updateDiscovered(discovery: BleTransportDiscovery) {

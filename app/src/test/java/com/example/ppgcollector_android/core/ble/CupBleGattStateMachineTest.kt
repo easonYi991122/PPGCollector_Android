@@ -246,6 +246,45 @@ class CupBleGattStateMachineTest {
         assertFalse(owner.pollDeadline(100.0))
     }
 
+    @Test
+    fun scanTimeoutStopsOwnerAndAllowsExplicitRetry() {
+        val transport = FakeBleTransport()
+        val owner = CupBleGattStateMachine(transport)
+        owner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)
+
+        owner.startScanning(clearPreviousResults = true)
+        assertTrue(owner.isScanning)
+        transport.emit(BleTransportEvent.ScanStopped(BleScanStopReason.TIMEOUT))
+
+        assertFalse(owner.isScanning)
+        assertEquals("扫描超时，未发现 CUP 设备。", owner.lastError)
+        assertEquals(1, transport.commands.count { it == FakeBleCommand.StartScanning })
+
+        owner.startScanning(clearPreviousResults = true)
+        assertTrue(owner.isScanning)
+        assertEquals(null, owner.lastError)
+        assertEquals(2, transport.commands.count { it == FakeBleCommand.StartScanning })
+    }
+
+    @Test
+    fun scanFailureStopsOwnerWithoutChangingAdapterAvailability() {
+        val transport = FakeBleTransport()
+        val owner = CupBleGattStateMachine(transport)
+        owner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)
+        owner.startScanning(clearPreviousResults = true)
+
+        transport.emit(
+            BleTransportEvent.ScanStopped(
+                BleScanStopReason.PLATFORM_FAILURE,
+                "蓝牙扫描失败（code=2），请重试。",
+            ),
+        )
+
+        assertFalse(owner.isScanning)
+        assertEquals(BluetoothAvailability.POWERED_ON, owner.availability)
+        assertEquals("蓝牙扫描失败（code=2），请重试。", owner.lastError)
+    }
+
     private fun readyToConnecting(transport: FakeBleTransport): CupBleGattStateMachine {
         val owner = CupBleGattStateMachine(transport)
         owner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)

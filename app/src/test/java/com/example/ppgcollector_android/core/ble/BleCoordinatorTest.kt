@@ -100,6 +100,26 @@ class BleCoordinatorTest {
     }
 
     @Test
+    fun coordinatorPublishesScanTimeoutSoUiCanRetry() {
+        val transport = FakeBleTransport()
+        val coordinator = BleCoordinator(transport, apiLevel = 33)
+        coordinator.applyPermissionResult(
+            mapOf(
+                "android.permission.BLUETOOTH_SCAN" to true,
+                "android.permission.BLUETOOTH_CONNECT" to true,
+            ),
+        )
+        transport.emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON))
+        coordinator.startScanning(clearPreviousResults = true)
+        assertTrue(coordinator.snapshot.isScanning)
+
+        transport.emit(BleTransportEvent.ScanStopped(BleScanStopReason.TIMEOUT))
+
+        assertFalse(coordinator.snapshot.isScanning)
+        assertEquals("扫描超时，未发现 CUP 设备。", coordinator.snapshot.lastError)
+    }
+
+    @Test
     fun coordinatorForwardsRawChunkAndKeepsPermissionStateAfterRevocation() {
         val transport = FakeBleTransport()
         val coordinator = BleCoordinator(transport, apiLevel = 30)

@@ -17,9 +17,18 @@ data class BleTransportCharacteristic(
     val isNotifying: Boolean,
 )
 
+enum class BleScanStopReason {
+    TIMEOUT,
+    PLATFORM_FAILURE,
+}
+
 sealed interface BleTransportEvent {
     data class AvailabilityChanged(val availability: BluetoothAvailability) : BleTransportEvent
     data class Discovered(val discovery: BleTransportDiscovery) : BleTransportEvent
+    data class ScanStopped(
+        val reason: BleScanStopReason,
+        val message: String? = null,
+    ) : BleTransportEvent
     data class Connected(val deviceId: String) : BleTransportEvent
     data class FailedToConnect(val deviceId: String, val message: String?) : BleTransportEvent
     data class Disconnected(val deviceId: String, val message: String?) : BleTransportEvent

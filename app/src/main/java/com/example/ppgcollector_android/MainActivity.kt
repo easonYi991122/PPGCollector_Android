@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,6 +43,7 @@ import androidx.activity.viewModels
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
 import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
+import com.example.ppgcollector_android.core.ble.DiscoveredBleDevice
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.LiveWaveformBucketMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
@@ -258,25 +260,11 @@ private fun BleHome(
         if (snapshot.discoveredDevices.isEmpty()) {
             Text("暂无 CUP 设备")
         } else {
-            LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                items(snapshot.discoveredDevices, key = { it.id }) { device ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column {
-                            Text(device.name)
-                            Text("RSSI ${device.rssi ?: "—"}")
-                        }
-                        Button(
-                            onClick = { onConnect(device.id) },
-                            enabled = device.isConnectable && !snapshot.phase.isBusy,
-                        ) {
-                            Text("连接")
-                        }
-                    }
-                }
-            }
+            CupDeviceList(
+                devices = snapshot.discoveredDevices,
+                connectionBusy = snapshot.phase.isBusy,
+                onConnect = onConnect,
+            )
         }
         snapshot.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
         SessionsPanel(
@@ -290,6 +278,40 @@ private fun BleHome(
             onCancelAction = onCancelSessionAction,
             onClearAction = onClearSessionAction,
         )
+    }
+}
+
+/**
+ * The parent screen owns vertical scrolling, so this list must remain a
+ * non-scrollable child. A nested unbounded LazyColumn crashes when the first
+ * discovered device makes this conditional branch enter composition.
+ */
+@androidx.compose.runtime.Composable
+internal fun CupDeviceList(
+    devices: List<DiscoveredBleDevice>,
+    connectionBusy: Boolean,
+    onConnect: (String) -> BleCoordinatorAction,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        devices.forEach { device ->
+            key(device.id) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column {
+                        Text(device.name)
+                        Text("RSSI ${device.rssi ?: "—"}")
+                    }
+                    Button(
+                        onClick = { onConnect(device.id) },
+                        enabled = device.isConnectable && !connectionBusy,
+                    ) {
+                        Text("连接")
+                    }
+                }
+            }
+        }
     }
 }
 

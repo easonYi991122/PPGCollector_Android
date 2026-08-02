@@ -2162,6 +2162,45 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续本地 M5 release/API contract 与 M4 acceptance seam；在真实 CUP 抓包可用时对同一随机分片 harness 进行逐样本 wire/sequence 对照，不把 synthetic stream 结果当作生产协议认证。
 
+## 2026-08-02 · M2 · Bound BLE scanning and fix first-device Compose crash
+
+### 本轮目标
+
+修复用户在 Android Studio/真机联调中发现的两条 UI-001 扫描路径：无 CUP 设备时扫描不得无限运行；首个 CUP 广播进入列表时 app 不得因 Compose 布局异常闪退。同时处理本轮 `compileDebugKotlin` 暴露的 Android BLE deprecated API warning，不改变 CUP 协议、raw、CSV、算法或录制所有权。
+
+### 需求/参考/Android 目标
+
+- Requirement: `UI-001`、`BLE-001`、`BLE-003`、`REL-002`；Phase 2 §5.1 scanner 的超时/停止/去重/名称前缀/RSSI/adapter 状态及 §5.2 late callback 故障边界。
+- Primary source: `docs/02_REQUIREMENTS_AND_PARITY_MATRIX.md` UI-001/BLE-001/BLE-003、`docs/03_ARCHITECTURE_AND_DATA_CONTRACTS.md` §3 callback/ordered owner 边界、`docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md` §5.1/§5.2、`docs/05_SOURCE_REFERENCE_INDEX.md` `BLECentralService.swift`/`BLETransport.swift`，以及当前 `BleHome`/`AndroidBleTransport`。
+- Tests/golden: pure owner/coordinator scan timeout/failure/retry tests；Compose instrumentation 将真实 `CupDeviceList` 放入可滚动父页面并渲染首个设备；release transport source contract检查 10 s timeout 与 late-result gate。
+- Android target: `AndroidBleTransport.kt`、`FakeBleTransport.kt`、`BleGattStateMachine.kt`、`MainActivity.kt`、相关 JVM/instrumentation tests 和 `verifyReleaseBleTransportContract`。
+- Non-goals: 更改 draft CUP NUS UUID/profile、主动 control write、raw/CSV/session/算法、自动连接、后台常驻扫描、真实设备协议认证或本轮执行真机测试。
+
+### 实现事实
+
+- 崩溃根因是 M4 为 `BleHome` 增加根 `verticalScroll` 后，设备分支仍条件性创建无高度约束的纵向 `LazyColumn`；无设备时该分支不存在，首个 CUP 设备出现时才触发 Compose 的无限高度测量异常。设备列表现改为非滚动 `Column`，由页面根容器统一滚动，并保留稳定 device key/连接 gate。
+- Android scanner 默认在 10 s 后调用同一幂等停止路径并发布 typed `ScanStopped(TIMEOUT)`；owner/coordinator 把 `isScanning` 置为 false、重新开放扫描按钮，无设备时显示明确超时反馈，显式重试会清除旧错误。
+- `onScanFailed` 现发布 platform failure，而不是错误地把仍可用的 adapter 改成 `UNKNOWN`；停止/超时后已排队的 scan result 会被忽略。扫描回调先在权限异常边界内复制 device ID/name/RSSI/connectable 字段，避免 `SecurityException` 穿透系统 callback。
+- API <33 characteristic value 和 API 26-compatible `connectGatt` 进入明确 compatibility wrapper/suppression；`compileDebugKotlin` 不再报告用户日志中的两条 deprecated warning。`libandroidx.graphics.path.so` 已确认是 AndroidX 提供且本身已 stripped 的多 ABI ELF，Gradle 原样打包提示不是 app BLE 崩溃或构建失败。
+- 未改变 protocol/raw/CSV/session/metric/FGS 数据契约。
+
+### 验证
+
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --no-daemon` → `BUILD SUCCESSFUL`，无 Kotlin deprecated warning。
+- `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintRelease assembleRelease assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`；106 JVM tests/0 failures、release lint 0 errors、R8/resource shrinking、debug/release/androidTest APK 和 REL-002/003/004/005/006/007 静态契约通过。
+- `verifyReleaseBleTransportContract` 报告 `scan_timeout_ms=10000`、`late_scan_result=ignored_after_stop`、`status=passed`。
+- Hardware validation: pending；按项目约定本轮不运行修复后的无设备 10 s 超时、首个 CUP 广播渲染、连接/订阅、API/厂商或真机复验。
+
+### 风险与决策变化
+
+- 用户报告与条件分支结构可确定解释原闪退路径，但修复效果仍需在原设备/字体/窗口环境复验；instrumentation 目前只有编译证据，不能替代 runtime。
+- 10 s 是当前 Android scanner bring-up policy，不改变固件/profile；如产品后续要求其他扫描时长，应配置化并重新做功耗/厂商矩阵。
+- `D-001`、`D-002`、`D-003`、`D-004`、`D-005`、`D-006`、`D-007`、`D-008` remain open；用户修改的 `AGENTS.md`、Gradle wrapper 和 `.idea/` 不纳入本轮提交。
+
+### 下一轮
+
+在后续明确的真机验收轮复验：无设备 10 s 停止并可重试、首个 CUP 广播稳定渲染、连接/CCCD/receiving；随后继续 M5 API/厂商/runtime matrix，不把本轮 fake/compile 证据表述为硬件通过。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
