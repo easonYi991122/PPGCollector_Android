@@ -85,8 +85,8 @@ Android `Path` 可在 data 层替换为 `File`/Okio Path；core 层不要泄漏 
 ConnectRequested
   → onConnectionStateChange(CONNECTED)
   → discoverServices()
-  → onServicesDiscovered + exact service
-  → exact notify/control characteristic
+  → onServicesDiscovered + exact supported service/profile
+  → exact notify/control characteristic from selected profile
   → setCharacteristicNotification(true)
   → write CCCD ENABLE_NOTIFICATION_VALUE
   → onDescriptorWrite(success)
@@ -95,6 +95,8 @@ ConnectRequested
 ```
 
 Android 不保证 callback 线程固定；callback 中复制 `characteristic.value`/新 API 参数，立即 `trySend` 到串行事件 channel。重复 callback、`GATT 133`、bonding、蓝牙关闭和 `onServiceChanged` 均转换为 typed error；关闭顺序是 cancel deadline → disable/cancel collection → `disconnect()` → `close()` → generation++。
+
+支持的 CUP transport profile 是有序 registry：既有 NUS `6E400001/3/2-...` 和新硬件 `FFF0/FFF1/FFF2`。扫描阶段的 `CUP` 名称前缀不能证明协议；必须等服务发现后按 service UUID 选择 profile，再只发现该组特征。选中的 profile、发现的 service/characteristic 要进入诊断快照，录制开始时将实际 profile 固化到 session。若设备同时暴露多组，registry 顺序决定优先级；若一组都没有则失败并报告期望/实际 UUID。
 
 建议 deadline 初值与 iOS 相同：连接 12 s；发现 service、characteristic、订阅各 8 s。它们应来自 profile/config，使用虚拟时钟测试，不散落 magic number。
 

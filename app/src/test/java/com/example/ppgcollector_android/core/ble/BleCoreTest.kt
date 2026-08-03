@@ -13,6 +13,7 @@ class BleCoreTest {
     @Test
     fun bringUpProfileAndPermissionBranchesMatchContract() {
         val profile = CupBleDeviceProfile.cupNusBringUp
+        val fff0Profile = CupBleDeviceProfile.cupFff0BringUp
         assertEquals("CUP", profile.advertisedNamePrefix)
         assertEquals("6E400001-B5A3-F393-E0A9-E50E24DCCA9E", profile.serviceUuid)
         assertEquals("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", profile.controlCharacteristicUuid)
@@ -21,6 +22,15 @@ class BleCoreTest {
         assertTrue(profile.acceptsAdvertisedName("CUP-SIM"))
         assertFalse(profile.acceptsAdvertisedName("OTHER-CUP"))
         assertFalse(profile.acceptsAdvertisedName(null))
+        assertEquals("CUP", fff0Profile.advertisedNamePrefix)
+        assertEquals("0000FFF0-0000-1000-8000-00805F9B34FB", fff0Profile.serviceUuid)
+        assertEquals("0000FFF1-0000-1000-8000-00805F9B34FB", fff0Profile.notifyCharacteristicUuid)
+        assertEquals("0000FFF2-0000-1000-8000-00805F9B34FB", fff0Profile.controlCharacteristicUuid)
+        assertTrue(fff0Profile.isPassiveStream)
+        assertEquals(
+            listOf(profile, fff0Profile),
+            CupBleDeviceProfile.supportedBringUpProfiles,
+        )
 
         assertEquals(
             setOf(BlePermission.BLUETOOTH_SCAN, BlePermission.BLUETOOTH_CONNECT),

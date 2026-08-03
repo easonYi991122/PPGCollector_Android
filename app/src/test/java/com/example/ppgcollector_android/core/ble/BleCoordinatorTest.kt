@@ -173,6 +173,8 @@ class BleCoordinatorTest {
             transport.emit(
                 BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null),
             )
+            assertEquals(profile, coordinator.snapshot.activeProfile)
+            assertEquals(listOf(profile.serviceUuid), coordinator.snapshot.discoveredServiceUuids)
             transport.emit(
                 BleTransportEvent.CharacteristicsDiscovered(
                     deviceId = deviceId,

@@ -131,7 +131,7 @@ idle → scanning → connecting → discoveringServices
 ```
 
 - 使用 `BluetoothLeScanner`，扫描结果进入 app 后按名称 `CUP` 前缀筛选；连接使用 `autoConnect=false`。
-- 严格匹配 NUS UUID：service `6E400001-...`、notify `6E400003-...`、control `6E400002-...`。当前设备是被动流，V1 不发送控制命令。
+- 名称只用于发现候选设备；GATT 服务发现后从支持表精确选择整组 UUID：既有 NUS `6E400001/3/2-...`，或新硬件 `0000FFF0/1/2-0000-1000-8000-00805F9B34FB`（service/notify/write）。两组 bring-up 路径都只订阅 notify；取得固件命令契约前不向 control/write 特征猜测发送 START/STOP。
 - 每一步单独超时，建议先复刻 iOS 的 connect 12 s、service 8 s、characteristic 8 s、subscribe 8 s；超时只对当前 generation 生效。
 - 正确写 CCCD 并等待回调后才进入 subscribed；通知到达时记录 `SystemClock.elapsedRealtimeNanos()`。请求 MTU 可以作为优化，但解码绝不能依赖通知边界或特定 MTU。
 - 最后有效样本超过 2 s 进入 stale，停止中的录制；扫描、连接、订阅、流新鲜度分别展示，避免一个模糊的“已连接”。

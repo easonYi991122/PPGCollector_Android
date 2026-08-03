@@ -22,6 +22,26 @@ data class CupBleDeviceProfile(
             controlCharacteristicUuid = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
             isPassiveStream = true,
         )
+
+        /**
+         * Bring-up profile reported for the CUP_FEAE89AB24A9 hardware family.
+         * FFF2 remains unused until a START/STOP command contract is captured.
+         */
+        val cupFff0BringUp = CupBleDeviceProfile(
+            identifier = "cup-fff0-bringup-0.1",
+            advertisedNamePrefix = "CUP",
+            serviceUuid = "0000FFF0-0000-1000-8000-00805F9B34FB",
+            notifyCharacteristicUuid = "0000FFF1-0000-1000-8000-00805F9B34FB",
+            controlCharacteristicUuid = "0000FFF2-0000-1000-8000-00805F9B34FB",
+            // This is the safe app policy for bring-up, not firmware proof that
+            // the device will always begin streaming without a control write.
+            isPassiveStream = true,
+        )
+
+        val supportedBringUpProfiles: List<CupBleDeviceProfile> = listOf(
+            cupNusBringUp,
+            cupFff0BringUp,
+        )
     }
 }
 

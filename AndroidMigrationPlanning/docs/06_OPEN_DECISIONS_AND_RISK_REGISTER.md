@@ -6,7 +6,7 @@
 
 | ID | 状态 | 最晚时间 | 需要决定/取得的证据 | 当前建议/默认 |
 |---|---|---|---|---|
-| D-001 | Open/Block | Phase 0 | 真实 CUP GATT、固件、通知抓包；length/端序/RED-IR/sequence/checksum；解决截图中疑似“32 个红光采样点”与“50 组”的矛盾 | 当前 50 对/408-byte draft 只作实现基线，真机确认后冻结 profile |
+| D-001 | Open/Block | Phase 0 | 已知旧设备使用 NUS；新 `CUP_FEAE89AB24A9` 报告 service/notify/write 为 `FFF0/FFF1/FFF2`。仍缺固件版本、特征 properties、通知十六进制抓包、是否需向 FFF2 发命令，以及 length/端序/RED-IR/sequence/checksum | transport profile registry 按 service 选择且不猜测 control write；当前 50 对/408-byte 只作 wire draft，见 ADR-0002 |
 | D-002 | Open/Block | Phase 0 | Android 目标设备/OS/厂商清单 | 当前工程 `minSdk=26`、target/compile 37；发布前按设备矩阵和官方政策确认，并做更高 API 前向测 |
 | D-003 | Open/Block | Phase 0 | 录制在后台/锁屏/划掉任务时是否继续 | 开始后由 `connectedDevice` FGS 继续；notification 明确停止；`START_NOT_STICKY` |
 | D-004 | Open/Block | Phase 0 | applicationId、app 名、签名 owner、Play/企业分发 | 独立于 iOS bundle；正式 keystore 不进 repo |
@@ -29,7 +29,7 @@
 
 | ID | 风险 | 概率 | 影响 | 早期信号 | 缓解/应急 | Owner 建议 |
 |---|---|---:|---:|---|---|---|
-| R-001 | 当前协议来自示意而非正式固件规范 | H | H | 真机 length/MTU/seq 与 408-byte 不符 | Phase 0 抓包；profile/version 化；保留 decoder fixture | Firmware + Android |
+| R-001 | 当前协议来自示意且硬件存在 NUS/FFF0 transport 变体 | H | H | FFF1 不主动通知、需 FFF2 命令，或 payload length/MTU/seq 与 408-byte 不符 | service 精确选 profile、禁止猜测写入；抓取 properties/通知/控制流程；wire version 化并保留 decoder fixture | Firmware + Android |
 | R-002 | Android GATT 厂商差异、133、callback 晚到 | H | H | 快速重连后旧状态污染、订阅偶发失败 | generation gate、严格 close、分阶段 timeout、目标厂商矩阵 | Android |
 | R-003 | 后台启动/FGS 权限随 API 演进导致 crash | M | H | API34+ SecurityException/StartNotAllowed | 可见启动、connectedDevice type、API matrix、官方规则复核 | Android/Release |
 | R-004 | 通知速度超过文件 writer，raw queue 溢出 | M | H | queue high-water/flush latency 上升 | callback 极简、有界 actor、批量 buffer、性能 trace；溢出安全 stop | Android |

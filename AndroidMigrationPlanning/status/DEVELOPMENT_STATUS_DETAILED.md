@@ -2410,6 +2410,45 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 产品/发布 owner 提供 final applicationId/app name/versionCode/versionName、distribution target and approved keystore custody后，配置不入库的 signing inputs，通过 Android Studio Generate Signed App Bundle/APK 生成正式签名 artifact，并执行 `apksigner verify`、fresh release lint、安装/升级/回滚及 API/设备矩阵。
 
+## 2026-08-03 · M2 · Support NUS and FFF0 CUP BLE profiles
+
+### 本轮目标
+
+定位新设备 `CUP_FEAE89AB24A9` 可扫描但连接报“未提供 CUP NUS 服务”的原因，并在不破坏既有硬件、不猜测未知控制命令和 wire protocol 的前提下接入其 FFF0/FFF1/FFF2 GATT profile。
+
+### 需求/参考/Android 目标
+
+- Requirement: `BLE-002`、`BLE-003`、`BLE-005`、`CAP-005`；开放决策 `D-001`，风险 `R-001/R-002`。
+- Primary source: 既有只读 [CUPDeviceProfile.swift](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift)、用户提供的新硬件 UUID、[ADR-0002](../docs/adr/ADR-0002-cup-ble-profile-registry.md)。
+- Tests/golden: `BleCoreTest`、`CupBleGattStateMachineTest`、`BleCoordinatorTest` 及既有完整 JVM/release contracts。
+- Android target: `CupBleDeviceProfile` registry、`CupBleGattStateMachine` service selection、`BleCoordinatorSnapshot` 诊断、`CaptureForegroundService` session profile 固化。
+- Non-goals: 不修改只读 reference；不假设 FFF1 使用现有 408-byte payload；不向 FFF2 发送未经证实的 START/STOP；不把 fake/JVM 结果称为新硬件真机通过。
+
+### 实现事实
+
+- 根因确认：扫描只按 `CUP` 名称前缀收集候选，而旧 GATT owner 在 service discovery 后只接受 NUS `6E400001-...`，所以新设备能出现在列表但在发现 FFF0 后确定失败；这不是 Android 扫描或配对故障。
+- 新增 `cup-fff0-bringup-0.1`（service/notify/write `FFF0/FFF1/FFF2`）并保留 `cup-nus-bringup-0.1`。状态机在发现全部 services 后忽略大小写精确选择一组 profile，只发现/订阅该组特征；未知 service 的错误同时列出期望与实际 UUID。
+- 状态快照新增实际 profile、发现 service 和 characteristic diagnostics；连接/断连重置这些 generation-scoped 状态。录制开始不再硬编码 NUS，而是把当前连接实际 profile identifier/service/notify 固化到 session metadata；没有 active profile 时按 protocol error 拒绝开始。
+- FFF0 bring-up 只向 FFF1 写 CCCD 以订阅通知，不向 FFF2 写业务命令。只有现有 decoder 接受合法 CUP frame 后 freshness 才变为 fresh；若硬件需要 FFF2 启动或 payload 不同，页面会保持 waiting/stale 且录制 gate 不开放。
+- 新增 ADR-0002，并同步 brief、master plan、requirements、architecture、roadmap、source index、risk register 与 remaining audit。旧 NUS 路径与越序/旧 generation 诊断语义保留。
+
+### 验证
+
+- BLE 定向命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:testDebugUnitTest --tests com.example.ppgcollector_android.core.ble.BleCoreTest --tests com.example.ppgcollector_android.core.ble.CupBleGattStateMachineTest --tests com.example.ppgcollector_android.core.ble.BleCoordinatorTest --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL`。首次运行捕获 active profile 未选时越序通知计数回归，修复后重跑通过。
+- 完整命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 1m 14s`；130 tasks，133 JVM tests/0 failures/0 errors/skips，debug lint 0 errors/9 个依赖版本 warning，debug/release/androidTest APK、R8/resource shrink 与 REL-002/003/004/005/006/007 contracts passed。
+- `git diff --check` → passed；用户既有 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 不在本轮修改/提交范围。开始时存在的未跟踪 `app/release/` 在完整 Gradle release 门禁后不再存在；全盘工作区/Trash/temp 搜索未找到同名副本，只确认新的 unsigned APK 位于标准 `app/build/outputs/apk/release/`。该异常必须在交付中披露，不能宣称旧 artifact 已保留。
+- Hardware validation: pending；未运行新旧 CUP 真机。新硬件还需记录 FFF1 properties/通知 hex、FFF2 是否需命令及 payload/时序、固件/型号，并确认现有 408-byte wire 与 30 分钟 receiving。
+
+### 风险与决策变化
+
+- D-001 从“完全未知 GATT”缩小为“已知至少存在 NUS 与 FFF0 两类 transport，但通知/control/wire 未冻结”，仍为 Open/Block。
+- `isPassiveStream=true` 只表达 app 当前不做猜测性控制写的安全策略，不是新硬件会自动推流的证据。若 CCCD 成功但无数据，下一步应抓包/取得固件协议，而不是尝试任意 FFF2 payload。
+- service UUID 可以安全选择 transport profile，但不能单独证明 payload schema；协议 decoder/profile version 仍独立受 golden 与真机抓包约束。
+
+### 下一轮
+
+在新硬件上确认连接错误已消失；导出完整 GATT service/characteristic properties，并在 FFF1 记录至少一段原始通知 hex。如果订阅后无通知，向硬件方取得 FFF2 的准确 START/STOP 字节和时序，再以 fixture/fake transport 先补测试后实现控制写；随后执行新旧设备 30 分钟 receiving/重连门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

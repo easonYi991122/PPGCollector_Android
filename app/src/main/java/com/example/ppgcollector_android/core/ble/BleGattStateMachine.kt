@@ -24,11 +24,20 @@ data class BleGattDiagnostics(
  */
 class CupBleGattStateMachine(
     private val transport: BleTransport,
-    val profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
+    profiles: List<CupBleDeviceProfile> = CupBleDeviceProfile.supportedBringUpProfiles,
     private val timeoutPolicy: BleConnectionTimeoutPolicy = BleConnectionTimeoutPolicy.iosDefault,
     private val uptimeSeconds: () -> Double = { 0.0 },
     private val monotonicNanos: () -> Long = { 0L },
 ) {
+    private val profiles = profiles.toList()
+
+    init {
+        require(this.profiles.isNotEmpty()) { "at least one CUP BLE profile is required" }
+        require(this.profiles.map { it.serviceUuid.lowercase() }.distinct().size == this.profiles.size) {
+            "CUP BLE profile service UUIDs must be unique"
+        }
+    }
+
     var availability: BluetoothAvailability = BluetoothAvailability.UNKNOWN
         private set
     val discoveredDevices = mutableListOf<DiscoveredBleDevice>()
@@ -47,6 +56,12 @@ class CupBleGattStateMachine(
         private set
     var connectionGeneration: Long = 0
         private set
+    var activeProfile: CupBleDeviceProfile? = null
+        private set
+    var discoveredServiceUuids: List<String> = emptyList()
+        private set
+    var discoveredCharacteristics: List<BleCharacteristicDiagnostic> = emptyList()
+        private set
 
     var onRawChunk: ((BleRawNotificationChunk) -> Unit)? = null
 
@@ -58,8 +73,6 @@ class CupBleGattStateMachine(
     private var notifyCharacteristicUuid: String? = null
     private var controlCharacteristicUuid: String? = null
     private var activeDeadline: BleConnectionDeadline? = null
-    private var discoveredServiceUuids: List<String> = emptyList()
-    private var discoveredCharacteristics: List<BleCharacteristicDiagnostic> = emptyList()
 
     init {
         transport.eventHandler = { event ->
@@ -91,6 +104,11 @@ class CupBleGattStateMachine(
         stopScanning()
         lastRequestedDeviceId = deviceId
         activeDeviceId = deviceId
+        activeProfile = null
+        notifyCharacteristicUuid = null
+        controlCharacteristicUuid = null
+        discoveredServiceUuids = emptyList()
+        discoveredCharacteristics = emptyList()
         connectionGeneration++
         attemptDiagnostics = attemptDiagnostics.copy(
             attemptCount = attemptDiagnostics.attemptCount + 1,
@@ -205,7 +223,7 @@ class CupBleGattStateMachine(
 
     private fun updateDiscovered(discovery: BleTransportDiscovery) {
         val name = discovery.name ?: return
-        if (!profile.acceptsAdvertisedName(name)) return
+        if (profiles.none { it.acceptsAdvertisedName(name) }) return
         val device = DiscoveredBleDevice(
             id = discovery.deviceId,
             name = name,
@@ -246,8 +264,11 @@ class CupBleGattStateMachine(
         }
         cancelDeadline()
         activeDeviceId = null
+        activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
+        discoveredServiceUuids = emptyList()
+        discoveredCharacteristics = emptyList()
         freshnessTracker.reset()
         freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.UNAVAILABLE
         if (phase !is BleConnectionPhase.Failed) {
@@ -263,20 +284,31 @@ class CupBleGattStateMachine(
             return
         }
         discoveredServiceUuids = event.serviceUuids.sorted()
-        val target = event.serviceUuids.firstOrNull { it.equals(profile.serviceUuid, ignoreCase = true) }
-        if (target == null) {
-            fail("设备未提供 CUP NUS 服务 ${profile.serviceUuid}。", event.deviceId)
+        val selectedProfile = profiles.firstOrNull { candidate ->
+            event.serviceUuids.any { it.equals(candidate.serviceUuid, ignoreCase = true) }
+        }
+        if (selectedProfile == null) {
+            val expected = profiles.joinToString { it.serviceUuid }
+            val discovered = discoveredServiceUuids.joinToString().ifEmpty { "无" }
+            fail("设备未提供受支持的 CUP 服务。期望：$expected；发现：$discovered。", event.deviceId)
             return
+        }
+        activeProfile = selectedProfile
+        val target = event.serviceUuids.first {
+            it.equals(selectedProfile.serviceUuid, ignoreCase = true)
         }
         phase = BleConnectionPhase.DiscoveringCharacteristics(event.deviceId)
         armDeadline(BleConnectionOperation.CHARACTERISTIC_DISCOVERY, event.deviceId, now)
         transport.discoverCharacteristics(
-            listOf(profile.notifyCharacteristicUuid, profile.controlCharacteristicUuid), target, event.deviceId,
+            listOf(selectedProfile.notifyCharacteristicUuid, selectedProfile.controlCharacteristicUuid),
+            target,
+            event.deviceId,
         )
     }
 
     private fun handleCharacteristics(event: BleTransportEvent.CharacteristicsDiscovered, now: Double) {
         if (!accepts(event.deviceId, BleConnectionPhase.DiscoveringCharacteristics(event.deviceId))) return
+        val profile = activeProfile ?: return fail("未选择 CUP BLE profile。", event.deviceId)
         if (!event.serviceUuid.equals(profile.serviceUuid, ignoreCase = true)) {
             incrementStaleCallback()
             return
@@ -316,6 +348,7 @@ class CupBleGattStateMachine(
     }
 
     private fun handleNotificationState(event: BleTransportEvent.NotificationStateChanged, now: Double) {
+        val profile = activeProfile ?: return
         if (!event.characteristicUuid.equals(profile.notifyCharacteristicUuid, ignoreCase = true)) return
         if (!accepts(event.deviceId, BleConnectionPhase.Subscribing(event.deviceId))) return
         if (event.errorMessage != null) {
@@ -333,6 +366,16 @@ class CupBleGattStateMachine(
     }
 
     private fun handleValue(event: BleTransportEvent.ValueReceived, hostNanos: Long, now: Double) {
+        val profile = activeProfile
+        if (profile == null) {
+            if (profiles.any { candidate ->
+                    event.characteristicUuid.equals(candidate.notifyCharacteristicUuid, ignoreCase = true)
+                }
+            ) {
+                incrementStaleCallback()
+            }
+            return
+        }
         if (!event.characteristicUuid.equals(profile.notifyCharacteristicUuid, ignoreCase = true)) return
         if (activeDeviceId != event.deviceId ||
             (phase != BleConnectionPhase.Subscribed(event.deviceId) && phase != BleConnectionPhase.Receiving(event.deviceId))

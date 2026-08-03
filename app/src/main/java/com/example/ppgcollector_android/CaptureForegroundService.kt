@@ -13,7 +13,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.ppgcollector_android.core.ble.BleCoordinator
-import com.example.ppgcollector_android.core.ble.CupBleDeviceProfile
 import com.example.ppgcollector_android.data.session.CaptureDeviceContext
 import com.example.ppgcollector_android.data.session.CaptureRecordingController
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
@@ -175,7 +174,11 @@ class CaptureForegroundService : Service() {
             return
         }
 
-        val profile = CupBleDeviceProfile.cupNusBringUp
+        val profile = snapshot.activeProfile
+        if (profile == null) {
+            stopRecording(CaptureStopReason.PROTOCOL_ERROR)
+            return
+        }
         val deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?:
             snapshot.discoveredDevices.firstOrNull { it.id == deviceId }?.name ?: "CUP"
         val result = recordingController.start(

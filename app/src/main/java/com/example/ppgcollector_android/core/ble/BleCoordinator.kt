@@ -73,8 +73,11 @@ data class BleCoordinatorSnapshot(
     val availability: BluetoothAvailability,
     val phase: BleConnectionPhase,
     val connectionGeneration: Long,
+    val activeProfile: CupBleDeviceProfile?,
     val isScanning: Boolean,
     val discoveredDevices: List<DiscoveredBleDevice>,
+    val discoveredServiceUuids: List<String>,
+    val discoveredCharacteristics: List<BleCharacteristicDiagnostic>,
     val freshness: StreamFreshness,
     val lastError: String?,
     val diagnostics: BleGattDiagnostics,
@@ -94,12 +97,12 @@ class BleCoordinator(
     private val uptimeSeconds: () -> Double = { 0.0 },
     private val hostMonotonicNanos: () -> Long = { 0L },
     private val ownerDispatcher: ((() -> Unit) -> Unit) = { action -> action() },
-    profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
+    profiles: List<CupBleDeviceProfile> = CupBleDeviceProfile.supportedBringUpProfiles,
 ) : AutoCloseable {
     private val permissions = BlePermissionResultSeam(apiLevel)
     private val owner = CupBleGattStateMachine(
         transport = transport,
-        profile = profile,
+        profiles = profiles,
         uptimeSeconds = uptimeSeconds,
         monotonicNanos = hostMonotonicNanos,
     )
@@ -248,8 +251,11 @@ class BleCoordinator(
         availability = owner.availability,
         phase = owner.phase,
         connectionGeneration = owner.connectionGeneration,
+        activeProfile = owner.activeProfile,
         isScanning = owner.isScanning,
         discoveredDevices = owner.discoveredDevices.toList(),
+        discoveredServiceUuids = owner.discoveredServiceUuids,
+        discoveredCharacteristics = owner.discoveredCharacteristics,
         freshness = owner.freshness,
         lastError = owner.lastError,
         diagnostics = owner.diagnostics,

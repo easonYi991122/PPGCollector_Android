@@ -25,7 +25,7 @@
 当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值；当前 app 只有默认 Hello Android Compose 壳和示例测试，尚未实现 BLE、CUP 协议、信号处理、会话存储、前台服务或正式页面。不要把 app versionName=1.0 当作迁移完成版本。
 
 必须保持或显式验证的核心契约：
-- CUP profile 当前为 NUS service/notify/control UUID，设备流为 passive；真实设备确认前把它标为 draft/bring-up。
+- CUP transport profile 当前包含既有 NUS `6E400001/3/2` 与新硬件证据 `FFF0/FFF1/FFF2` 两组 service/notify/control UUID；连接后按实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
 - 当前跨语言草案帧为 AB BA、function 0x15、little-endian data length 401、UInt8 sequence、50 组 UInt32 LE RED/IR、CD DC，总长 408 字节、100 Hz；协议截图中的“32 个红光采样点/共 50 组”矛盾必须保留为 Phase 0 风险，不能伪装成已认证生产协议。
 - decoder 必须支持碎片、粘包、噪声重同步、错误 tail/length/function、有限缓冲；sequence first/continuous/gap 接受，duplicate/out-of-order 不进入样本流并保留诊断。
 - raw 是恢复与再分析真源：CUPRAW1\0 + 每个原始 BLE notification chunk 的 host monotonic ns、LE 长度和原始字节；先确认 raw append 成功，再派生 CSV/指标。任何队列、decoder、分析窗口和波形 ring 都必须有上限，不能静默丢 raw。
@@ -97,7 +97,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 |---|---|---|---|
 | `M0` | Phase 0 | 契约冻结、工程基础、ADR、测试/CI 基线 | `M0.1/M0.2` 文档、基线 ADR 和 JVM/build 门禁已建立；证据决策仍开放 |
 | `M1` | Phase 1 | 纯 Kotlin protocol/raw/signal parity 和 golden tests | protocol/raw/CSV/session/信号/live core、固定种子随机分片/中间噪声 resync evidence 已实现并有 JVM 证据；Android async/lifecycle 仍待接入 |
-| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、10 s 有限扫描、scan failure/late-result 边界、分步 permission callback merge、permission/Compose seam 已实现；设备列表嵌套滚动崩溃已修复，修复后真机门禁未过 |
+| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、10 s 有限扫描、scan failure/late-result 边界、分步 permission callback merge、NUS/FFF0 service 自动选择、permission/Compose seam 已实现；真机 FFF0 通知内容与控制命令门禁未过 |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟与 release shrink/lint/privacy/API/FGS 门禁已实现；2026-08-03 已由 Android Studio 生成并校验 fresh unsigned release APK。API/厂商/真机/正式 identity/签名/隐私仍开放 |
@@ -108,7 +108,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 
 ### 6.1 协议与 BLE
 
-- 当前 profile 是名称前缀 `CUP`、NUS service `6E400001-...`、notify `6E400003-...`、control `6E400002-...` 的被动流；Android V1 不凭猜测发送 START/STOP。
+- 名称前缀保持 `CUP`；支持既有 NUS service/notify/control `6E400001/3/2-...` 与新硬件 service/notify/write `0000FFF0/1/2-0000-1000-8000-00805F9B34FB`，服务发现后精确选择一组。Android V1 不凭 UUID 名称猜测 START/STOP payload；实际 profile 必须固化到会话 metadata。
 - 当前 draft frame：`AB BA` + `0x15` + LE length `401` + sequence + 50 组 LE `UInt32 RED/IR` + `CD DC`，408 bytes，100 Hz，每帧 50 samples。
 - decoder 支持任意通知分片/粘包/噪声重同步，并对 invalid function/length/tail、discarded bytes、pending buffer 计数且有上限。
 - sequence `first`、`continuous`、合理 `gap` 进入 accepted stream；duplicate/out-of-order 拒绝但保留诊断；`UInt8` wrap 必须测试。

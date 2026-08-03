@@ -80,14 +80,14 @@
 
 - Permission coordinator：API 26–30、31+、33+ 通知；永久拒绝/系统设置返回。
 - Scanner：超时、停止、去重、名称前缀、RSSI 更新、蓝牙 adapter 状态。
-- GATT adapter：generation、per-stage deadline、service/characteristics、CCCD、disconnect/close。
+- GATT adapter：generation、per-stage deadline、NUS/FFF0 profile registry 与按 service 自动选择、characteristics、CCCD、disconnect/close。
 - `RawNotificationChunk`：复制 bytes、monotonic timestamp、bounded channel。
 - freshness tracker、pipeline diagnostics、5 Hz waveform snapshot；先做最小 debug Compose 屏。
 - fake GATT/clock 测试；真机抓取与 golden 逐样本比较。
 
 ### 5.2 故障测试
 
-- 用户拒绝/撤销权限、蓝牙关闭、设备消失、connect timeout、缺 service、缺 notify、CCCD 失败。
+- 用户拒绝/撤销权限、蓝牙关闭、设备消失、connect timeout、未知/缺 service、两组 profile 各自缺 notify、CCCD 失败。
 - 晚到 callback、快速 connect A → disconnect → connect B、重复 subscribe callback、onServiceChanged。
 - 通知逐字节/随机分片/多帧粘包、sequence wrap/gap/duplicate/out-of-order、2 s 无 accepted sample。
 - 20 次 connect/subscribe/disconnect 循环；每轮 GATT close 一次、任务/receiver 无增长。

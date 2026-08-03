@@ -10,6 +10,7 @@ import org.junit.Test
 
 class CupBleGattStateMachineTest {
     private val profile = CupBleDeviceProfile.cupNusBringUp
+    private val fff0Profile = CupBleDeviceProfile.cupFff0BringUp
     private val deviceId = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
 
     @Test
@@ -84,6 +85,9 @@ class CupBleGattStateMachineTest {
         transport.emit(BleTransportEvent.Connected(deviceId))
         transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf("0000180D"), null))
         assertTrue(owner.phase is BleConnectionPhase.Failed)
+        val failureMessage = (owner.phase as BleConnectionPhase.Failed).message
+        assertTrue(failureMessage.contains("0000180D"))
+        assertTrue(failureMessage.contains(fff0Profile.serviceUuid))
         assertTrue(transport.commands.contains(FakeBleCommand.Disconnect(deviceId)))
 
         val secondTransport = FakeBleTransport()
@@ -101,6 +105,89 @@ class CupBleGattStateMachineTest {
         assertTrue(second.phase is BleConnectionPhase.Failed)
         assertTrue(secondTransport.commands.contains(FakeBleCommand.Disconnect(deviceId)))
         assertTrue(secondTransport.commands.none { it is FakeBleCommand.SetNotifications })
+    }
+
+    @Test
+    fun fff0HardwareSelectsMatchingProfileAndSubscribesWithoutControlWrite() {
+        val transport = FakeBleTransport()
+        val owner = readyToConnecting(transport)
+        val chunks = mutableListOf<BleRawNotificationChunk>()
+        owner.onRawChunk = chunks::add
+
+        transport.emit(BleTransportEvent.Connected(deviceId))
+        transport.emit(
+            BleTransportEvent.ServicesDiscovered(
+                deviceId,
+                listOf("0000180A-0000-1000-8000-00805F9B34FB", fff0Profile.serviceUuid.lowercase()),
+                null,
+            ),
+        )
+
+        assertEquals(fff0Profile, owner.activeProfile)
+        assertEquals(
+            FakeBleCommand.DiscoverCharacteristics(
+                listOf(fff0Profile.notifyCharacteristicUuid, fff0Profile.controlCharacteristicUuid),
+                fff0Profile.serviceUuid.lowercase(),
+                deviceId,
+            ),
+            transport.commands.last(),
+        )
+
+        transport.emit(
+            BleTransportEvent.CharacteristicsDiscovered(
+                deviceId,
+                fff0Profile.serviceUuid,
+                listOf(
+                    BleTransportCharacteristic(
+                        fff0Profile.notifyCharacteristicUuid,
+                        listOf("notify"),
+                        true,
+                        false,
+                    ),
+                    BleTransportCharacteristic(
+                        fff0Profile.controlCharacteristicUuid,
+                        listOf("writeWithoutResponse"),
+                        false,
+                        false,
+                    ),
+                ),
+                null,
+            ),
+        )
+        assertEquals(
+            FakeBleCommand.SetNotifications(true, fff0Profile.notifyCharacteristicUuid, deviceId),
+            transport.commands.last(),
+        )
+        assertEquals(
+            listOf("RX / control", "TX / notify"),
+            owner.discoveredCharacteristics.mapNotNull(BleCharacteristicDiagnostic::role).sorted(),
+        )
+        assertTrue(
+            transport.commands.none {
+                it == FakeBleCommand.SetNotifications(true, fff0Profile.controlCharacteristicUuid, deviceId)
+            },
+        )
+
+        transport.emit(
+            BleTransportEvent.NotificationStateChanged(
+                deviceId,
+                fff0Profile.notifyCharacteristicUuid,
+                true,
+                null,
+            ),
+        )
+        transport.emit(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                fff0Profile.notifyCharacteristicUuid,
+                byteArrayOf(1, 2, 3),
+                null,
+            ),
+        )
+
+        assertEquals(BleConnectionPhase.Receiving(deviceId), owner.phase)
+        assertEquals(1, chunks.size)
+        assertEquals(fff0Profile, owner.activeProfile)
     }
 
     @Test

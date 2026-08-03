@@ -6,7 +6,7 @@
 
 | 主题 | 首读文件 | Android 去向 |
 |---|---|---|
-| CUP profile | [CUPDeviceProfile.swift:9](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift#L9) | `:data:ble` profile |
+| CUP profile | [CUPDeviceProfile.swift:9](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift#L9)、[ADR-0002](adr/ADR-0002-cup-ble-profile-registry.md) | `:data:ble` profile registry；iOS NUS + 新硬件 FFF0 证据 |
 | 帧布局 | [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | `:core:protocol` |
 | 任意碎片解码 | [CUPBatchStreamDecoder.swift:3](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchStreamDecoder.swift#L3) | `:core:protocol` |
 | 序号/gap | [CUPFrameSequenceTracker.swift:21](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPFrameSequenceTracker.swift#L21) | `:core:protocol` |
@@ -26,7 +26,7 @@
 
 | 快照文件/符号 | 要提取的契约 | 等级 |
 |---|---|---|
-| [CUPDeviceProfile.swift](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift) | CUP 名称前缀、NUS service/notify/control UUID、passive stream | P0 移植常量；BLE API 平台重写 |
+| [CUPDeviceProfile.swift](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift) | CUP 名称前缀、既有 NUS service/notify/control UUID、passive stream | P0 保留既有 profile；新硬件 FFF0 profile 来自 ADR-0002 的真实设备证据；BLE API 平台重写 |
 | [BluetoothModels.swift](../reference_sources/ios_current/PPGCollector/Domain/Models/BluetoothModels.swift) | availability、连接阶段、发现设备、诊断、资源快照、freshness | P0 移植 typed state |
 | [CaptureModels.swift](../reference_sources/ios_current/PPGCollector/Domain/Models/CaptureModels.swift) | raw chunk event、stop reason、first-reason lifecycle gate、capture state | P0 移植 |
 | [CaptureSessionMetadata.swift:3](../reference_sources/ios_current/PPGCollector/Domain/Models/CaptureSessionMetadata.swift#L3) | session JSON 字段、snake_case、ISO-8601、recovery provenance | P0 格式兼容 |
@@ -55,7 +55,7 @@
 - [Freshness tests](../reference_sources/ios_current/PPGCollectorTests/Bluetooth/CUPStreamFreshnessTrackerTests.swift)
 - [BLE integration tests](../reference_sources/ios_current/PPGCollectorTests/Integration/BLECentralServiceIntegrationTests.swift)
 
-注意：Python 快照的旧 BLE/NUS/transport 没有归档，Android 不应以它们替代上述当前 profile。
+注意：Python 快照的旧 BLE/NUS/transport 没有归档，Android 不应以它们替代上述当前 profile。新 FFF0 profile 是 2026-08-03 的硬件 UUID 证据，不回写只读 iOS reference；通知 payload 与 FFF2 控制命令仍需抓包。
 
 ## 4. iOS 当前实现：协议
 
