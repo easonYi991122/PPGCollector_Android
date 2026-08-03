@@ -2,7 +2,7 @@
 
 日期：2026-08-02
 
-审计基线：`main` / `975d2fb` 加本轮 M6 live causal 工作区
+审计基线：`main` / `a2ab0c4`；2026-08-03 M5 unsigned release artifact 证据另见双层 status
 
 范围：`00_AGENT_MIGRATION_BRIEF` 的 M0–M7、需求矩阵 P0/P1、Definition of Done、开放决策以及当前 production/test/manifest/build 文件。
 
@@ -51,7 +51,7 @@
 | 项目 | 依据 | 当前事实 | 剩余工作 |
 |---|---|---|---|
 | CI/nightly/benchmark | Phase 5 §8.1/§8.2 | Gradle 本地门禁可运行 | repo 中没有持续 CI、nightly、macrobenchmark/leak/frame-time runner；需把现有命令和 30 min/2 h tests 分层自动化 |
-| 正式 app identity/release | D-004、REL-005/006/007 | unsigned shrink release 可构建 | 仍是 `com.example.ppgcollector_android`、`versionCode=1`、`versionName=1.0`；需正式 app 名/包名、签名 owner、版本策略、symbols/rollback/internal channel |
+| 正式 app identity/release | D-004、REL-005/006/007 | 2026-08-03 已通过 Android Studio fresh build 生成并校验 unsigned shrink release APK | 仍是 `com.example.ppgcollector_android`、`versionCode=1`、`versionName=1.0`；需正式 app 名/包名、签名 owner、版本策略、symbols/rollback/internal channel；unsigned APK 不能代替正式签名发布包 |
 | 发布合规材料 | Phase 5 §8.3 | privacy/APK 静态扫描和 backup exclusion 已有 | 需隐私政策、Data Safety、权限说明、依赖/许可证审阅、固件兼容表和 release checklist；发布时重新核查 target API 政策 |
 
 ## 4. 必须在 emulator/真机执行的验收

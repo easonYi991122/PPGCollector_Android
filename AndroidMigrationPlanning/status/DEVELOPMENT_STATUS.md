@@ -1,9 +1,13 @@
 # PPGCollector Android Development Status
 
-更新时间：2026-08-02
+更新时间：2026-08-03
 当前迁移版本：`M6`
 当前规划阶段：Phase 6（V1.1 离线分析与工作台）
 状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。本轮新增统一 `LivePpgSignalRuntime`，让实时 RAW、因果 0.6–4 Hz RED/IR 与 800/100 指标窗口来自同一 bounded filter/ring state；Live 默认 CAUSAL 并可切回 RAW。132 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过；真机 UI/性能/runtime 与 `D-014` 跨进程后台策略仍待执行。
+
+本轮增量：2026-08-03 通过 Computer Use 直接操作 Android Studio，先完成 Gradle Sync，再在 IDE Terminal 使用 Android Studio JBR 强制重跑 `:app:assembleRelease :app:verifyReleasePrivacy --rerun-tasks`。50 个 task 全部执行，`BUILD SUCCESSFUL in 3m 51s`；REL-002/003/004/005/006/007 均通过。fresh artifact 为 `app/build/outputs/apk/release/app-release-unsigned.apk`，1,443,417 bytes，SHA-256 `0a88646270fd1230f1c26f3e19cd6a7feb23195323eb19bdd856442d3cd0d9a7`，ZIP 完整性通过。
+
+本轮增量：APK manifest 为 `com.example.ppgcollector_android`、`versionCode=1`、`versionName=1.0`、minSdk 26、target/compileSdk 37；`apksigner` 明确返回 `DOES NOT VERIFY`，因为项目没有 signing config/keystore。该文件是 R8/resource-shrunk release variant，但不能作为正式安装/上架签名包；`D-004` 未关闭。`libandroidx.graphics.path.so` 的无法重复 strip 提示保持为 AndroidX 预编译库原样打包 warning，构建未失败。
 
 本轮增量：`BlePreviewRuntime` 与录制 `CaptureRecordingController` 各自使用统一有序 `LivePpgSignalRuntime`，一次 ingest 同步生成 RAW/CAUSAL 800 点波形和既有指标请求；不再由 production owner 分别维护 raw waveform scheduler 与 metric preprocessor。sample-index discontinuity/sequence gap 原子清空两通道 DC/SOS、rings、warm-up 与 deadline，rejected frame 不进入状态；发布保持默认 5 Hz、延迟不 burst，指标保持 800/100。
 
@@ -67,7 +71,7 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台：M6 
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | profile、权限策略、分步 permission callback merge、phase/deadline/freshness、fake transport、fake GATT state machine、Android scanner/GATT adapter、10 s scan timeout/typed failure/late-result gate、permission seam、app-scope coordinator、Activity Result/Compose StateFlow 已实现并经 JVM/build 验证；首设备列表崩溃已修复，修复后真机门禁待执行 | 真机复验无设备超时、CUP 发现/渲染/连接；随后继续 M5 runtime matrix |
 | `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam、session catalog/checkpoint、safe-prefix recovery、export seam、async live-analysis seam | writer/session/controller/manifest/service/repository/recovery/export/analysis 已实现并经 JVM/build 验证；系统后台/重建行为、用户正式页面仍未验收 | formal capture/sessions UI、lifecycle binding、metrics CSV policy |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
-| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（0 errors）、静态 artifact scan、sessions backup exclusion、UI disclosure contract、REL-001 30 min/2 h JVM simulation、REL-007 FGS start rejection/permission manifest contract、API 33+ notification permission gate、REL-006 BLE permission API boundary matrix、CAP-007 writer failure injection、REL-005 privacy/log/APK static audit、REL-004 FGS 在 raw/CSV/session finalizer 结束后再退出，以及 REL-006/REL-007 merged-manifest/API target 静态报告；unsigned、API/厂商/真机/签名/正式隐私门禁未完成 | API emulator/厂商运行矩阵、真实生命周期/2 h、签名/隐私策略 |
+| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/频谱/周期/诊断、横屏工作台、历史/取消/Sessions/compare，以及统一实时 RAW/CAUSAL 0.6–4 Hz runtime 均已实现并经 JVM/build/privacy 证据；runtime UI/性能和长任务跨进程策略待验收 | emulator/真机运行实时 causal、完整信号触控、横屏与性能；按 `D-014` 决定 WorkManager/用户可见 FGS |
 | `M7` | 后续 V2 | 专家诊断和有证据支持的扩展 | 未开始 | 另行决策 |
 
@@ -84,6 +88,7 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 验证与真机策略
 
+- 2026-08-03 M5 使用 Android Studio Gradle Sync 与 IDE Terminal 完成 `:app:assembleRelease :app:verifyReleasePrivacy --rerun-tasks --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 3m 51s`、50 tasks executed；fresh unsigned APK 的 package/version/SDK、ZIP integrity、1,443,417-byte size 和 SHA-256 已独立复核。Mac 随后锁屏，Computer Use 无法继续点击 IDE；额外 fresh `lintRelease` 的 Gradle cache 提权因审批通道断开未执行，本轮不把历史 lint 结果伪装成 fresh lint。
 - 本轮 M6 使用 Android Studio JDK/Gradle wrapper 9.6.1 完成 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 132 tests/0 failures/0 errors、debug lint 0 issues、debug/release/androidTest APK 及 REL-002/003/004/005/006/007 静态契约通过。新增统一 causal/raw state、独立 preprocessor 精确对等、gap/index discontinuity/rejected frame、5 Hz no-burst、preview/recording 同窗、Python-style settling Y-scale 与 2 h bounded ring 证据；用户采集数据未写回、未打包、未提交。
 - 最近 M4 使用 Android Studio JDK 25/Gradle wrapper 9.6.1 完成 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 109 tests/0 failures、debug lint 0 errors/9 个依赖版本提示、debug/androidTest APK 通过。可处理的 API/manifest/resource warning 已清理，BLE Kotlin deprecated warning 未再出现；生成的 Windows wrapper 保留 CRLF，除 `gradlew.bat` 行尾格式外 `git diff --check` 通过。
 - 本轮 M2 使用 Android Studio JDK 25/用户当前 Gradle wrapper 9.6.1 完成 `./gradlew test lintRelease assembleRelease assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL`；JVM 106 tests/0 failures、release lint 0 errors、R8/resource shrinking、debug/release/androidTest APK 和 REL-002/003/004/005/006/007 静态契约通过。新增 scan timeout/平台失败/coordinator retry JVM tests 和设备列表嵌套滚动 instrumentation seam；本轮不运行 emulator/真机，修复后的 CUP 扫描/连接与厂商行为待复验。

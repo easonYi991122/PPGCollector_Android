@@ -100,7 +100,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、新鲜度和诊断 | core、fake transport、Android adapter、10 s 有限扫描、scan failure/late-result 边界、分步 permission callback merge、permission/Compose seam 已实现；设备列表嵌套滚动崩溃已修复，修复后真机门禁未过 |
 | `M3` | Phase 3 | raw-first writer、CSV/session、FGS、停止/恢复/导出 | writer、FGS seam、session/recovery/export/async analysis 已实现；系统后台/重建仍待验收 |
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
-| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟、release shrink/lint/privacy/API/FGS 静态门禁已实现；API/厂商/真机/签名/正式隐私仍开放 |
+| `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟与 release shrink/lint/privacy/API/FGS 门禁已实现；2026-08-03 已由 Android Studio 生成并校验 fresh unsigned release APK。API/厂商/真机/正式 identity/签名/隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 版本化 raw replay、完整信号/全程 zero-phase、独立 Sessions/compare/横屏工作台均已实现；Live 现由统一 bounded runtime 同步发布 RAW/CAUSAL 0.6–4 Hz 与既有指标窗口。`D-014`、runtime/真机 UI/性能门禁待执行 |
 | `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |
 

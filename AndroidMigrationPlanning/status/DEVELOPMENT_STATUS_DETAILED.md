@@ -2369,6 +2369,47 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 优先实施 capture 正式 algorithm/preprocess version 追溯和 service-owned elapsed/write-health notification/UI，随后接通 FileProvider share 与动态空间预算；再进入 emulator/真实 CUP/API/OEM/lifecycle/SAF/accessibility/2 h 验收矩阵。没有新固件/校准/产品证据前不扩张 M7 的 IMU、SpO2/BP 或医疗语义。
 
+## 2026-08-03 · M5 · Produce a fresh Android Studio release artifact
+
+### 本轮目标
+
+按用户要求直接操作 Android Studio，基于当前 `main` 形成 fresh release variant app，并校验 artifact identity、完整性、privacy/API/FGS/BLE contract 与签名状态；不猜测正式包名或生成未经授权的 keystore。
+
+### 需求/参考/Android 目标
+
+- Requirement: `REL-005`、`REL-006`、`REL-007`，Phase 5 §8.3 release package；开放决策 `D-004`。
+- Primary source: `app/build.gradle.kts` release optimization/privacy tasks、merged manifest、`docs/04` release checklist、`docs/08` remaining audit。
+- Android target: Android Studio Gradle Sync/IDE Terminal、`:app:assembleRelease`、`:app:verifyReleasePrivacy`、release APK/mapping outputs。
+- Non-goals: 不修改 applicationId/versionCode/versionName、协议/raw/CSV/session/算法/UI；不创建或导入 signing credential；不安装到设备、不上传、不发布商店。
+
+### 实现事实
+
+- Computer Use opened the existing Android Studio project, accepted the IDE's requested Gradle Sync, and ran the release commands from Android Studio's own Terminal. Because that terminal had no Java runtime on `PATH`, a temporary `/private/tmp/ppgcollector-android-jbr` symlink pointed only to Android Studio's bundled JBR; it is outside the repo and not packaged.
+- Ran `:app:assembleRelease :app:verifyReleasePrivacy --rerun-tasks --no-configuration-cache --no-daemon`; all 50 tasks executed rather than reusing the previous artifact. R8/resource shrinking, merged manifest/API, BLE lifecycle, FGS lifecycle and privacy/APK scans passed.
+- Fresh artifact: `app/build/outputs/apk/release/app-release-unsigned.apk`; modified `2026-08-03 15:37:21 +0800`; size 1,443,417 bytes; SHA-256 `0a88646270fd1230f1c26f3e19cd6a7feb23195323eb19bdd856442d3cd0d9a7`; ZIP test passed with no compressed-data errors. R8 mapping outputs remain under `app/build/outputs/mapping/release/`.
+- `aapt dump badging` reports package `com.example.ppgcollector_android`, `versionCode=1`, `versionName=1.0`, minSdk 26, target/compileSdk 37 and label `PPGCollector_Android`. These remain explicit placeholder/release-decision inputs.
+- `apksigner verify --verbose` returns `DOES NOT VERIFY`/missing manifest signature because no signing config or keystore exists. The artifact is an optimized unsigned release variant, not a formally signed install/store artifact. Generating a keystore would create a security credential and also needs D-004 owner/package/distribution decisions, so it was not inferred from the request.
+- The existing AndroidX `libandroidx.graphics.path.so` strip warning reappeared; Gradle packages the prebuilt library as-is and the build succeeds. No project source or user data changed.
+
+### 验证
+
+- Android Studio IDE Terminal: `env JAVA_HOME=/private/tmp/ppgcollector-android-jbr ./gradlew :app:assembleRelease :app:verifyReleasePrivacy --rerun-tasks --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 3m 51s`、50 actionable tasks executed。
+- REL-002 BLE、REL-003/004 lifecycle、REL-005 privacy/APK、REL-006/007 merged manifest/API contracts → passed。
+- `aapt dump badging`、`stat`、`shasum -a 256`、`unzip -t` → package/version/SDK、size/time/hash and ZIP integrity confirmed。
+- `apksigner verify --verbose` → expected unsigned failure (`DOES NOT VERIFY`)；recorded as D-004 blocker, not a test pass。
+- The Mac locked after the artifact build, so Computer Use could not continue in Android Studio. A separate fresh `lintRelease` attempt was not run because the required Gradle-cache escalation channel disconnected; the previously recorded release lint evidence remains historical, not fresh evidence for this artifact.
+- Hardware validation: pending；本轮未安装 APK、运行 emulator/真机、执行 BLE/FGS/SAF 或 2 h runtime。
+
+### 风险与决策变化
+
+- D-004 remains Open/Block: final package/app name, signing owner, keystore custody and Play/enterprise distribution are unknown. The unsigned APK must not be represented as ready for external distribution.
+- The build output is ignored and not committed; its checksum in status provides local traceability, while reproducible source remains Git truth. A clean/build can replace the local artifact.
+- No schema/profile/algorithm/product behavior changed.
+
+### 下一轮
+
+产品/发布 owner 提供 final applicationId/app name/versionCode/versionName、distribution target and approved keystore custody后，配置不入库的 signing inputs，通过 Android Studio Generate Signed App Bundle/APK 生成正式签名 artifact，并执行 `apksigner verify`、fresh release lint、安装/升级/回滚及 API/设备矩阵。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
