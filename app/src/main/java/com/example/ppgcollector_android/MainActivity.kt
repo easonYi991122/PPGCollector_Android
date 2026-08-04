@@ -805,7 +805,8 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
     Spacer(Modifier.height(8.dp))
     Text("raw 重放摘要", style = MaterialTheme.typography.titleSmall)
     Text(
-        "记录 ${replay.rawRecordCount} · 解码帧 ${replay.decodedFrames} · 接受帧 ${replay.acceptedFrames}",
+        "记录 ${replay.rawRecordCount} · 数据帧 ${replay.decodedFrames} · " +
+            "辅助帧 ${replay.auxiliaryFrames} · 接受帧 ${replay.acceptedFrames}",
         style = MaterialTheme.typography.bodySmall,
     )
     Text(

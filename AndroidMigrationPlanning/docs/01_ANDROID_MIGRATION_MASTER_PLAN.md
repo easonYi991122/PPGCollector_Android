@@ -148,7 +148,8 @@ Android 允许在保持 GATT 连接时接收通知，但长时监听/录制需�
 
 ### 7.1 协议与文件
 
-- 当前接收布局按 [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md) 为 168 字节：`AB BA`、function `0x15`、LE length `161`、8-bit sequence、20 个 LE `UInt32 RED` 后接 20 个 LE `UInt32 IR`、`CD DC`；每帧 20 样本。100 Hz、live 800/100 和文件/算法契约保持不变。Swift/旧金标的 408-byte、50-pair interleaved 布局仅作为既有 raw/session 的兼容读取基线；真实 FFF1 抓包仍是 production profile 门禁。
+- 当前接收布局按 [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md) 为 168 字节：`AB BA`、function `0x15`、LE length `161`、8-bit sequence、20 个 LE `UInt32 RED` 后接 20 个 LE `UInt32 IR`、`CD DC`；每帧 20 样本。100 Hz、live 800/100 和文件/算法契约保持不变。Swift/旧金标的 408-byte、50-pair interleaved 布局仅作为既有 raw/session 的兼容读取基线；`testdevice1` 已提供短时 FFF1 证据，固件/properties/辅助语义/30 分钟仍是 production profile 门禁。
+- `testdevice1` 真实 FFF1 导出还包含独立 8-byte 辅助帧：`AB BA` + function + 3-byte payload + `CD DC`，已观测 function 为 `0x02/0x06/0x0C/0x0F`，见 [ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md)。这些帧保留在 CUPRAW1 并单独计数，但不产生 PPG 样本、不推进 sequence、不解除 freshness；未知 function、错误尾部和其他长度仍是结构错误。
 - decoder 接受任意碎片/粘包并能重新同步。首帧接受；连续帧接受；缺帧后的新帧接受且计 gap；duplicate/out-of-order 拒绝进入样本流。
 - `CUPRAW1\0` 后重复 `<UInt64 little-endian hostNs><UInt32 little-endian length><raw bytes>`。保留通知原始分块，不把重组帧伪装成通知块。
 - CSV 列顺序、空值、有效标记与版本字段必须兼容 iOS；session JSON 保持 snake_case。Android 可增加 additive 字段，但旧 reader 必须忽略未知字段。

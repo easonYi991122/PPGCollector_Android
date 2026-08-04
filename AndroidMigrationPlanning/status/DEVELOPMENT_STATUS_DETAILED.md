@@ -2489,6 +2489,47 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在新硬件连接后记录 FFF1 properties 与至少一段原始通知 hex，验证 `A1 00`、20+20 planar、sequence 和实际 100 Hz；若订阅后没有通知，向硬件方取得 FFF2 的准确 START/STOP payload/时序，再先补 fake fixture 后实现控制写。随后执行新旧设备 30 分钟 receiving/断连重连门禁。
 
+## 2026-08-04 · M1 · Classify real FFF1 auxiliary frames
+
+### 本轮目标
+
+分析用户截图中 `testdevice1` 完整性复核的 `invalid=60/discarded=480`，使用导出 raw 找到证据根因并修正分类，同时保持源文件、PPG 样本、sequence、100 Hz、CSV/session schema、算法与 freshness 语义不变。
+
+### 需求/参考/Android 目标
+
+- Requirement: `PROTO-001/002/004`、`CAP-003`、inspection/replay；开放决策 `D-001`，风险 `R-001`。
+- Primary source: `CollectedData/testdevice1.zip` 真实 FFF1 导出（只读）、截图计数、当前 168-byte protocol；[ADR-0004](../docs/adr/ADR-0004-cup-eight-byte-auxiliary-frames.md)。
+- Tests: `CupBatchProtocolTest` 的 arbitrary fragmentation/unknown/bad-tail cases，`CaptureSessionInspectionTest` 的 raw/CSV/metadata consistency，以及 production inspection 对真实导出副本的精确断言。
+- Android target: `CupBatchProtocolV1` auxiliary whitelist、`CupBatchStreamDecoder` 分类/计数、`CupRawReplayReport`、Sessions replay summary 与完整性测试。
+- Non-goals: 不解释 auxiliary payload；不把辅助帧作为 PPG/sequence/freshness；不忽略任意短帧或未知 function；不修改用户 ZIP/raw/CSV/session；不修改 FFF2 control、文件 schema、算法/profile 或历史 408-byte compatibility。
+
+### 实现事实
+
+- CUPRAW1 长度与记录边界完整：39368 bytes = 8-byte magic + 272×12-byte record header + 212×168-byte PPG + 60×8-byte auxiliary。212 个 PPG sequence 从 154 连续回绕到 109，0 missing/duplicate/out-of-order；212×20=4240，与 CSV 4240 data rows、metadata frame/sample/raw counts 完全一致。
+- 60 个短帧全部为 `AB BA` + function + 3-byte payload + `CD DC`；functions 分布为 `0x02=43`、`0x06=4`、`0x0C=4`、`0x0F=9`。数据帧平均间隔约 199.902 ms（约 100.049 Hz）。旧 decoder 在 function 非 `0x15` 时丢 1 byte，再 resync 丢余下 7 bytes，故精确产生 60 invalid function 和 480 discarded bytes；截图红字是结构分类假阳性，不是 PPG 损坏。
+- decoder 现只对白名单 function、精确 8-byte、正确头尾的辅助帧执行无 discard 消费并累计 `auxiliaryFrames`。它们不输出 `CupBatchFrame`，因此不进入 sequence/sample/live runtime/freshness；未知 function 和 malformed tail 的合成回归仍分别计 invalidFunction/invalidTail 与 structural discard。
+- replay report 和两个会话摘要 UI 暴露辅助帧计数。inspection 的结构 clean 条件保持严格：auxiliary 不算错误，unknown/malformed/noise 仍算；CUPRAW1 原始 notification 全部保留。
+- 168-byte PPG、历史 408-byte replay、`cup-batch-168-planar-0.1`、CUPRAW1/CSV/session schema 和算法版本未改变；新增 ADR-0004 记录真实证据与不解释 payload 的边界。
+
+### 验证
+
+- 只读二进制审计：ZIP SHA-256 `1b9ba2bfee58191abcadfe03056a80b53b36bc9a00cb6558dbe833dc0700f1bf`；raw/csv/session SHA-256 分别为 `a4fc28a680ce264780d37762be5c10e2977679d90174cd59c9d3b7b239cb9846`、`e54777a167f0537883f7a9639ff6709e156210ff039be11593d95695e3eb405d`、`7b6b92da4b9aed9a9787bf0df0556dc225f7c8990dc6ce4d92b05ccd86f744ce`，复核后不变。
+- production `CaptureSessionInspectionService` 直接检查导出副本 → 272 raw records、212 decoded/accepted data frames、60 auxiliary frames、4240 samples、0 invalid、0 structural discard、0 findings、`isVerifiedConsistent=true`。
+- 定向命令：protocol + inspection tests → `BUILD SUCCESSFUL in 18s`；真实导出临时只读 verification test → `BUILD SUCCESSFUL in 8s`，临时 test 文件随后删除且不进入最终 diff。
+- 完整命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 1m 4s`、130 actionable tasks；141 JVM tests/0 failures/0 errors/skips，debug lint、debug/release/androidTest APK、R8、REL-002/003/004/005/006/007 contracts passed。
+- `git diff --check` → passed；用户 `.idea/` 修改和未跟踪 `app/release/` 不纳入本轮。完整门禁前已备份 `app/release/`，门禁后 `diff -qr` 确认与备份一致。
+- Hardware-derived evidence: `testdevice1` export passed；direct 30 min device-operated receiving/reconnect still pending。
+
+### 风险与决策变化
+
+- D-001 已从“缺 FFF1 payload”缩小为“短时 168-byte/100 Hz/auxiliary functions 已有真实证据，但 firmware/properties/auxiliary semantics/FFF2/30 min 未关闭”。
+- 白名单只包含本次真实出现的 `02/06/0C/0F`。新 function 不能自动忽略，必须先取得真实帧与语义证据；这保留了完整性复核发现新固件或损坏的能力。
+- 本轮修复重新解释 replay diagnostics，不修改源数据，也不代表辅助 payload 已被理解。
+
+### 下一轮
+
+向硬件方取得 functions `02/06/0C/0F` 的 3-byte payload 定义、FFF1 characteristic properties 和 FFF2 START/STOP 契约；再执行至少 30 分钟 receiving/重连，确认 data/auxiliary 分布、sequence、实际采样率和 queue/write counters。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

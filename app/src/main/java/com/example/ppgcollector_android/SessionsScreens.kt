@@ -420,6 +420,7 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
         listOf(
             "raw records" to replay.rawRecordCount.toString(),
             "解码 / 接受帧" to "${replay.decodedFrames} / ${replay.acceptedFrames}",
+            "辅助帧" to replay.auxiliaryFrames.toString(),
             "接受样本" to replay.acceptedSamples.toString(),
             "缺失 / 重复 / 乱序" to "${replay.missingFrames} / ${replay.duplicateFrames} / ${replay.outOfOrderFrames}",
             "前导对齐" to "${replay.leadingAlignmentBytes} B",

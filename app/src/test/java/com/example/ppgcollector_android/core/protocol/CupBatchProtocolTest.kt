@@ -99,6 +99,57 @@ class CupBatchProtocolTest {
     }
 
     @Test
+    fun observedEightByteAuxiliaryFramesAreCountedWithoutDiscardingData() {
+        val auxiliaries = listOf(
+            auxiliaryFrame(0x02u, 0x4B, 0x60, 0x01),
+            auxiliaryFrame(0x06u, 0x00, 0x00, 0x00),
+            auxiliaryFrame(0x0Cu, 0x08, 0x00, 0x00),
+            auxiliaryFrame(0x0Fu, 0x00, 0x00, 0x00),
+        )
+        val stream = listOf(makeReferenceFrame(1u)) + auxiliaries + makeReferenceFrame(2u)
+        val wire = stream.fold(ByteArray(0)) { accumulated, piece -> accumulated + piece }
+
+        for (chunkSize in 1..31) {
+            val decoder = CupBatchStreamDecoder()
+            val decoded = ArrayList<CupBatchFrame>()
+            var offset = 0
+            while (offset < wire.size) {
+                val end = minOf(offset + chunkSize, wire.size)
+                decoded += decoder.feed(wire.copyOfRange(offset, end))
+                offset = end
+            }
+
+            assertEquals(listOf(1u.toUByte(), 2u.toUByte()), decoded.map { it.sequence })
+            assertEquals(2, decoder.stats.frames)
+            assertEquals(4, decoder.stats.auxiliaryFrames)
+            assertEquals(0, decoder.stats.invalidFunction)
+            assertEquals(0, decoder.stats.invalidLength)
+            assertEquals(0, decoder.stats.invalidTail)
+            assertEquals(0, decoder.stats.bytesDiscarded)
+            assertEquals(0, decoder.pendingByteCount)
+        }
+    }
+
+    @Test
+    fun unknownOrMalformedShortFramesRemainStructuralErrors() {
+        val malformedKnown = auxiliaryFrame(0x02u, 0x4B, 0x60, 0x01).also {
+            it[it.lastIndex] = 0x00
+        }
+        val unknown = auxiliaryFrame(0x03u, 0x00, 0x00, 0x00)
+        val decoder = CupBatchStreamDecoder()
+
+        val frames = decoder.feed(
+            makeReferenceFrame(1u) + malformedKnown + unknown + makeReferenceFrame(2u),
+        )
+
+        assertEquals(listOf(1u.toUByte(), 2u.toUByte()), frames.map { it.sequence })
+        assertEquals(0, decoder.stats.auxiliaryFrames)
+        assertEquals(1, decoder.stats.invalidFunction)
+        assertEquals(1, decoder.stats.invalidTail)
+        assertEquals(16, decoder.stats.bytesDiscarded)
+    }
+
+    @Test
     fun seededRandomFragmentsAndInterFrameNoisePreserveTheWholeStream() {
         val pieces = ArrayList<ByteArray>()
         pieces += byteArrayOf(0x10, 0x20, 0x30)
@@ -212,6 +263,22 @@ class CupBatchProtocolTest {
         .chunked(2)
         .map { it.toInt(16).toByte() }
         .toByteArray()
+
+    private fun auxiliaryFrame(
+        function: UByte,
+        payload0: Int,
+        payload1: Int,
+        payload2: Int,
+    ): ByteArray = byteArrayOf(
+        0xAB.toByte(),
+        0xBA.toByte(),
+        function.toByte(),
+        payload0.toByte(),
+        payload1.toByte(),
+        payload2.toByte(),
+        0xCD.toByte(),
+        0xDC.toByte(),
+    )
 
     private fun assertThrowsProtocol(block: () -> Unit) {
         try {

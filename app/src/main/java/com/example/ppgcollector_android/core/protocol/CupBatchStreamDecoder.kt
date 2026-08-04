@@ -38,7 +38,24 @@ class CupBatchStreamDecoder(
             if (headerIndex > 0) discardFirst(headerIndex)
             if (buffer.size < 5) break
 
-            if (buffer[2].toUByte() != CupBatchProtocolV1.batchFunction) {
+            val function = buffer[2].toUByte()
+            if (function != CupBatchProtocolV1.batchFunction &&
+                CupBatchProtocolV1.isObservedAuxiliaryFunction(function)
+            ) {
+                if (buffer.size < CupBatchProtocolV1.auxiliaryFrameLength) break
+                if (buffer[CupBatchProtocolV1.auxiliaryFrameLength - 2] != CupBatchProtocolV1.tail[0] ||
+                    buffer[CupBatchProtocolV1.auxiliaryFrameLength - 1] != CupBatchProtocolV1.tail[1]
+                ) {
+                    stats = stats.withInvalidTail()
+                    discardFirst(1)
+                    continue
+                }
+                buffer.subList(0, CupBatchProtocolV1.auxiliaryFrameLength).clear()
+                stats = stats.withAuxiliaryFrame()
+                continue
+            }
+
+            if (function != CupBatchProtocolV1.batchFunction) {
                 stats = stats.withInvalidFunction()
                 discardFirst(1)
                 continue

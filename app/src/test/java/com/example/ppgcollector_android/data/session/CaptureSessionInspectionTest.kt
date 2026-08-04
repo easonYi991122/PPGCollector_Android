@@ -117,6 +117,61 @@ class CaptureSessionInspectionTest {
     }
 
     @Test
+    fun inspectionTreatsObservedAuxiliaryNotificationsAsValidNonSampleRecords() {
+        withSessionDirectory { directory ->
+            val base = directory.fileName.toString()
+            val first = referenceFrame(42u)
+            val second = referenceFrame(43u)
+            CupRawWriter(directory.resolve("$base.cupraw")).use { writer ->
+                writer.append(1_000u, first)
+                writer.append(
+                    2_000u,
+                    byteArrayOf(
+                        0xAB.toByte(), 0xBA.toByte(), 0x02, 0x4B, 0x60, 0x01,
+                        0xCD.toByte(), 0xDC.toByte(),
+                    ),
+                )
+                writer.append(3_000u, second)
+            }
+            Files.writeString(directory.resolve("$base.csv"), buildString {
+                append(CaptureCsvSchema.header)
+                listOf(first, second).forEachIndexed { frameIndex, frame ->
+                    repeat(CupBatchProtocolV1.samplesPerFrame) { sampleIndex ->
+                        append(
+                            CaptureCsvFormatter.format(
+                                csvRow(frame, sampleIndex),
+                                frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
+                            ),
+                        )
+                    }
+                }
+            })
+            Files.writeString(
+                directory.resolve("$base.session.json"),
+                CaptureSessionMetadataCodec.encode(
+                    sampleMetadata().copy(
+                        frameCount = 2,
+                        sampleCount = 40,
+                        rawChunkCount = 3,
+                        writer = sampleMetadata().writer.copy(csvRows = 40),
+                    ),
+                ),
+            )
+
+            val inspection = CaptureSessionInspectionService.inspect(directory)
+
+            assertTrue(inspection.isVerifiedConsistent)
+            assertTrue(inspection.findings.isEmpty())
+            assertEquals(3L, inspection.replay!!.rawRecordCount)
+            assertEquals(2, inspection.replay.decodedFrames)
+            assertEquals(1, inspection.replay.auxiliaryFrames)
+            assertEquals(40L, inspection.replay.acceptedSamples)
+            assertEquals(0, inspection.replay.structurallyInvalidFrames)
+            assertEquals(0, inspection.replay.structuralDiscardedBytes)
+        }
+    }
+
+    @Test
     fun inspectionExplainsMidFramePrefixWithoutGenericStructureError() {
         withSessionDirectory { directory ->
             val base = directory.fileName.toString()

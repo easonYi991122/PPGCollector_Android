@@ -20,8 +20,8 @@
 
 | 范围 | 当前事实 | 尚缺证据 |
 |---|---|---|
-| M1 protocol/data/signal | 当前 168-byte planar decoder、历史 408-byte replay、sequence gate、CUPRAW1、25 列 CSV、session JSON、inspection/recovery、preprocess/HR/SQI/R fixtures、800/100 runtime | `D-001` 真实固件认证；`D-006/D-007` 正式跨平台/version 裁决 |
-| M2 BLE | API permission policy、有限扫描、NUS/FFF0 profile 自动选择、Android GATT/CCCD、generation/deadline/freshness、fake 20-cycle | 新硬件 FFF1 properties/通知 hex/FFF2 命令契约、真机 CUP receiving、权限撤销、adapter off、目标 OEM/API 矩阵 |
+| M1 protocol/data/signal | 当前 168-byte planar decoder、已观测 8-byte auxiliary 分类、历史 408-byte replay、sequence gate、CUPRAW1、25 列 CSV、session JSON、inspection/recovery、preprocess/HR/SQI/R fixtures、800/100 runtime | `D-001` 辅助语义/FFF2/长稳认证；`D-006/D-007` 正式跨平台/version 裁决 |
+| M2 BLE | API permission policy、有限扫描、NUS/FFF0 profile 自动选择、Android GATT/CCCD、generation/deadline/freshness、fake 20-cycle；`testdevice1` 已提供短时 FFF1 数据 | 新硬件 FFF1 properties/辅助 payload/FFF2 命令契约、30 min receiving、权限撤销、adapter off、目标 OEM/API 矩阵 |
 | M3 capture | 256 有界队列、raw-first writer、1 s checkpoint、first reason/single finalizer、connectedDevice FGS、SAF/recovery/FileProvider service | 系统 lifecycle/锁屏/task removed/强停/低存储/provider runtime |
 | M4 UI | Live/Capture/Sessions、RAW 波形、指标状态、连接/断开、录制 gate、详情/replay | emulator/device screen tests、TalkBack、动态字号、深浅主题、触控与重建 |
 | M5 local hardening | 30 min/2 h JVM 模拟、release shrink/lint/privacy、manifest/API/lifecycle 静态报告 | 真实 2 h、CPU/heap/jank/温升/功耗、签名发布、RC 合规材料 |

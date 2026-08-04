@@ -1,5 +1,7 @@
 # ADR-0003：CUP 168-byte planar 接收协议
 
+> 后续证据：`testdevice1` 已确认 168-byte PPG 布局与约 100 Hz，并暴露额外 8-byte 辅助帧；其分类规则见 [ADR-0004](ADR-0004-cup-eight-byte-auxiliary-frames.md)。
+
 - 状态：Accepted for bring-up
 - 日期：2026-08-04
 - 影响：PROTO-001～004、CAP-003～005、REL-001、D-001、R-001

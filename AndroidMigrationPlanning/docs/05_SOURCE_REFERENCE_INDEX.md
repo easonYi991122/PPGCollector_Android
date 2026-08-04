@@ -7,7 +7,7 @@
 | 主题 | 首读文件 | Android 去向 |
 |---|---|---|
 | CUP profile | [CUPDeviceProfile.swift:9](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift#L9)、[ADR-0002](adr/ADR-0002-cup-ble-profile-registry.md) | `:data:ble` profile registry；iOS NUS + 新硬件 FFF0 证据 |
-| 帧布局 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md)、历史 [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | `:core:protocol` 当前 168-byte + legacy replay |
+| 帧布局 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md)、[ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md)、历史 [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | `:core:protocol` 当前 168-byte + 8-byte auxiliary + legacy replay |
 | 任意碎片解码 | [CUPBatchStreamDecoder.swift:3](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchStreamDecoder.swift#L3) | `:core:protocol` |
 | 序号/gap | [CUPFrameSequenceTracker.swift:21](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPFrameSequenceTracker.swift#L21) | `:core:protocol` |
 | BLE 状态链 | [BLECentralService.swift:5](../reference_sources/ios_current/PPGCollector/Infrastructure/Bluetooth/BLECentralService.swift#L5) | `:data:ble` 平台重写 |
@@ -62,6 +62,7 @@
 | 快照文件/符号 | 关键内容 | Android 去向 |
 |---|---|---|
 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md) | 当前 168-byte layout、20+20 planar、函数/头尾与兼容策略 | `:core:protocol` 当前常量、model 与 golden |
+| [ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md) | `testdevice1` 中 8-byte FFF1 辅助帧、功能码白名单与完整性分类 | stream decoder auxiliary diagnostics、raw replay/inspection |
 | [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | 历史 408-byte interleaved、100 Hz、50 samples | legacy raw/session 读取与回放兼容，不作为当前 encoder |
 | [CUPBatchStreamDecoder.swift:3](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchStreamDecoder.swift#L3) | 任意 byte chunk、resync、LE decode、invalid stats | `CupBatchStreamDecoder` |
 | [CUPFrameSequenceTracker.swift:21](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPFrameSequenceTracker.swift#L21) | continuity/gap/duplicate/out-of-order/wrap | `CupFrameSequenceTracker` |

@@ -25,9 +25,20 @@ object CupBatchProtocolV1 {
     const val legacyDataLength = 1 + legacySamplesPerFrame * legacySampleWireLength
     const val legacyFrameLength = 2 + 1 + 2 + legacyDataLength + 2
     const val maximumFrameLength = legacyFrameLength
+    const val auxiliaryFrameLength = 8
 
     fun isSupportedDataLength(length: Int): Boolean =
         length == dataLength || length == legacyDataLength
+
+    /** Function codes observed as complete 8-byte FFF1 auxiliary notifications. */
+    fun isObservedAuxiliaryFunction(function: UByte): Boolean = when (function) {
+        0x02u.toUByte(),
+        0x06u.toUByte(),
+        0x0Cu.toUByte(),
+        0x0Fu.toUByte(),
+        -> true
+        else -> false
+    }
 }
 
 data class CupPpgSample(val red: UInt, val ir: UInt)
@@ -53,12 +64,14 @@ data class CupBatchFrame(val sequence: UByte, val samples: List<CupPpgSample>) {
 
 data class CupDecoderStats(
     val frames: Int = 0,
+    val auxiliaryFrames: Int = 0,
     val bytesDiscarded: Int = 0,
     val invalidFunction: Int = 0,
     val invalidLength: Int = 0,
     val invalidTail: Int = 0,
 ) {
     fun withFrame() = copy(frames = frames + 1)
+    fun withAuxiliaryFrame() = copy(auxiliaryFrames = auxiliaryFrames + 1)
     fun withDiscarded(count: Int) = copy(bytesDiscarded = bytesDiscarded + count)
     fun withInvalidFunction() = copy(invalidFunction = invalidFunction + 1)
     fun withInvalidLength() = copy(invalidLength = invalidLength + 1)

@@ -26,7 +26,7 @@
 
 必须保持或显式验证的核心契约：
 - CUP transport profile 当前包含既有 NUS `6E400001/3/2` 与新硬件证据 `FFF0/FFF1/FFF2` 两组 service/notify/control UUID；连接后按实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
-- 当前接收帧以 2026-08-04 用户提供的新硬件协议为准：`AB BA`、function `0x15`、little-endian data length `161`、UInt8 sequence、20 个 UInt32 LE RED 后接 20 个 UInt32 LE IR、`CD DC`，总长 168 字节；100 Hz 采样契约保持不变。历史 408-byte/50-pair interleaved 仅保留 raw/session 回放兼容；真实 FFF1 通知和采样率仍需真机认证，见 ADR-0003。
+- 当前接收帧以 2026-08-04 用户提供的新硬件协议和 `testdevice1` 真实导出为准：PPG 数据帧为 `AB BA`、function `0x15`、little-endian data length `161`、UInt8 sequence、20 个 UInt32 LE RED 后接 20 个 UInt32 LE IR、`CD DC`，总长 168 字节；100 Hz 采样契约保持不变。FFF1 同时出现头尾完整的 8-byte 辅助帧，已观测功能码为 `0x02/0x06/0x0C/0x0F`；它们只计诊断，不产生样本或 freshness。历史 408-byte/50-pair interleaved 仅保留 raw/session 回放兼容，见 ADR-0003/ADR-0004。
 - decoder 必须支持碎片、粘包、噪声重同步、错误 tail/length/function、有限缓冲；sequence first/continuous/gap 接受，duplicate/out-of-order 不进入样本流并保留诊断。
 - raw 是恢复与再分析真源：CUPRAW1\0 + 每个原始 BLE notification chunk 的 host monotonic ns、LE 长度和原始字节；先确认 raw append 成功，再派生 CSV/指标。任何队列、decoder、分析窗口和波形 ring 都必须有上限，不能静默丢 raw。
 - CSV 保持当前 25 列顺序、snake_case/session JSON、soft_version/alg_version/profile/version 追踪和兼容读取；数据格式或算法语义改变必须升级版本并保留旧版本重放测试。
@@ -87,7 +87,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 3. Python GUI/算法与 C++/Python 协议交叉实现；
 4. 规划性建议。
 
-若来源冲突，建立简短 ADR，写明证据、选择、影响的 `schema_version`/`alg_version`/`protocol_profile` 和待验证项。2026-08-04 的新硬件协议说明已取代 408-byte/50-pair 作为当前接收布局，但在获得真实 FFF1 通知、固件版本和采样率证据前仍只能称为 `bring-up`；旧布局继续作为历史兼容 profile。
+若来源冲突，建立简短 ADR，写明证据、选择、影响的 `schema_version`/`alg_version`/`protocol_profile` 和待验证项。2026-08-04 的新硬件协议说明与 `testdevice1` 真实 FFF1 导出已取代 408-byte/50-pair 作为当前接收布局，并确认短时约 100 Hz 与额外 8-byte 辅助帧；固件、characteristic properties、辅助 payload/FFF2 控制语义和长稳仍未冻结，因此 profile 继续称为 `bring-up`，旧布局保留为历史兼容 profile。
 
 ## 5. Migration 版本和当前迭代映射
 

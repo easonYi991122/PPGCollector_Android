@@ -3,7 +3,9 @@
 更新时间：2026-08-04
 当前迁移版本：`M6`
 当前规划阶段：Phase 6（V1.1 离线分析与工作台）
-状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。M2 BLE 同时支持既有 NUS 和新硬件 FFF0/FFF1/FFF2 profile；当前接收协议已切换为 168-byte、20 RED + 20 IR planar，历史 408-byte 会话保留回放兼容。138 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过。新硬件 FFF1 实际通知/FFF2 命令、真机 UI/性能/runtime 与 `D-014` 跨进程后台策略仍待验证。
+状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。M2 BLE 同时支持既有 NUS 和新硬件 FFF0/FFF1/FFF2 profile；当前接收协议为 168-byte planar，并按真实 `testdevice1` 证据分类 8-byte auxiliary，历史 408-byte 会话保留回放兼容。141 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过。新硬件辅助 payload/FFF2 命令/properties、真机 UI/性能/runtime 与 `D-014` 跨进程后台策略仍待验证。
+
+本轮增量：`testdevice1` 的 272 条完整 raw records 中有 212 条 168-byte PPG 和 60 条头尾完整的 8-byte auxiliary（functions `02/06/0C/0F`）。旧 decoder 将后者误计为 60 个无效帧并丢弃 480 B，导致完整性复核假阳性；实际 212 个 sequence 连续、4240 replay samples/CSV rows/metadata 全部一致。decoder 现仅对白名单 function + 精确 8-byte + 正确头尾单独计数，不产样本/freshness；未知 function 与坏 tail 仍报错。production inspection 对导出副本返回 60 auxiliary、0 invalid、0 discard、0 findings，源 ZIP/raw/CSV/session 哈希未变；见 ADR-0004。
 
 本轮增量：M1 按用户提供的新硬件协议将当前 wire profile 改为 `cup-batch-168-planar-0.1`：`AB BA`、`0x15`、LE length `161`、sequence、20×UInt32 LE RED、20×UInt32 LE IR、`CD DC`。采样率 100 Hz、800/100 live cadence、CUPRAW1、25 列 CSV、session schema、算法和 UI 均不变；旧 408-byte/50-pair interleaved 仅作为 `legacy` 读取/回放 profile，单流首帧后锁定布局。新增 ADR-0003、新旧 golden/direct/fragment/replay/metadata 测试，并把 gap、离线时间轴、metadata 的 samples-per-frame 改为按实际布局计算。
 
@@ -63,7 +65,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 Compose 采集与独立会话工作台，并可按 service 自动连接 NUS/FFF0 两类 CUP transport；当前接收 168-byte planar wire，并可回放历史 408-byte 会话。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步先在新硬件确认 FFF1 properties/通知 hex、FFF2 是否需启动命令及实际 168-byte/100 Hz 行为，再修复正式 capture version 与动态 FGS 健康状态并执行 runtime 矩阵。
+Android 工程已形成可运行的 Compose 采集与独立会话工作台，并可按 service 自动连接 NUS/FFF0 两类 CUP transport；当前接收 168-byte planar wire、识别真实导出中的 8-byte auxiliary，并可回放历史 408-byte 会话。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步确认 FFF1 properties、辅助 payload/FFF2 命令并执行 30 分钟 receiving，再修复正式 capture version 与动态 FGS 健康状态并执行 runtime 矩阵。
 
 ## 与 MigrationPlanning 对照
 
@@ -71,8 +73,8 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台，并
 |---|---|---|---|---|
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
-| `M1` | Phase 1 | 当前 168-byte planar CUP protocol、历史 408-byte replay、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler、数据完整性边界 JVM tests | 新旧 golden/direct/fragment/replay/profile 兼容、protocol/raw/CSV/metadata/inspection/preprocessing/peak/HR/SQI/ratio/live-core slices 与固定种子 resync 已实现；当前 wire 待新硬件认证 | M2 真机 FFF1/FFF2 与 receiving 门禁 |
-| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | NUS/FFF0 profile registry、按 service 自动选择、实际 profile metadata、权限/phase/deadline/freshness、fake transport/GATT、Android scanner/GATT adapter、10 s scan timeout 与 Compose seam 已实现并经 JVM/build 验证 | 新硬件确认 FFF1 通知 hex/FFF2 命令/168-byte wire；新旧 CUP 真机连接/receiving 与 M5 runtime matrix |
+| `M1` | Phase 1 | 当前 168-byte planar CUP protocol、真实 8-byte auxiliary 分类、历史 408-byte replay、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler | `testdevice1` 生产 inspection、新旧 golden/direct/fragment/replay/profile、未知/坏尾和固定种子 resync 已验证；辅助 payload/长稳待硬件方确认 | M2 FFF1 properties/FFF2 与 30 min receiving 门禁 |
+| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | NUS/FFF0 profile registry、按 service 自动选择、实际 profile metadata、权限/phase/deadline/freshness、fake transport/GATT、Android scanner/GATT adapter、10 s scan timeout 与 Compose seam 已实现并经 JVM/build 验证；已有短时 FFF1 导出 | 新硬件确认 FFF1 properties/辅助 payload/FFF2 命令；新旧 CUP 30 min receiving 与 M5 runtime matrix |
 | `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam、session catalog/checkpoint、safe-prefix recovery、export seam、async live-analysis seam | writer/session/controller/manifest/service/repository/recovery/export/analysis 已实现并经 JVM/build 验证；系统后台/重建行为、用户正式页面仍未验收 | formal capture/sessions UI、lifecycle binding、metrics CSV policy |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
@@ -92,6 +94,7 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 验证与真机策略
 
+- 2026-08-04 M1 auxiliary 修复轮对 `testdevice1.zip` 做只读二进制审计与 production inspection，确认 212 data + 60 auxiliary、4240 samples、0 sequence anomaly/invalid/discard/finding；随后完整运行 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 4s`、130 tasks、141 JVM tests/0 failures/errors/skips，debug lint、debug/release/androidTest APK、R8/lifecycle/BLE/privacy contracts 通过。源 ZIP SHA-256 保持 `1b9ba2bfee58191abcadfe03056a80b53b36bc9a00cb6558dbe833dc0700f1bf`。
 - 2026-08-04 M1 协议轮使用 Android Studio JBR 完成定向 protocol/replay/session/offline 回归及 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 20s`、130 tasks；138 JVM tests/0 failures/0 errors/skips，debug lint、debug/release/androidTest APK、R8、BLE/lifecycle/privacy contracts 通过。真机未执行，FFF1 原始通知、FFF2 命令和实际 100 Hz 仍是 D-001 门禁。
 - 2026-08-03 M2 FFF0 兼容轮使用 Android Studio JBR 完成 BLE 定向测试与 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 14s`；133 JVM tests/0 failures/0 errors/skips、debug lint 0 errors/9 个依赖版本 warning、debug/release/androidTest APK 和 REL-002/003/004/005/006/007 静态契约通过。真机未执行，FFF1 数据与 FFF2 命令仍是 D-001 门禁。
 - 2026-08-03 M5 使用 Android Studio Gradle Sync 与 IDE Terminal 完成 `:app:assembleRelease :app:verifyReleasePrivacy --rerun-tasks --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 3m 51s`、50 tasks executed；fresh unsigned APK 的 package/version/SDK、ZIP integrity、1,443,417-byte size 和 SHA-256 已独立复核。Mac 随后锁屏，Computer Use 无法继续点击 IDE；额外 fresh `lintRelease` 的 Gradle cache 提权因审批通道断开未执行，本轮不把历史 lint 结果伪装成 fresh lint。

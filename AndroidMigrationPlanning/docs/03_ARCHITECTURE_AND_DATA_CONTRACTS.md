@@ -123,7 +123,9 @@ BLE callback 到 session actor 之间使用有界 `Channel<RawNotificationChunk>
 | 86 | 80 | IR[0..19] | 20 个 UInt32 LE |
 | 166 | 2 | tail | `CD DC` |
 
-当前说明没有 checksum。布局证据来自 2026-08-04 用户提供的新硬件协议，详见 ADR-0003；在 FFF1 实际通知、固件版本和采样率被记录前仍是 bring-up profile。历史 Swift/Python/C++ reference 的 408-byte、50-pair interleaved 布局不再用于当前接收编码，只用于既有 raw/session 兼容读取。单个 decoder/连接在首个合法帧后锁定布局，不能在同一流中静默混用两种 wire profile。
+当前说明没有 checksum。布局证据来自 2026-08-04 用户协议和 `testdevice1` 真实 FFF1 导出，详见 ADR-0003/0004；短时数据支持 168-byte/20 samples/约 100 Hz，但固件版本、characteristic properties、辅助/控制语义和长稳仍未确认，因此仍是 bring-up profile。历史 Swift/Python/C++ reference 的 408-byte、50-pair interleaved 布局不再用于当前接收编码，只用于既有 raw/session 兼容读取。单个 decoder/连接在首个合法帧后锁定布局，不能在同一流中静默混用两种 wire profile。
+
+`testdevice1` 真实导出还确认 FFF1 会穿插完整 8-byte 辅助帧：offset 0～1 为 `AB BA`，2 为 function，3～5 为未解释 payload，6～7 为 `CD DC`；已观测 function 为 `0x02/0x06/0x0C/0x0F`。decoder 仅对这四种“精确 8-byte + 正确头尾”组合做 auxiliary 计数并消费，不输出 `CupBatchFrame`。payload 语义未知，不能映射为传感器结果或控制状态；其他 function、长度或坏尾继续进入 invalid/discard 诊断，见 ADR-0004。
 
 ### 4.2 流解码
 
@@ -134,6 +136,7 @@ append(chunk)
 while enough bytes:
   find AB BA; account discarded prefix
   if less than fixed header: keep tail and return
+  if observed 8-byte auxiliary function: wait for 8, validate tail, count and consume
   validate function and declared length
   if invalid: discard one byte, increment category, continue
   if less than calculated frame length: return

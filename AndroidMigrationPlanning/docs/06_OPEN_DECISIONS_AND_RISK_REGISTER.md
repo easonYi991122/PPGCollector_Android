@@ -6,7 +6,7 @@
 
 | ID | 状态 | 最晚时间 | 需要决定/取得的证据 | 当前建议/默认 |
 |---|---|---|---|---|
-| D-001 | Open/Block | Phase 0 | 已知旧设备使用 NUS；新 `CUP_FEAE89AB24A9` 使用 `FFF0/FFF1/FFF2`，且用户已提供 168-byte、20 RED + 20 IR planar 协议。仍缺固件版本、特征 properties、FFF1 通知十六进制抓包、是否需向 FFF2 发命令及实际 100 Hz 证据 | transport 按 service 选择且不猜测 control write；当前接收采用 168-byte bring-up profile，旧 408-byte 仅兼容回放，见 ADR-0002/ADR-0003 |
+| D-001 | Open/Block | Phase 0 | 已知旧设备使用 NUS；新设备使用 `FFF0/FFF1/FFF2`。`testdevice1` 真实导出已确认 FFF1 的 168-byte PPG、连续 sequence、约 100 Hz 和 8-byte functions `02/06/0C/0F`；仍缺固件版本、特征 properties、辅助 payload 语义、FFF2 命令契约及 30 分钟门禁 | transport 按 service 选择且不猜测 control write；168-byte PPG 与已观测 auxiliary 精确分类，未知帧仍报错；旧 408-byte 仅兼容回放，见 ADR-0002/0003/0004 |
 | D-002 | Open/Block | Phase 0 | Android 目标设备/OS/厂商清单 | 当前工程 `minSdk=26`、target/compile 37；发布前按设备矩阵和官方政策确认，并做更高 API 前向测 |
 | D-003 | Open/Block | Phase 0 | 录制在后台/锁屏/划掉任务时是否继续 | 开始后由 `connectedDevice` FGS 继续；notification 明确停止；`START_NOT_STICKY` |
 | D-004 | Open/Block | Phase 0 | applicationId、app 名、签名 owner、Play/企业分发 | 独立于 iOS bundle；正式 keystore 不进 repo |
@@ -29,7 +29,7 @@
 
 | ID | 风险 | 概率 | 影响 | 早期信号 | 缓解/应急 | Owner 建议 |
 |---|---|---:|---:|---|---|---|
-| R-001 | 当前协议来自说明且硬件存在 NUS/FFF0 transport 与 wire 变体 | H | H | FFF1 不主动通知、需 FFF2 命令，或真实 payload/采样率与 168-byte 说明不符 | service 精确选 profile、禁止猜测写入；抓取 properties/通知/控制流程；wire version 化、单流锁定布局并保留新旧 decoder fixture | Firmware + Android |
+| R-001 | 硬件存在 NUS/FFF0 transport、168/408 data 与未解释 auxiliary 变体 | H | H | 新 firmware 出现未知短帧、需 FFF2 命令，或 payload/采样率改变 | service 精确选 profile、禁止猜测写入；仅白名单精确辅助帧；记录 properties/通知/控制流程；wire version 化并保留 fixtures | Firmware + Android |
 | R-002 | Android GATT 厂商差异、133、callback 晚到 | H | H | 快速重连后旧状态污染、订阅偶发失败 | generation gate、严格 close、分阶段 timeout、目标厂商矩阵 | Android |
 | R-003 | 后台启动/FGS 权限随 API 演进导致 crash | M | H | API34+ SecurityException/StartNotAllowed | 可见启动、connectedDevice type、API matrix、官方规则复核 | Android/Release |
 | R-004 | 通知速度超过文件 writer，raw queue 溢出 | M | H | queue high-water/flush latency 上升 | callback 极简、有界 actor、批量 buffer、性能 trace；溢出安全 stop | Android |
