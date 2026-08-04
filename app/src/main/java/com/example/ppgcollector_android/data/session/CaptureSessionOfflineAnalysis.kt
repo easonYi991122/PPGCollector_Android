@@ -266,7 +266,7 @@ object CaptureSessionOfflineAnalysisService {
                 previousFrameSequence?.let { previous ->
                     val delta = (sample.frameSequence.toInt() - previous.toInt()) and 0xFF
                     if (delta in 2 until 128) {
-                        logicalSampleIndex += (delta - 1L) * CupBatchProtocolV1.samplesPerFrame
+                        logicalSampleIndex += (delta - 1L) * sample.samplesPerFrame
                         breaks.add(red.size)
                     }
                 }
@@ -279,8 +279,8 @@ object CaptureSessionOfflineAnalysisService {
             ir.add(sample.sample.ir.toDouble())
             time.add(logicalSampleIndex / CupBatchProtocolV1.sampleRateHz.toDouble())
             logicalSampleIndex += 1
-            if (sample.sampleInFrame == CupBatchProtocolV1.samplesPerFrame - 1) {
-                val completedFrames = red.size / CupBatchProtocolV1.samplesPerFrame
+            if (sample.sampleInFrame == sample.samplesPerFrame - 1) {
+                val completedFrames = red.size / sample.samplesPerFrame
                 if (completedFrames - lastPublishedFrame >= 16) {
                     lastPublishedFrame = completedFrames
                     val expectedSamples = maxOf(red.size.toLong(), expectedSampleCount ?: red.size.toLong())

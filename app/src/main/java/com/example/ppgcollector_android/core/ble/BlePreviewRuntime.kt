@@ -121,7 +121,7 @@ class BlePreviewRuntime(
             if (input.generation != activeGeneration) return
             try {
                 val events = decoder.feed(input.bytes).map { frame ->
-                    val sequence = sequenceTracker.observe(frame.sequence)
+                    val sequence = sequenceTracker.observe(frame.sequence, frame.samples.size)
                     CupDecodedFrameEvent(
                         frame = frame,
                         sequenceEvent = sequence,

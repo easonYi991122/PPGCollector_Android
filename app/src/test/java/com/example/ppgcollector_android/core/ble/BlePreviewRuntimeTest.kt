@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import java.util.concurrent.TimeUnit
@@ -52,14 +53,17 @@ class BlePreviewRuntimeTest {
         val runtime = BlePreviewRuntime()
         try {
             runtime.reset(generation = 7)
-            repeat(16) { frameIndex ->
+            repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
                 val wire = encodeCupBatchFrame(frame(frameIndex.toUByte()))
+                val splitOffset = CupBatchProtocolV1.frameLength * 3 / 5
+                val frameNanos = frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame *
+                    1_000_000_000L / CupBatchProtocolV1.sampleRateHz
                 assertTrue(
                     runtime.offer(
                         BleRawNotificationChunk(
                             connectionGeneration = 7,
-                            hostMonotonicNanos = frameIndex * 500_000_000L,
-                            bytes = wire.copyOfRange(0, 244),
+                            hostMonotonicNanos = frameNanos,
+                            bytes = wire.copyOfRange(0, splitOffset),
                         ),
                     ),
                 )
@@ -67,8 +71,8 @@ class BlePreviewRuntimeTest {
                     runtime.offer(
                         BleRawNotificationChunk(
                             connectionGeneration = 7,
-                            hostMonotonicNanos = frameIndex * 500_000_000L + 1_000_000L,
-                            bytes = wire.copyOfRange(244, wire.size),
+                            hostMonotonicNanos = frameNanos + 1_000_000L,
+                            bytes = wire.copyOfRange(splitOffset, wire.size),
                         ),
                     ),
                 )
@@ -109,10 +113,10 @@ class BlePreviewRuntimeTest {
 
     private fun frame(sequence: UByte) = CupBatchFrame(
         sequence = sequence,
-        samples = List(50) { index ->
+        samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
             CupPpgSample(
-                red = (10_000 + sequence.toInt() * 50 + index).toUInt(),
-                ir = (20_000 + sequence.toInt() * 50 + index).toUInt(),
+                red = (10_000 + sequence.toInt() * CupBatchProtocolV1.samplesPerFrame + index).toUInt(),
+                ir = (20_000 + sequence.toInt() * CupBatchProtocolV1.samplesPerFrame + index).toUInt(),
             )
         },
     )

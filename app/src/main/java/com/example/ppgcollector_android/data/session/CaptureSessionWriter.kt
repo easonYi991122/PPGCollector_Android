@@ -115,6 +115,8 @@ class CaptureSessionWriter(
     private var snapshot = CaptureWriterSnapshot()
     private var nextSampleIndex = 0L
     private var firstStreamSampleIndex: Long? = null
+    private var observedSamplesPerFrame: Int? = null
+    private var observedProtocolProfile: String? = null
     private var lastCheckpointNanos = System.nanoTime()
 
     private companion object {
@@ -207,6 +209,12 @@ class CaptureSessionWriter(
                     if (decoded.sequenceEvent is CupSequenceEvent.OutOfOrder) 1 else 0,
             )
             if (!decoded.isAccepted) continue
+            val previousSamplesPerFrame = observedSamplesPerFrame
+            if (previousSamplesPerFrame != null && previousSamplesPerFrame != decoded.frame.samples.size) {
+                throw IllegalStateException("wire protocol changed within one capture session")
+            }
+            observedSamplesPerFrame = decoded.frame.samples.size
+            observedProtocolProfile = decoded.frame.protocolProfileIdentifier
             snapshot = snapshot.copy(acceptedFrames = snapshot.acceptedFrames + 1)
             if (firstStreamSampleIndex == null) firstStreamSampleIndex = streamIndex ?: nextSampleIndex
             decoded.frame.samples.forEachIndexed { sampleInFrame, sample ->
@@ -227,7 +235,7 @@ class CaptureSessionWriter(
                             configuration.softVersion,
                             configuration.algorithmVersion,
                             configuration.preprocessProfile,
-                            configuration.protocolProfile,
+                            observedProtocolProfile ?: configuration.protocolProfile,
                             metrics.ratioOfRatios.toCsvCell(),
                         ),
                         firstStreamSampleIndex,
@@ -322,10 +330,10 @@ class CaptureSessionWriter(
             softVersion = configuration.softVersion,
             algVersion = configuration.algorithmVersion,
             preprocessProfile = configuration.preprocessProfile,
-            protocolProfile = configuration.protocolProfile,
+            protocolProfile = observedProtocolProfile ?: configuration.protocolProfile,
             transportProfile = configuration.transportProfile,
             sampleRateHz = CupBatchProtocolV1.sampleRateHz,
-            samplesPerFrame = CupBatchProtocolV1.samplesPerFrame,
+            samplesPerFrame = observedSamplesPerFrame ?: CupBatchProtocolV1.samplesPerFrame,
             device = CaptureSessionDeviceMetadata(configuration.device.name, configuration.device.identifier,
                 configuration.device.serviceUuid, configuration.device.notifyCharacteristicUuid, null, null),
             complete = complete,

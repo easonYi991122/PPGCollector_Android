@@ -178,7 +178,7 @@ CI 分层：
 
 30 min 和 2 h 模拟应保持当前精确断言：
 
-- input frames、408-byte received bytes、decoded/accepted samples、raw chunk count 完全相等；invalid/discard/missing/duplicate/out-of-order 为 0（无故障输入）。
+- input frames、按所选 wire profile 计算的 received bytes、decoded/accepted samples、raw chunk count 完全相等；invalid/discard/missing/duplicate/out-of-order 为 0（无故障输入）。
 - `recentSamples=800`、metric buffer=800、decoder pending=0；metric window ends 从 799 开始每 100 样本一次。
 - waveform publications=duration×5；raw/CSV/metadata/replay 数量一致。
 - raw replay record peak buffer 不超过 record 防御上限；CSV read buffer <66 KiB；heap/RSS 无持续随时间增长趋势。

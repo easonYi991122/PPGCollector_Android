@@ -17,26 +17,66 @@ class CupBatchProtocolTest {
             .map { it.toInt(16).toByte() }
             .toByteArray()
 
-        assertEquals(408, expected.size)
+        assertEquals(168, expected.size)
         assertTrue(expected.contentEquals(makeReferenceFrame(42u)))
     }
 
     @Test
-    fun draftGoldenLayoutDecodesKnownSequenceAndSamples() {
+    fun currentPlanarGoldenLayoutDecodesKnownSequenceAndSamples() {
         val wire = makeReferenceFrame(sequence = 42u)
 
         assertEquals(CupBatchProtocolV1.frameLength, wire.size)
         assertEquals(
-            byteArrayOf(0xAB.toByte(), 0xBA.toByte(), 0x15, 0x91.toByte(), 0x01, 0x2A).toList(),
+            byteArrayOf(0xAB.toByte(), 0xBA.toByte(), 0x15, 0xA1.toByte(), 0x00, 0x2A).toList(),
             wire.take(6),
         )
+        assertEquals(6, CupBatchProtocolV1.redDataOffset)
+        assertEquals(86, CupBatchProtocolV1.irDataOffset)
         assertEquals(listOf(0xCD.toByte(), 0xDC.toByte()), wire.takeLast(2).toList())
 
         val frame = decodeCupBatchFrame(wire)
         assertEquals(42u.toUByte(), frame.sequence)
         assertEquals(CupPpgSample(100_000u, 120_000u), frame.samples.first())
-        assertEquals(CupPpgSample(100_833u, 121_127u), frame.samples.last())
+        assertEquals(CupPpgSample(100_323u, 120_437u), frame.samples.last())
+        assertEquals(20, frame.samples.size)
+        assertEquals(
+            listOf(0xA0, 0x86, 0x01, 0x00).map(Int::toByte),
+            wire.copyOfRange(6, 10).toList(),
+        )
+        assertEquals(
+            listOf(0xC0, 0xD4, 0x01, 0x00).map(Int::toByte),
+            wire.copyOfRange(86, 90).toList(),
+        )
+    }
+
+    @Test
+    fun legacy408ByteInterleavedFixtureRemainsReplayCompatible() {
+        val wire = loadHexFixture("protocol/legacy_golden_seq42.hex")
+
+        assertEquals(CupBatchProtocolV1.legacyFrameLength, wire.size)
+        val frame = decodeCupBatchFrame(wire)
+        assertEquals(CupBatchProtocolV1.legacyProfileIdentifier, frame.protocolProfileIdentifier)
         assertEquals(50, frame.samples.size)
+        assertEquals(CupPpgSample(100_000u, 120_000u), frame.samples.first())
+        assertEquals(CupPpgSample(100_833u, 121_127u), frame.samples.last())
+
+        val decoder = CupBatchStreamDecoder()
+        assertTrue(decoder.feed(wire.copyOfRange(0, 173)).isEmpty())
+        val decoded = decoder.feed(wire.copyOfRange(173, wire.size))
+        assertEquals(listOf(frame), decoded)
+        assertEquals(CupBatchProtocolV1.legacyProfileIdentifier, decoder.detectedProtocolProfile)
+    }
+
+    @Test
+    fun oneStreamCannotSilentlySwitchBetweenWireLayouts() {
+        val decoder = CupBatchStreamDecoder()
+        val current = makeReferenceFrame(1u)
+        val legacy = loadHexFixture("protocol/legacy_golden_seq42.hex")
+
+        assertEquals(1, decoder.feed(current).size)
+        assertTrue(decoder.feed(legacy).isEmpty())
+        assertEquals(CupBatchProtocolV1.profileIdentifier, decoder.detectedProtocolProfile)
+        assertTrue(decoder.stats.invalidLength >= 1)
     }
 
     @Test
@@ -163,6 +203,15 @@ class CupBatchProtocolTest {
         }
         return encodeCupBatchFrame(CupBatchFrame(sequence, samples))
     }
+
+    private fun loadHexFixture(resourceName: String): ByteArray = javaClass.classLoader!!
+        .getResourceAsStream(resourceName)!!
+        .bufferedReader()
+        .readText()
+        .filterNot(Char::isWhitespace)
+        .chunked(2)
+        .map { it.toInt(16).toByte() }
+        .toByteArray()
 
     private fun assertThrowsProtocol(block: () -> Unit) {
         try {

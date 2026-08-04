@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.signal.live
 
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
@@ -27,10 +28,10 @@ class LiveMetricRuntimeTest {
     @Test
     fun waitsForEightSecondsThenSchedulesEveryOneSecondWithBoundedWindow() {
         val scheduler = LiveMetricWindowScheduler()
-        for (frameIndex in 0 until 15) {
-            assertNull(scheduler.ingest(listOf(frame(frameIndex, frameIndex * 50)), measuredAt))
+        for (frameIndex in 0 until 39) {
+            assertNull(scheduler.ingest(listOf(frame(frameIndex, frameIndex * 20)), measuredAt))
         }
-        val first = scheduler.ingest(listOf(frame(15, 750)), measuredAt)
+        val first = scheduler.ingest(listOf(frame(39, 780)), measuredAt)
         assertNotNull(first)
         assertEquals(799L, first!!.windowEndSampleIndex)
         assertEquals(0.0, first.timeSeconds.first(), 0.0)
@@ -38,8 +39,10 @@ class LiveMetricRuntimeTest {
         assertEquals(1L, first.requestSequence)
         assertTrue(scheduler.isCurrent(first))
 
-        assertNull(scheduler.ingest(listOf(frame(16, 800)), measuredAt))
-        val second = scheduler.ingest(listOf(frame(17, 850)), measuredAt)
+        for (frameIndex in 40 until 44) {
+            assertNull(scheduler.ingest(listOf(frame(frameIndex, frameIndex * 20)), measuredAt))
+        }
+        val second = scheduler.ingest(listOf(frame(44, 880)), measuredAt)
         assertNotNull(second)
         assertEquals(899L, second!!.windowEndSampleIndex)
         assertEquals(1.0, second.timeSeconds.first(), 1e-12)
@@ -54,9 +57,9 @@ class LiveMetricRuntimeTest {
     fun gapClearsWindowAdvancesGenerationAndRequiresFreshEightSecondWarmup() {
         val scheduler = LiveMetricWindowScheduler()
         var first: com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest? = null
-        for (frameIndex in 0 until 16) {
+        for (frameIndex in 0 until 40) {
             first = scheduler.ingest(
-                listOf(frame(frameIndex, frameIndex * 50, if (frameIndex == 0) CupSequenceEvent.First else CupSequenceEvent.Continuous)),
+                listOf(frame(frameIndex, frameIndex * 20, if (frameIndex == 0) CupSequenceEvent.First else CupSequenceEvent.Continuous)),
                 measuredAt,
             ) ?: first
         }
@@ -64,19 +67,19 @@ class LiveMetricRuntimeTest {
         val generationBeforeGap = beforeGap.generation
 
         val gap = scheduler.ingest(
-            listOf(frame(18, 800, CupSequenceEvent.Gap(2))),
+            listOf(frame(42, 800, CupSequenceEvent.Gap(2))),
             measuredAt,
         )
         assertNull(gap)
-        assertEquals(50, scheduler.continuousSamples)
-        assertEquals(50, scheduler.bufferedSampleCount)
+        assertEquals(20, scheduler.continuousSamples)
+        assertEquals(20, scheduler.bufferedSampleCount)
         assertFalse(scheduler.isCurrent(beforeGap))
         assertEquals(generationBeforeGap + 1, scheduler.generation)
 
         var rebuilt: com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest? = null
-        for (frameIndex in 1 until 16) {
+        for (frameIndex in 1 until 40) {
             rebuilt = scheduler.ingest(
-                listOf(frame(18 + frameIndex, 800 + frameIndex * 50)),
+                listOf(frame(42 + frameIndex, 800 + frameIndex * 20)),
                 measuredAt,
             ) ?: rebuilt
         }
@@ -91,7 +94,7 @@ class LiveMetricRuntimeTest {
     fun rejectedFramesDoNotAdvanceMetricTimeline() {
         val scheduler = LiveMetricWindowScheduler()
         val rejected = CupDecodedFrameEvent(
-            frame = CupBatchFrame(4u, List(50) { CupPpgSample(1u, 2u) }),
+            frame = CupBatchFrame(4u, List(CupBatchProtocolV1.samplesPerFrame) { CupPpgSample(1u, 2u) }),
             sequenceEvent = CupSequenceEvent.Duplicate,
             isAccepted = false,
         )
@@ -178,7 +181,7 @@ class LiveMetricRuntimeTest {
     ) = CupDecodedFrameEvent(
         frame = CupBatchFrame(
             sequence = (sequence and 0xFF).toUByte(),
-            samples = (0 until 50).map { localIndex ->
+            samples = (0 until CupBatchProtocolV1.samplesPerFrame).map { localIndex ->
                 val index = sampleOffset + localIndex
                 val phase = index / 100.0
                 val ir = (500_000.0 + 20_000.0 * sin(2.0 * PI * 1.2 * phase)).toUInt()

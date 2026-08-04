@@ -1,5 +1,6 @@
 package com.example.ppgcollector_android.data.session
 
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -73,7 +74,7 @@ class CaptureSessionMetadataTest {
         assertEquals(metadata, CaptureSessionMetadataCodec.decode(encoded))
 
         assertDecodeFailure("not json")
-        assertDecodeFailure(encoded.replace("\"sample_count\": 50", "\"sample_count\": true"))
+        assertDecodeFailure(encoded.replace("\"sample_count\": 20", "\"sample_count\": true"))
         assertDecodeFailure(encoded.replace("\"device\": {", "\"device_missing\": {"))
     }
 
@@ -90,10 +91,10 @@ class CaptureSessionMetadataTest {
         softVersion = "1.0+1",
         algVersion = "unavailable",
         preprocessProfile = "raw-only-0.1",
-        protocolProfile = "cup_batch_v1_draft",
+        protocolProfile = CupBatchProtocolV1.profileIdentifier,
         transportProfile = "cup-nus-bringup-0.1",
         sampleRateHz = 100,
-        samplesPerFrame = 50,
+        samplesPerFrame = CupBatchProtocolV1.samplesPerFrame,
         device = CaptureSessionDeviceMetadata(
             name = "CUP-SIM",
             identifier = "11111111-2222-3333-4444-555555555555",
@@ -105,7 +106,7 @@ class CaptureSessionMetadataTest {
         complete = endedUtc != null,
         stopReason = stopReason,
         frameCount = 1,
-        sampleCount = 50,
+        sampleCount = CupBatchProtocolV1.samplesPerFrame.toLong(),
         rawChunkCount = 1,
         missingFrames = 0,
         duplicateFrames = 0,
@@ -114,8 +115,8 @@ class CaptureSessionMetadataTest {
         discardedBytes = 0,
         writer = CaptureSessionWriterMetadata(
             lastFlushUtc = endedUtc,
-            rawBytes = 428,
-            csvRows = 50,
+            rawBytes = 188,
+            csvRows = CupBatchProtocolV1.samplesPerFrame.toLong(),
             error = null,
         ),
         files = CaptureSessionFilesMetadata(

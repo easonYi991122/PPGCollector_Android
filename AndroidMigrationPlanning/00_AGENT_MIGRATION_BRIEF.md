@@ -1,7 +1,7 @@
 # PPGCollector Android 移植：Codex Agent 目标模式说明
 
 版本：1.1（agent 执行基线）
-日期：2026-08-01
+日期：2026-08-04
 当前迭代：`M6`（版本化离线分析、独立 Sessions 工作台与会话对比）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
@@ -26,7 +26,7 @@
 
 必须保持或显式验证的核心契约：
 - CUP transport profile 当前包含既有 NUS `6E400001/3/2` 与新硬件证据 `FFF0/FFF1/FFF2` 两组 service/notify/control UUID；连接后按实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
-- 当前跨语言草案帧为 AB BA、function 0x15、little-endian data length 401、UInt8 sequence、50 组 UInt32 LE RED/IR、CD DC，总长 408 字节、100 Hz；协议截图中的“32 个红光采样点/共 50 组”矛盾必须保留为 Phase 0 风险，不能伪装成已认证生产协议。
+- 当前接收帧以 2026-08-04 用户提供的新硬件协议为准：`AB BA`、function `0x15`、little-endian data length `161`、UInt8 sequence、20 个 UInt32 LE RED 后接 20 个 UInt32 LE IR、`CD DC`，总长 168 字节；100 Hz 采样契约保持不变。历史 408-byte/50-pair interleaved 仅保留 raw/session 回放兼容；真实 FFF1 通知和采样率仍需真机认证，见 ADR-0003。
 - decoder 必须支持碎片、粘包、噪声重同步、错误 tail/length/function、有限缓冲；sequence first/continuous/gap 接受，duplicate/out-of-order 不进入样本流并保留诊断。
 - raw 是恢复与再分析真源：CUPRAW1\0 + 每个原始 BLE notification chunk 的 host monotonic ns、LE 长度和原始字节；先确认 raw append 成功，再派生 CSV/指标。任何队列、decoder、分析窗口和波形 ring 都必须有上限，不能静默丢 raw。
 - CSV 保持当前 25 列顺序、snake_case/session JSON、soft_version/alg_version/profile/version 追踪和兼容读取；数据格式或算法语义改变必须升级版本并保留旧版本重放测试。
@@ -87,7 +87,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 3. Python GUI/算法与 C++/Python 协议交叉实现；
 4. 规划性建议。
 
-若来源冲突，建立简短 ADR，写明证据、选择、影响的 `schema_version`/`alg_version`/`protocol_profile` 和待验证项。当前最重要的冲突是协议截图描述与 408-byte/50-pair 跨语言实现之间的采样数量不一致；在真实设备证据到来前，Android 只能称为 `draft`/`bring-up`。
+若来源冲突，建立简短 ADR，写明证据、选择、影响的 `schema_version`/`alg_version`/`protocol_profile` 和待验证项。2026-08-04 的新硬件协议说明已取代 408-byte/50-pair 作为当前接收布局，但在获得真实 FFF1 通知、固件版本和采样率证据前仍只能称为 `bring-up`；旧布局继续作为历史兼容 profile。
 
 ## 5. Migration 版本和当前迭代映射
 
@@ -109,7 +109,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 ### 6.1 协议与 BLE
 
 - 名称前缀保持 `CUP`；支持既有 NUS service/notify/control `6E400001/3/2-...` 与新硬件 service/notify/write `0000FFF0/1/2-0000-1000-8000-00805F9B34FB`，服务发现后精确选择一组。Android V1 不凭 UUID 名称猜测 START/STOP payload；实际 profile 必须固化到会话 metadata。
-- 当前 draft frame：`AB BA` + `0x15` + LE length `401` + sequence + 50 组 LE `UInt32 RED/IR` + `CD DC`，408 bytes，100 Hz，每帧 50 samples。
+- 当前 bring-up frame：`AB BA` + `0x15` + LE length `161` + sequence + 20×LE `UInt32 RED` + 20×LE `UInt32 IR` + `CD DC`，168 bytes，100 Hz，每帧 20 samples；历史 408-byte interleaved profile 仅保留读取/回放兼容。
 - decoder 支持任意通知分片/粘包/噪声重同步，并对 invalid function/length/tail、discarded bytes、pending buffer 计数且有上限。
 - sequence `first`、`continuous`、合理 `gap` 进入 accepted stream；duplicate/out-of-order 拒绝但保留诊断；`UInt8` wrap 必须测试。
 - GATT callback 只复制通知 bytes、记录 monotonic 时间、投递有界队列；旧 generation 的晚到 callback 不得污染新连接。

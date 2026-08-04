@@ -3,6 +3,7 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BleRawNotificationChunk
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
@@ -45,8 +46,8 @@ class CaptureRecordingControllerTest {
             assertNotNull(summary)
             assertEquals(CaptureStopReason.USER, summary!!.stopReason)
             assertEquals(1, summary.writer.rawChunkCount)
-            assertEquals(50, summary.writer.csvRows)
-            assertEquals(50L, CaptureRawSessionReaders.sampleRows(summary.directory))
+            assertEquals(20, summary.writer.csvRows)
+            assertEquals(20L, CaptureRawSessionReaders.sampleRows(summary.directory))
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -164,8 +165,8 @@ class CaptureRecordingControllerTest {
             assertEquals(CaptureStopReason.WRITE_ERROR, summary!!.stopReason)
             assertFalse(summary.complete)
             assertEquals(1L, summary.writer.rawChunkCount)
-            assertEquals(50L, summary.writer.csvRows)
-            assertEquals(50L, CaptureRawSessionReaders.sampleRows(summary.directory))
+            assertEquals(20L, summary.writer.csvRows)
+            assertEquals(20L, CaptureRawSessionReaders.sampleRows(summary.directory))
 
             val metadata = CaptureSessionMetadataCodec.decode(
                 Files.readString(summary.directory.resolve("controller_001.session.json")),
@@ -197,12 +198,13 @@ class CaptureRecordingControllerTest {
                     availableBytes = Long.MAX_VALUE,
                 ),
             )
-            repeat(16) { frameIndex ->
+            repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
                 assertTrue(
                     controller.onRawChunk(
                         BleRawNotificationChunk(
                             11,
-                            frameIndex.toLong() * 500_000_000L,
+                            frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame *
+                                1_000_000_000L / CupBatchProtocolV1.sampleRateHz,
                             encodeCupBatchFrame(analysisFrame(frameIndex)),
                         ),
                     ),
@@ -253,13 +255,15 @@ class CaptureRecordingControllerTest {
 
     private fun frame() = CupBatchFrame(
         sequence = 1u,
-        samples = List(50) { CupPpgSample(100u + it.toUInt(), 200u + it.toUInt()) },
+        samples = List(CupBatchProtocolV1.samplesPerFrame) {
+            CupPpgSample(100u + it.toUInt(), 200u + it.toUInt())
+        },
     )
 
     private fun analysisFrame(frameIndex: Int) = CupBatchFrame(
         sequence = frameIndex.toUByte(),
-        samples = List(50) { sampleInFrame ->
-            val index = frameIndex * 50 + sampleInFrame
+        samples = List(CupBatchProtocolV1.samplesPerFrame) { sampleInFrame ->
+            val index = frameIndex * CupBatchProtocolV1.samplesPerFrame + sampleInFrame
             val pulse = (kotlin.math.sin(index * 2.0 * Math.PI / 25.0) * 120.0).toUInt()
             CupPpgSample(10_000u + pulse, 20_000u + pulse)
         },

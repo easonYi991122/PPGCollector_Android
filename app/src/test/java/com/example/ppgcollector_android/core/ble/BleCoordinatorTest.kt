@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
@@ -207,7 +208,7 @@ class BleCoordinatorTest {
                     data = encodeCupBatchFrame(
                         CupBatchFrame(
                             sequence = 1u,
-                            samples = List(50) { index ->
+                            samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
                                 CupPpgSample(
                                     red = (10_000 + index).toUInt(),
                                     ir = (20_000 + index).toUInt(),

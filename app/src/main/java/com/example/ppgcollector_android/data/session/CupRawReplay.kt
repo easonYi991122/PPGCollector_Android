@@ -12,6 +12,7 @@ data class CupReplaySample(
     val hostMonotonicNanoseconds: ULong,
     val frameSequence: UByte,
     val sampleInFrame: Int,
+    val samplesPerFrame: Int,
     val sample: CupPpgSample,
 )
 
@@ -107,7 +108,7 @@ object CupRawReplayEngine {
                 hasDecodedFrame = true
             }
             frames.forEach { frame ->
-                when (sequenceTracker.observe(frame.sequence)) {
+                when (sequenceTracker.observe(frame.sequence, frame.samples.size)) {
                     CupSequenceEvent.Duplicate,
                     CupSequenceEvent.OutOfOrder -> Unit
                     CupSequenceEvent.First,
@@ -129,6 +130,7 @@ object CupRawReplayEngine {
                     hostMonotonicNanoseconds = record.hostMonotonicNanoseconds,
                     frameSequence = frame.sequence,
                     sampleInFrame = sampleInFrame,
+                    samplesPerFrame = frame.samples.size,
                     sample = sample,
                 )
                 if (recentSamples.size == recentSampleCapacity) {

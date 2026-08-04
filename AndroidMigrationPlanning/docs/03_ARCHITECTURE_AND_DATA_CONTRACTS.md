@@ -117,12 +117,13 @@ BLE callback 到 session actor 之间使用有界 `Channel<RawNotificationChunk>
 |---:|---:|---|---|
 | 0 | 2 | header | `AB BA` |
 | 2 | 1 | function | `15` |
-| 3 | 2 | data length | little-endian，当前为 `401`（sequence 1 + samples 400） |
+| 3 | 2 | data length | little-endian，当前为 `161`（sequence 1 + data 160） |
 | 5 | 1 | sequence | UInt8，255 后回 0 |
-| 6 | 400 | 50 组样本 | 每组 RED UInt32 LE + IR UInt32 LE |
-| 406 | 2 | tail | `CD DC` |
+| 6 | 80 | RED[0..19] | 20 个 UInt32 LE |
+| 86 | 80 | IR[0..19] | 20 个 UInt32 LE |
+| 166 | 2 | tail | `CD DC` |
 
-当前没有 checksum。该事实来自现有草案实现，Phase 0 必须用真实固件抓包确认；确认前 profile 命名保持 draft/baseline，不能称为已认证 production protocol。尤其是原始协议截图的描述同时出现疑似“32 个红光采样点”和“一共 50 组”，而当前 Swift、Python/C++ reference 和 golden frame 均采用 50 对 RED/IR；Android V1 先按 50 对实现测试内核，但真机门禁必须解决这个来源矛盾。
+当前说明没有 checksum。布局证据来自 2026-08-04 用户提供的新硬件协议，详见 ADR-0003；在 FFF1 实际通知、固件版本和采样率被记录前仍是 bring-up profile。历史 Swift/Python/C++ reference 的 408-byte、50-pair interleaved 布局不再用于当前接收编码，只用于既有 raw/session 兼容读取。单个 decoder/连接在首个合法帧后锁定布局，不能在同一流中静默混用两种 wire profile。
 
 ### 4.2 流解码
 
@@ -138,7 +139,8 @@ while enough bytes:
   if less than calculated frame length: return
   validate tail
   if invalid: discard one byte, increment invalidTail, continue
-  decode 50 pairs little-endian; consume 408; emit frame
+  decode current 20 RED words + 20 IR words (or locked legacy layout)
+  consume calculated frame length; emit frame
 ```
 
 decoder 输出结构合法帧；sequence gate 决定是否进入 accepted stream。gap 计数为 `(current - previous - 1) mod 256` 的合理前向距离；duplicate 和明显反向/旧帧拒绝。移植时不要把 `ByteBuffer` 默认 big-endian 当成设备端序。

@@ -134,7 +134,7 @@ class CaptureSessionOfflineAnalysisTest {
         val directory = root.resolve("capture")
         Files.createDirectory(directory)
         val files = CaptureSessionRepository.expectedFiles(directory)
-        val frameCount = 60
+        val frameCount = 3_000 / CupBatchProtocolV1.samplesPerFrame
         try {
             CupRawWriter(files.raw).use { writer ->
                 if (leadingPrefixBytes > 0) {
@@ -145,7 +145,11 @@ class CaptureSessionOfflineAnalysisTest {
                     )
                 }
                 repeat(frameCount) { frameIndex ->
-                    writer.append((1_000_000_000L + frameIndex * 500_000_000L).toULong(), frameWire(frameIndex))
+                    writer.append(
+                        (1_000_000_000L + frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame *
+                            1_000_000_000L / CupBatchProtocolV1.sampleRateHz).toULong(),
+                        frameWire(frameIndex),
+                    )
                 }
             }
             Files.writeString(files.csv, CaptureCsvSchema.header)
@@ -198,10 +202,10 @@ class CaptureSessionOfflineAnalysisTest {
         softVersion = "test",
         algVersion = "ppg-live-parity-0.1",
         preprocessProfile = "ios_baseline_0.1",
-        protocolProfile = "cup-draft",
+        protocolProfile = CupBatchProtocolV1.profileIdentifier,
         transportProfile = "cup-nus",
         sampleRateHz = 100,
-        samplesPerFrame = 50,
+        samplesPerFrame = CupBatchProtocolV1.samplesPerFrame,
         device = CaptureSessionDeviceMetadata("CUP", "id", "service", "notify", null, null),
         complete = true,
         stopReason = CaptureStopReason.USER,

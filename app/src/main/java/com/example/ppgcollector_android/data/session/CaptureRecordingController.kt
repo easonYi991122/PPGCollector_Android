@@ -261,7 +261,7 @@ class CaptureRecordingController(
                     ) {
                         // The writer has already acknowledged raw before this lambda runs.
                         events = decoder.feed(item.bytes).map { frame ->
-                            val sequence = sequenceTracker.observe(frame.sequence)
+                            val sequence = sequenceTracker.observe(frame.sequence, frame.samples.size)
                             CupDecodedFrameEvent(
                                 frame = frame,
                                 sequenceEvent = sequence,

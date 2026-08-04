@@ -20,7 +20,7 @@
 
 | 范围 | 当前事实 | 尚缺证据 |
 |---|---|---|
-| M1 protocol/data/signal | 408-byte draft decoder、sequence gate、CUPRAW1、25 列 CSV、session JSON、inspection/recovery、preprocess/HR/SQI/R fixtures、800/100 runtime | `D-001` 真实固件认证；`D-006/D-007` 正式跨平台/version 裁决 |
+| M1 protocol/data/signal | 当前 168-byte planar decoder、历史 408-byte replay、sequence gate、CUPRAW1、25 列 CSV、session JSON、inspection/recovery、preprocess/HR/SQI/R fixtures、800/100 runtime | `D-001` 真实固件认证；`D-006/D-007` 正式跨平台/version 裁决 |
 | M2 BLE | API permission policy、有限扫描、NUS/FFF0 profile 自动选择、Android GATT/CCCD、generation/deadline/freshness、fake 20-cycle | 新硬件 FFF1 properties/通知 hex/FFF2 命令契约、真机 CUP receiving、权限撤销、adapter off、目标 OEM/API 矩阵 |
 | M3 capture | 256 有界队列、raw-first writer、1 s checkpoint、first reason/single finalizer、connectedDevice FGS、SAF/recovery/FileProvider service | 系统 lifecycle/锁屏/task removed/强停/低存储/provider runtime |
 | M4 UI | Live/Capture/Sessions、RAW 波形、指标状态、连接/断开、录制 gate、详情/replay | emulator/device screen tests、TalkBack、动态字号、深浅主题、触控与重建 |
@@ -58,7 +58,7 @@
 
 这些不是本地 unit test 可以替代的代码完成证据：
 
-1. **协议与 BLE（D-001、UI-001、BLE-001…006）**：分别对 NUS 与 FFF0 CUP 抓包确认 services/characteristic properties、FFF2 是否需命令、通知 hex、408/50、端序、sequence、实际 100 Hz、分片/MTU；执行无设备扫描超时、发现/连接/CCCD/receiving、断开/重连、拔电、adapter off、权限拒绝/撤销、stale。
+1. **协议与 BLE（D-001、UI-001、BLE-001…006）**：分别对 NUS 与 FFF0 CUP 抓包确认 services/characteristic properties、FFF2 是否需命令、通知 hex、当前 168/20 planar 布局、历史设备 wire、端序、sequence、实际 100 Hz、分片/MTU；执行无设备扫描超时、发现/连接/CCCD/receiving、断开/重连、拔电、adapter off、权限拒绝/撤销、stale。
 2. **生命周期与 FGS（UI-008、REL-003/004/007）**：旋转、Activity 重建、页面切换、后台、锁屏、task removed、Active apps stop、notification action、系统回收；证明始终只有一个 GATT/writer/finalizer。
 3. **文件系统（CAP-008…010）**：真实 SAF provider 创建/取消/慢写/断开，FileProvider chooser，卸载/backup-restore 边界，低空间和恢复入口。
 4. **UI 与可访问性（M4/M6）**：实时 RAW/CAUSAL 切换、settling/gap、replay 指尖拖动/双指缩放、完整信号 fit、横屏沉浸/旋转恢复、TalkBack、动态字号、深浅主题、最小触控区域。

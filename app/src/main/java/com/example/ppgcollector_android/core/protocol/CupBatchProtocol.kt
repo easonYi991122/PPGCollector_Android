@@ -1,30 +1,54 @@
 package com.example.ppgcollector_android.core.protocol
 
 /**
- * Draft CUP batch profile derived from the current Swift/Python references.
+ * Current CUP batch profile supplied for the FFF0 hardware bring-up.
  *
- * The 408-byte layout is a bring-up baseline until a real CUP capture confirms
- * length semantics, sample ordering, sampling rate, and checksum behavior.
+ * One 168-byte frame contains 20 little-endian RED words followed by 20
+ * little-endian IR words. Sampling remains 100 Hz outside the wire layout.
  */
 object CupBatchProtocolV1 {
+    const val profileIdentifier = "cup-batch-168-planar-0.1"
+    const val legacyProfileIdentifier = "cup-batch-408-interleaved-legacy-0.1"
     val header = byteArrayOf(0xAB.toByte(), 0xBA.toByte())
     val tail = byteArrayOf(0xCD.toByte(), 0xDC.toByte())
     const val batchFunction: UByte = 0x15u
     const val sampleRateHz = 100
-    const val samplesPerFrame = 50
-    const val sampleWireLength = 8
-    const val dataLength = 1 + samplesPerFrame * sampleWireLength
+    const val samplesPerFrame = 20
+    const val sampleWordLength = 4
+    const val channelDataLength = samplesPerFrame * sampleWordLength
+    const val redDataOffset = 6
+    const val irDataOffset = redDataOffset + channelDataLength
+    const val dataLength = 1 + channelDataLength * 2
     const val frameLength = 2 + 1 + 2 + dataLength + 2
+    const val legacySamplesPerFrame = 50
+    const val legacySampleWireLength = 8
+    const val legacyDataLength = 1 + legacySamplesPerFrame * legacySampleWireLength
+    const val legacyFrameLength = 2 + 1 + 2 + legacyDataLength + 2
+    const val maximumFrameLength = legacyFrameLength
+
+    fun isSupportedDataLength(length: Int): Boolean =
+        length == dataLength || length == legacyDataLength
 }
 
 data class CupPpgSample(val red: UInt, val ir: UInt)
 
 data class CupBatchFrame(val sequence: UByte, val samples: List<CupPpgSample>) {
     init {
-        require(samples.size == CupBatchProtocolV1.samplesPerFrame) {
-            "expected ${CupBatchProtocolV1.samplesPerFrame} samples, got ${samples.size}"
+        require(
+            samples.size == CupBatchProtocolV1.samplesPerFrame ||
+                samples.size == CupBatchProtocolV1.legacySamplesPerFrame,
+        ) {
+            "expected ${CupBatchProtocolV1.samplesPerFrame} current or " +
+                "${CupBatchProtocolV1.legacySamplesPerFrame} legacy samples, got ${samples.size}"
         }
     }
+
+    val protocolProfileIdentifier: String
+        get() = if (samples.size == CupBatchProtocolV1.samplesPerFrame) {
+            CupBatchProtocolV1.profileIdentifier
+        } else {
+            CupBatchProtocolV1.legacyProfileIdentifier
+        }
 }
 
 data class CupDecoderStats(
@@ -44,6 +68,9 @@ data class CupDecoderStats(
 class CupProtocolException(message: String) : IllegalArgumentException(message)
 
 fun encodeCupBatchFrame(frame: CupBatchFrame): ByteArray {
+    require(frame.samples.size == CupBatchProtocolV1.samplesPerFrame) {
+        "current encoder requires ${CupBatchProtocolV1.samplesPerFrame} samples"
+    }
     val wire = ByteArray(CupBatchProtocolV1.frameLength)
     CupBatchProtocolV1.header.copyInto(wire, 0)
     wire[2] = CupBatchProtocolV1.batchFunction.toByte()
@@ -51,34 +78,59 @@ fun encodeCupBatchFrame(frame: CupBatchFrame): ByteArray {
     wire[5] = frame.sequence.toByte()
 
     frame.samples.forEachIndexed { index, sample ->
-        val offset = 6 + index * CupBatchProtocolV1.sampleWireLength
-        writeUInt32Le(wire, offset, sample.red)
-        writeUInt32Le(wire, offset + 4, sample.ir)
+        writeUInt32Le(
+            wire,
+            CupBatchProtocolV1.redDataOffset + index * CupBatchProtocolV1.sampleWordLength,
+            sample.red,
+        )
+        writeUInt32Le(
+            wire,
+            CupBatchProtocolV1.irDataOffset + index * CupBatchProtocolV1.sampleWordLength,
+            sample.ir,
+        )
     }
     CupBatchProtocolV1.tail.copyInto(wire, wire.size - CupBatchProtocolV1.tail.size)
     return wire
 }
 
 fun decodeCupBatchFrame(wire: ByteArray): CupBatchFrame {
-    if (wire.size != CupBatchProtocolV1.frameLength) {
-        throw CupProtocolException("expected ${CupBatchProtocolV1.frameLength} bytes, got ${wire.size}")
-    }
+    if (wire.size < 5) throw CupProtocolException("frame too short")
     if (!wire.copyOfRange(0, 2).contentEquals(CupBatchProtocolV1.header)) {
         throw CupProtocolException("invalid header")
     }
     if (wire[2].toUByte() != CupBatchProtocolV1.batchFunction) {
         throw CupProtocolException("invalid function")
     }
-    if (readUInt16Le(wire, 3) != CupBatchProtocolV1.dataLength) {
+    val dataLength = readUInt16Le(wire, 3)
+    val expectedFrameLength = 2 + 1 + 2 + dataLength + 2
+    if (!CupBatchProtocolV1.isSupportedDataLength(dataLength) || wire.size != expectedFrameLength) {
         throw CupProtocolException("invalid data length")
     }
     if (!wire.copyOfRange(wire.size - 2, wire.size).contentEquals(CupBatchProtocolV1.tail)) {
         throw CupProtocolException("invalid tail")
     }
 
-    val samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
-        val offset = 6 + index * CupBatchProtocolV1.sampleWireLength
-        CupPpgSample(readUInt32Le(wire, offset), readUInt32Le(wire, offset + 4))
+    val samples = if (dataLength == CupBatchProtocolV1.dataLength) {
+        List(CupBatchProtocolV1.samplesPerFrame) { index ->
+            CupPpgSample(
+                red = readUInt32Le(
+                    wire,
+                    CupBatchProtocolV1.redDataOffset + index * CupBatchProtocolV1.sampleWordLength,
+                ),
+                ir = readUInt32Le(
+                    wire,
+                    CupBatchProtocolV1.irDataOffset + index * CupBatchProtocolV1.sampleWordLength,
+                ),
+            )
+        }
+    } else {
+        List(CupBatchProtocolV1.legacySamplesPerFrame) { index ->
+            val offset = 6 + index * CupBatchProtocolV1.legacySampleWireLength
+            CupPpgSample(
+                red = readUInt32Le(wire, offset),
+                ir = readUInt32Le(wire, offset + CupBatchProtocolV1.sampleWordLength),
+            )
+        }
     }
     return CupBatchFrame(wire[5].toUByte(), samples)
 }

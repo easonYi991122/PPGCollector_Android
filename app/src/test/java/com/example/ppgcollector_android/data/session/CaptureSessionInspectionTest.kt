@@ -31,12 +31,12 @@ class CaptureSessionInspectionTest {
         assertEquals(3L, report.rawRecordCount)
         assertEquals(2, report.decodedFrames)
         assertEquals(2, report.acceptedFrames)
-        assertEquals(100L, report.acceptedSamples)
+        assertEquals(40L, report.acceptedSamples)
         assertEquals(1, report.missingFrames)
         assertEquals(0, report.duplicateFrames)
         assertEquals(0, report.outOfOrderFrames)
-        assertEquals(100, report.recentSamples.size)
-        assertEquals(99L, report.recentSamples.last().sampleIndex)
+        assertEquals(40, report.recentSamples.size)
+        assertEquals(39L, report.recentSamples.last().sampleIndex)
         assertEquals(2_000uL, report.firstFrameHostNanoseconds)
         assertEquals(3_000uL, report.lastFrameHostNanoseconds)
         assertTrue(report.isStructurallyClean)
@@ -48,11 +48,29 @@ class CaptureSessionInspectionTest {
         val report = CupRawReplayEngine.replay(complete + byteArrayOf(1, 2, 3))
 
         assertEquals(1L, report.rawRecordCount)
-        assertEquals(50L, report.acceptedSamples)
+        assertEquals(20L, report.acceptedSamples)
         assertNotNull(report.tailIssue)
         assertEquals(complete.size.toLong(), report.validRawBytes)
         assertEquals(3L, report.trailingRawBytes)
         assertTrue(report.hasRecoverableTail())
+    }
+
+    @Test
+    fun replayRemainsCompatibleWithLegacy408ByteRecordings() {
+        val legacy = loadHexFixture("protocol/legacy_golden_seq42.hex")
+
+        val report = CupRawReplayEngine.replay(rawBytes(1_000u, legacy))
+
+        assertEquals(1, report.decodedFrames)
+        assertEquals(1, report.acceptedFrames)
+        assertEquals(CupBatchProtocolV1.legacySamplesPerFrame.toLong(), report.acceptedSamples)
+        assertEquals(
+            CupBatchProtocolV1.legacySamplesPerFrame,
+            report.recentSamples.first().samplesPerFrame,
+        )
+        assertEquals(100_000u, report.recentSamples.first().sample.red)
+        assertEquals(121_127u, report.recentSamples.last().sample.ir)
+        assertTrue(report.isStructurallyClean)
     }
 
     @Test
@@ -76,7 +94,7 @@ class CaptureSessionInspectionTest {
         assertEquals(28, report.discardedBytes)
         assertEquals(0, report.structuralDiscardedBytes)
         assertEquals(2, report.decodedFrames)
-        assertEquals(100L, report.acceptedSamples)
+        assertEquals(40L, report.acceptedSamples)
         assertTrue(report.isStructurallyClean)
     }
 
@@ -86,15 +104,15 @@ class CaptureSessionInspectionTest {
         val bytes = rawBytes(
             listOf(
                 1_000uL to frame,
-                2_000uL to referenceFrame(43u).copyOfRange(0, 220),
+                2_000uL to referenceFrame(43u).copyOfRange(0, 120),
             ),
         )
 
         val report = CupRawReplayEngine.replay(bytes)
 
-        assertEquals(220, report.pendingDecoderBytes)
+        assertEquals(120, report.pendingDecoderBytes)
         assertEquals(1, report.decodedFrames)
-        assertEquals(50L, report.acceptedSamples)
+        assertEquals(20L, report.acceptedSamples)
         assertTrue(report.isStructurallyClean)
     }
 
@@ -182,8 +200,8 @@ class CaptureSessionInspectionTest {
             assertTrue(inspection.isVerifiedConsistent)
             assertTrue(inspection.findings.isEmpty())
             assertEquals(before, after)
-            assertEquals(50L, inspection.replay!!.acceptedSamples)
-            assertEquals(50L, inspection.csv!!.completeDataRowCount)
+            assertEquals(20L, inspection.replay!!.acceptedSamples)
+            assertEquals(20L, inspection.csv!!.completeDataRowCount)
         }
     }
 
@@ -196,7 +214,7 @@ class CaptureSessionInspectionTest {
             CupRawWriter(rawPath).use { it.append(1u, referenceFrame(1u)) }
             Files.writeString(
                 metadataPath,
-                CaptureSessionMetadataCodec.encode(sampleMetadata().copy(sampleCount = 49)),
+                CaptureSessionMetadataCodec.encode(sampleMetadata().copy(sampleCount = 19)),
             )
 
             val inspection = CaptureSessionInspectionService.inspect(directory)
@@ -237,6 +255,15 @@ class CaptureSessionInspectionTest {
         }
     }
 
+    private fun loadHexFixture(resourceName: String): ByteArray = javaClass.classLoader!!
+        .getResourceAsStream(resourceName)!!
+        .bufferedReader()
+        .readText()
+        .filterNot(Char::isWhitespace)
+        .chunked(2)
+        .map { it.toInt(16).toByte() }
+        .toByteArray()
+
     private fun csvRow(frame: ByteArray, index: Int): CaptureCsvRow = CaptureCsvRow(
         schemaVersion = "capture_csv_v1",
         sessionId = "session",
@@ -252,7 +279,7 @@ class CaptureSessionInspectionTest {
         softVersion = "soft",
         algorithmVersion = "alg",
         preprocessProfile = "raw-only",
-        protocolProfile = "cup-draft",
+        protocolProfile = CupBatchProtocolV1.profileIdentifier,
         ratioOfRatios = CsvMetricCell(null, false, null),
     )
 
@@ -265,22 +292,27 @@ class CaptureSessionInspectionTest {
         softVersion = "soft",
         algVersion = "alg",
         preprocessProfile = "raw-only",
-        protocolProfile = "cup-draft",
+        protocolProfile = CupBatchProtocolV1.profileIdentifier,
         transportProfile = "cup-nus",
         sampleRateHz = 100,
-        samplesPerFrame = 50,
+        samplesPerFrame = CupBatchProtocolV1.samplesPerFrame,
         device = CaptureSessionDeviceMetadata("CUP", "id", "service", "notify", null, null),
         complete = true,
         stopReason = CaptureStopReason.USER,
         frameCount = 1,
-        sampleCount = 50,
+        sampleCount = CupBatchProtocolV1.samplesPerFrame.toLong(),
         rawChunkCount = 1,
         missingFrames = 0,
         duplicateFrames = 0,
         outOfOrderFrames = 0,
         invalidFrames = 0,
         discardedBytes = 0,
-        writer = CaptureSessionWriterMetadata(null, 428, 50, null),
+        writer = CaptureSessionWriterMetadata(
+            null,
+            (CupRawFormat.magic.size + CupRawFormat.recordHeaderBytes + CupBatchProtocolV1.frameLength).toLong(),
+            CupBatchProtocolV1.samplesPerFrame.toLong(),
+            null,
+        ),
         files = CaptureSessionFilesMetadata("capture.cupraw", "capture.csv"),
         recovery = null,
     )

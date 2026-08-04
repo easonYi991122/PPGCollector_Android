@@ -39,6 +39,8 @@ class LongDurationDataPathTest {
             CupBatchProtocolV1.samplesPerFrame
         val sampleCount = frameCount * CupBatchProtocolV1.samplesPerFrame
         val rawChunkCount = frameCount * 2
+        val firstChunkLength = 100
+        val secondChunkLength = CupBatchProtocolV1.frameLength - firstChunkLength
         val expectedMetricRequestCount =
             (sampleCount - LiveMetricRuntimeProfile.iosBaseline01.windowSampleCount) /
                 LiveMetricRuntimeProfile.iosBaseline01.cadenceSampleCount + 1
@@ -57,10 +59,13 @@ class LongDurationDataPathTest {
 
             for (frameIndex in 0 until frameCount) {
                 val frame = frames[frameIndex and 0xFF]
-                val chunks = arrayOf(frame.copyOfRange(0, 244), frame.copyOfRange(244, 408))
+                val chunks = arrayOf(
+                    frame.copyOfRange(0, firstChunkLength),
+                    frame.copyOfRange(firstChunkLength, frame.size),
+                )
                 for ((chunkIndex, chunk) in chunks.withIndex()) {
                     val events = decoder.feed(chunk).map { decoded ->
-                        val sequenceEvent = sequenceTracker.observe(decoded.sequence)
+                        val sequenceEvent = sequenceTracker.observe(decoded.sequence, decoded.samples.size)
                         CupDecodedFrameEvent(
                             frame = decoded,
                             sequenceEvent = sequenceEvent,
@@ -80,13 +85,13 @@ class LongDurationDataPathTest {
                             decodedFrames = events,
                             acceptedSampleStartIndex = acceptedSamples,
                             measuredAt = longMeasuredAt(frameIndex),
-                            nowNanos = frameIndex.toLong() * 500_000_000L,
+                            nowNanos = frameNanos(frameIndex),
                         ).metricRequest
                     }
 
                     writer.append(
                         CaptureStreamChunkEvent(
-                            hostMonotonicNanoseconds = frameIndex.toULong() * 500_000_000uL +
+                            hostMonotonicNanoseconds = frameNanos(frameIndex).toULong() +
                                 chunkIndex.toULong() * 1_000_000uL,
                             data = chunk,
                             decodedFrames = events,
@@ -110,8 +115,9 @@ class LongDurationDataPathTest {
             assertEquals(rawChunkCount, summary.writer.rawChunkCount.toInt())
             assertEquals(frameCount * CupBatchProtocolV1.frameLength, summary.writer.rawPayloadBytes.toInt())
             assertEquals(
-                CupRawFormat.magic.size + frameCount * (CupRawFormat.recordHeaderBytes + 244 +
-                    CupRawFormat.recordHeaderBytes + 164),
+                CupRawFormat.magic.size + frameCount *
+                    (CupRawFormat.recordHeaderBytes + firstChunkLength +
+                        CupRawFormat.recordHeaderBytes + secondChunkLength),
                 summary.writer.rawFileBytes.toInt(),
             )
             assertEquals(frameCount, diagnostics.frames)
@@ -146,7 +152,7 @@ class LongDurationDataPathTest {
             val rawSummary = auditRaw(summary.directory.resolve("long_duration.cupraw"), rawChunkCount, frameCount)
             assertEquals(0L, rawSummary.trailingByteCount)
             assertNull(rawSummary.tailIssue)
-            assertEquals(256, rawSummary.peakRecordBufferBytes)
+            assertEquals(CupRawFormat.recordHeaderBytes + firstChunkLength, rawSummary.peakRecordBufferBytes)
 
             val sessions = CaptureSessionRepository.listSessions(root)
             assertEquals(1, sessions.size)
@@ -162,8 +168,12 @@ class LongDurationDataPathTest {
             assertEquals(frameCount, replay.acceptedFrames)
             assertEquals(sampleCount.toLong(), replay.acceptedSamples)
             assertEquals(800, replay.recentSamples.size)
-            assertEquals(256, replay.peakRawRecordBufferBytes)
-            assertEquals(durationSeconds - 0.5, replay.hostDurationSeconds!!, 1e-12)
+            assertEquals(CupRawFormat.recordHeaderBytes + firstChunkLength, replay.peakRawRecordBufferBytes)
+            assertEquals(
+                durationSeconds - CupBatchProtocolV1.samplesPerFrame.toDouble() / CupBatchProtocolV1.sampleRateHz,
+                replay.hostDurationSeconds!!,
+                1e-12,
+            )
             assertTrue(replay.isStructurallyClean)
             assertEquals(0L, replay.trailingRawBytes)
 
@@ -204,8 +214,8 @@ class LongDurationDataPathTest {
         var longChunks = 0
         val summary = CupRawReader.scan(path) { record ->
             when (record.chunk.size) {
-                164 -> shortChunks++
-                244 -> longChunks++
+                CupBatchProtocolV1.frameLength - 100 -> shortChunks++
+                100 -> longChunks++
                 else -> throw AssertionError("unexpected raw chunk size ${record.chunk.size}")
             }
         }
@@ -244,7 +254,7 @@ class LongDurationDataPathTest {
                 assertEquals("1.0+long", fields[18])
                 assertEquals(profile.identifier, fields[19])
                 assertEquals(profile.preprocessingProfile.identifier, fields[20])
-                assertEquals("cup_batch_v1_draft", fields[21])
+                assertEquals(CupBatchProtocolV1.profileIdentifier, fields[21])
                 assertTrue(fields[12].isEmpty())
                 assertEquals("false", fields[13])
                 assertTrue(fields[14].isEmpty())
@@ -356,7 +366,7 @@ class LongDurationDataPathTest {
         softVersion = "1.0+long",
         algorithmVersion = profile.identifier,
         preprocessProfile = profile.preprocessingProfile.identifier,
-        protocolProfile = "cup_batch_v1_draft",
+        protocolProfile = CupBatchProtocolV1.profileIdentifier,
         transportProfile = "cup-nus-bringup-0.1",
         device = CaptureDeviceContext(
             name = "CUP-SIM-LONG",
@@ -370,14 +380,18 @@ class LongDurationDataPathTest {
         CupBatchFrame(
             sequence = sequence.toUByte(),
             samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
-                val value = (100_000 + sequence * 50 + index).toUInt()
+                val value = (100_000 + sequence * CupBatchProtocolV1.samplesPerFrame + index).toUInt()
                 CupPpgSample(red = value + 1_000u, ir = value + 2_000u)
             },
         ),
     )
 
     private fun longMeasuredAt(frameIndex: Int): Instant =
-        Instant.ofEpochSecond(1_800_000_000L, frameIndex.toLong() * 500_000_000L)
+        Instant.ofEpochSecond(1_800_000_000L, frameNanos(frameIndex))
+
+    private fun frameNanos(frameIndex: Int): Long =
+        frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame * 1_000_000_000L /
+            CupBatchProtocolV1.sampleRateHz
 
     private fun formatSeconds(sampleIndex: Int): String =
         String.format(java.util.Locale.ROOT, "%.6f", sampleIndex.toDouble() / 100.0)

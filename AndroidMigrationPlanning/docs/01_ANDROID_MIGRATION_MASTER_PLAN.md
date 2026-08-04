@@ -10,7 +10,7 @@
 
 本项目不是把 SwiftUI 逐行翻译为 Kotlin，而是保留四类跨平台契约，并重写平台壳层：
 
-1. **必须逐语义保持**：CUP BLE profile、408 字节批帧、碎片流解码、序号判断、100 Hz RED/IR 样本顺序、`CUPRAW1`、CSV/session JSON、版本字段、恢复策略、HR/SQI 数值行为。
+1. **必须逐语义保持**：CUP BLE profile、当前 168 字节 planar 批帧及历史 408 字节回放兼容、碎片流解码、序号判断、100 Hz RED/IR 样本顺序、`CUPRAW1`、CSV/session JSON、版本字段、恢复策略、HR/SQI 数值行为。
 2. **必须按 Android 重写**：权限、扫描与 GATT 回调、前台服务、后台限制、生命周期、Compose UI、内部存储/SAF/FileProvider。
 3. **先保留“不可用”**：SpO2、BP。现有 ratio-of-ratios 只是诊断值，没有校准曲线；不得显示成临床结果。
 4. **后续增强**：Python GUI 中的稳定段分析、平均周期、光谱、双会话对比和专家工作台。它们应建立在同一 raw replay 管线之上，不应复制一套解码器。
@@ -148,7 +148,7 @@ Android 允许在保持 GATT 连接时接收通知，但长时监听/录制需�
 
 ### 7.1 协议与文件
 
-- 当前 Swift/金标中的 CUP V1 帧固定 408 字节：`AB BA`、function `0x15`、payload length、8-bit sequence、50 组 little-endian `UInt32 RED + UInt32 IR`、`CD DC`；100 Hz、每帧 50 样本。原始协议截图中同时出现疑似“32 个红光采样点”和“一共 50 组”的矛盾文字，因此 50 组只能作为现行实现基线，Phase 0 必须用真实固件抓包确认后才能冻结 production profile。
+- 当前接收布局按 [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md) 为 168 字节：`AB BA`、function `0x15`、LE length `161`、8-bit sequence、20 个 LE `UInt32 RED` 后接 20 个 LE `UInt32 IR`、`CD DC`；每帧 20 样本。100 Hz、live 800/100 和文件/算法契约保持不变。Swift/旧金标的 408-byte、50-pair interleaved 布局仅作为既有 raw/session 的兼容读取基线；真实 FFF1 抓包仍是 production profile 门禁。
 - decoder 接受任意碎片/粘包并能重新同步。首帧接受；连续帧接受；缺帧后的新帧接受且计 gap；duplicate/out-of-order 拒绝进入样本流。
 - `CUPRAW1\0` 后重复 `<UInt64 little-endian hostNs><UInt32 little-endian length><raw bytes>`。保留通知原始分块，不把重组帧伪装成通知块。
 - CSV 列顺序、空值、有效标记与版本字段必须兼容 iOS；session JSON 保持 snake_case。Android 可增加 additive 字段，但旧 reader 必须忽略未知字段。

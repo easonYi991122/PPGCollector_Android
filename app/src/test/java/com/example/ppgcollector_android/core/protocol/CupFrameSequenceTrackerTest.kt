@@ -18,7 +18,7 @@ class CupFrameSequenceTrackerTest {
         assertEquals(6, tracker.stats.receivedFrames)
         assertEquals(2u.toUByte(), tracker.stats.previous)
         assertEquals(1, tracker.stats.missingFrames)
-        assertEquals(50, tracker.stats.missingSamples)
+        assertEquals(20, tracker.stats.missingSamples)
         assertEquals(1, tracker.stats.duplicateFrames)
         assertEquals(1, tracker.stats.outOfOrderFrames)
     }
@@ -36,5 +36,19 @@ class CupFrameSequenceTrackerTest {
         tracker.reset()
         assertEquals(CupSequenceStats(), tracker.stats)
         assertEquals(CupSequenceEvent.First, tracker.observe(200u))
+    }
+
+    @Test
+    fun missingSampleCountUsesTheObservedWireLayout() {
+        val tracker = CupFrameSequenceTracker()
+
+        tracker.observe(1u, CupBatchProtocolV1.legacySamplesPerFrame)
+        assertEquals(
+            CupSequenceEvent.Gap(1),
+            tracker.observe(3u, CupBatchProtocolV1.legacySamplesPerFrame),
+        )
+
+        assertEquals(1, tracker.stats.missingFrames)
+        assertEquals(CupBatchProtocolV1.legacySamplesPerFrame, tracker.stats.missingSamples)
     }
 }

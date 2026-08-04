@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.signal
 
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
@@ -22,12 +23,12 @@ class LivePpgSignalRuntimeTest {
     fun rawCausalWaveformAndMetricRequestShareOneBoundedState() {
         val runtime = LivePpgSignalRuntime()
         var latest: LivePpgIngestResult? = null
-        repeat(16) { frameIndex ->
+        repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
             latest = runtime.ingest(
-                decodedFrames = listOf(frame(frameIndex, frameIndex * 50)),
-                acceptedSampleStartIndex = frameIndex * 50L,
+                decodedFrames = listOf(frame(frameIndex, frameIndex * CupBatchProtocolV1.samplesPerFrame)),
+                acceptedSampleStartIndex = frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
                 measuredAt = measuredAt,
-                nowNanos = frameIndex * 500_000_000L,
+                nowNanos = frameNanos(frameIndex),
             )
         }
 
@@ -56,13 +57,13 @@ class LivePpgSignalRuntimeTest {
         assertArrayEquals(expectedRed, waveform.causalRed, 0.0)
         assertArrayEquals(expectedIr, waveform.causalIr, 0.0)
 
-        repeat(4) { offset ->
-            val frameIndex = 16 + offset
+        repeat(200 / CupBatchProtocolV1.samplesPerFrame) { offset ->
+            val frameIndex = 800 / CupBatchProtocolV1.samplesPerFrame + offset
             latest = runtime.ingest(
-                decodedFrames = listOf(frame(frameIndex, frameIndex * 50)),
-                acceptedSampleStartIndex = frameIndex * 50L,
+                decodedFrames = listOf(frame(frameIndex, frameIndex * CupBatchProtocolV1.samplesPerFrame)),
+                acceptedSampleStartIndex = frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
                 measuredAt = measuredAt,
-                nowNanos = frameIndex * 500_000_000L,
+                nowNanos = frameNanos(frameIndex),
             )
         }
         val rolled = latest!!.waveform!!
@@ -77,19 +78,19 @@ class LivePpgSignalRuntimeTest {
     fun gapResetsRawCausalMetricAndSettlingStateAtomically() {
         val runtime = LivePpgSignalRuntime()
         var beforeGap: LiveMetricAnalysisRequest? = null
-        repeat(16) { frameIndex ->
+        repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
             beforeGap = runtime.ingest(
-                decodedFrames = listOf(frame(frameIndex, frameIndex * 50)),
-                acceptedSampleStartIndex = frameIndex * 50L,
+                decodedFrames = listOf(frame(frameIndex, frameIndex * CupBatchProtocolV1.samplesPerFrame)),
+                acceptedSampleStartIndex = frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
                 measuredAt = measuredAt,
-                nowNanos = frameIndex * 500_000_000L,
+                nowNanos = frameNanos(frameIndex),
             ).metricRequest ?: beforeGap
         }
         assertNotNull(beforeGap)
         assertTrue(runtime.isCurrent(beforeGap!!))
 
         val gap = runtime.ingest(
-            decodedFrames = listOf(frame(18, 800, CupSequenceEvent.Gap(2))),
+            decodedFrames = listOf(frame(42, 800, CupSequenceEvent.Gap(2))),
             acceptedSampleStartIndex = 800L,
             measuredAt = measuredAt,
             nowNanos = 8_000_000_000L,
@@ -98,15 +99,15 @@ class LivePpgSignalRuntimeTest {
         assertNull(gap.metricRequest)
         assertNotNull(gap.waveform)
         assertFalse(runtime.isCurrent(beforeGap!!))
-        assertEquals(50L, runtime.continuousSamples)
-        assertEquals(50, runtime.bufferedSampleCount)
-        assertEquals(50, gap.waveform!!.red.size)
-        assertEquals(50, gap.waveform.causalRed.size)
-        assertEquals(50, gap.waveform.settlingSampleCount)
+        assertEquals(20L, runtime.continuousSamples)
+        assertEquals(20, runtime.bufferedSampleCount)
+        assertEquals(20, gap.waveform!!.red.size)
+        assertEquals(20, gap.waveform.causalRed.size)
+        assertEquals(20, gap.waveform.settlingSampleCount)
         assertEquals(0.0, gap.waveform.causalRed.first(), 0.0)
         assertEquals(0.0, gap.waveform.causalIr.first(), 0.0)
         assertEquals(800L, gap.waveform.sourceSampleStartIndex)
-        assertEquals(849L, gap.waveform.sourceSampleEndIndex)
+        assertEquals(819L, gap.waveform.sourceSampleEndIndex)
     }
 
     @Test
@@ -126,28 +127,28 @@ class LivePpgSignalRuntimeTest {
 
         runtime.ingest(
             decodedFrames = listOf(rejected),
-            acceptedSampleStartIndex = 50L,
+            acceptedSampleStartIndex = CupBatchProtocolV1.samplesPerFrame.toLong(),
             measuredAt = measuredAt,
             nowNanos = 100_000_000L,
         )
 
-        assertEquals(50L, runtime.continuousSamples)
-        assertEquals(50, runtime.bufferedSampleCount)
+        assertEquals(20L, runtime.continuousSamples)
+        assertEquals(20, runtime.bufferedSampleCount)
         assertEquals(initial.generation, runtime.generation)
 
         val discontinuous = runtime.ingest(
-            decodedFrames = listOf(frame(2, 100)),
-            acceptedSampleStartIndex = 100L,
+            decodedFrames = listOf(frame(2, 40)),
+            acceptedSampleStartIndex = 40L,
             measuredAt = measuredAt,
             nowNanos = 200_000_000L,
         ).waveform!!
 
         assertEquals(initial.generation + 1L, discontinuous.generation)
-        assertEquals(50L, runtime.continuousSamples)
-        assertEquals(50, discontinuous.red.size)
-        assertEquals(50, discontinuous.causalRed.size)
-        assertEquals(100L, discontinuous.sourceSampleStartIndex)
-        assertEquals(149L, discontinuous.sourceSampleEndIndex)
+        assertEquals(20L, runtime.continuousSamples)
+        assertEquals(20, discontinuous.red.size)
+        assertEquals(20, discontinuous.causalRed.size)
+        assertEquals(40L, discontinuous.sourceSampleStartIndex)
+        assertEquals(59L, discontinuous.sourceSampleEndIndex)
         assertEquals(0.0, discontinuous.causalRed.first(), 0.0)
     }
 
@@ -180,7 +181,7 @@ class LivePpgSignalRuntimeTest {
     ) = CupDecodedFrameEvent(
         frame = CupBatchFrame(
             sequence = sequence.toUByte(),
-            samples = List(50) { localIndex ->
+            samples = List(CupBatchProtocolV1.samplesPerFrame) { localIndex ->
                 val sampleIndex = sampleOffset + localIndex
                 val phase = 2.0 * PI * 1.2 * sampleIndex / 100.0
                 CupPpgSample(
@@ -192,4 +193,8 @@ class LivePpgSignalRuntimeTest {
         sequenceEvent = sequenceEvent,
         isAccepted = true,
     )
+
+    private fun frameNanos(frameIndex: Int): Long =
+        frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame * 1_000_000_000L /
+            CupBatchProtocolV1.sampleRateHz
 }

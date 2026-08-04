@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.signal
 
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
@@ -22,7 +23,7 @@ class LiveWaveformRuntimeTest {
         )
         assertNotNull(first)
         assertEquals(1L, first!!.publicationSequence)
-        assertEquals(50, first.red.size)
+        assertEquals(CupBatchProtocolV1.samplesPerFrame, first.red.size)
 
         assertEquals(null, scheduler.poll(199_000_000L, Instant.EPOCH))
         assertEquals(2L, scheduler.poll(200_000_000L, Instant.EPOCH)!!.publicationSequence)
@@ -35,10 +36,10 @@ class LiveWaveformRuntimeTest {
     fun ringIsBoundedAndBucketMathPreservesPerPixelExtrema() {
         val scheduler = LiveWaveformSnapshotScheduler()
         var snapshot: LiveWaveformSnapshot? = null
-        repeat(18) { frameIndex ->
+        repeat(900 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
             snapshot = scheduler.ingest(
-                decodedFrames = listOf(event(frameIndex.toUByte(), frameIndex * 50)),
-                acceptedSampleStartIndex = frameIndex * 50L,
+                decodedFrames = listOf(event(frameIndex.toUByte(), frameIndex * CupBatchProtocolV1.samplesPerFrame)),
+                acceptedSampleStartIndex = frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
                 measuredAt = Instant.EPOCH,
                 nowNanos = frameIndex * 200_000_000L,
             ) ?: snapshot
@@ -115,7 +116,7 @@ class LiveWaveformRuntimeTest {
         CupDecodedFrameEvent(
             frame = CupBatchFrame(
                 sequence = sequence,
-                samples = List(50) { offset ->
+                samples = List(CupBatchProtocolV1.samplesPerFrame) { offset ->
                     CupPpgSample(
                         red = (10_000 + start + offset).toUInt(),
                         ir = (20_000 + start + offset).toUInt(),

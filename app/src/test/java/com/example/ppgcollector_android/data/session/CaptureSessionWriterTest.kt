@@ -2,9 +2,11 @@ package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.decodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import java.nio.file.Files
 import java.time.Instant
@@ -30,7 +32,7 @@ class CaptureSessionWriterTest {
             )
             val snapshot = writer.append(event)
             assertEquals(1, snapshot.rawChunkCount)
-            assertEquals(50, snapshot.csvRows)
+            assertEquals(20, snapshot.csvRows)
             assertTrue(Files.readAllBytes(writer.rawPath).size > CupRawFormat.magic.size)
             assertEquals(false, CaptureSessionMetadataCodec.decode(Files.readString(writer.metadataPath)).complete)
 
@@ -40,7 +42,7 @@ class CaptureSessionWriterTest {
             val metadata = CaptureSessionMetadataCodec.decode(Files.readString(writer.metadataPath))
             assertTrue(metadata.complete)
             assertEquals(CaptureStopReason.USER, metadata.stopReason)
-            assertEquals(50, metadata.sampleCount)
+            assertEquals(20, metadata.sampleCount)
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -110,6 +112,39 @@ class CaptureSessionWriterTest {
         }
     }
 
+    @Test
+    fun legacyReplayFramesRetainTheirObservedProtocolMetadata() {
+        val root = Files.createTempDirectory("capture-legacy-writer")
+        try {
+            val wire = loadHexFixture("protocol/legacy_golden_seq42.hex")
+            val frame = decodeCupBatchFrame(wire)
+            val writer = CaptureSessionWriter(configuration(), root) { Long.MAX_VALUE }
+
+            val snapshot = writer.append(
+                CaptureStreamChunkEvent(
+                    hostMonotonicNanoseconds = 123u,
+                    data = wire,
+                    decodedFrames = listOf(
+                        CupDecodedFrameEvent(frame, CupSequenceEvent.First, true),
+                    ),
+                ),
+            )
+            writer.finish(CaptureStopReason.USER)
+
+            assertEquals(CupBatchProtocolV1.legacySamplesPerFrame.toLong(), snapshot.csvRows)
+            val metadata = CaptureSessionMetadataCodec.decode(Files.readString(writer.metadataPath))
+            assertEquals(CupBatchProtocolV1.legacyProfileIdentifier, metadata.protocolProfile)
+            assertEquals(CupBatchProtocolV1.legacySamplesPerFrame, metadata.samplesPerFrame)
+            assertTrue(
+                Files.readAllLines(writer.csvPath).drop(1).all {
+                    CupBatchProtocolV1.legacyProfileIdentifier in it
+                },
+            )
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "session-id",
         baseName = "session_001",
@@ -124,6 +159,17 @@ class CaptureSessionWriterTest {
 
     private fun frame() = CupBatchFrame(
         sequence = 1u,
-        samples = List(50) { CupPpgSample(100u + it.toUInt(), 200u + it.toUInt()) },
+        samples = List(CupBatchProtocolV1.samplesPerFrame) {
+            CupPpgSample(100u + it.toUInt(), 200u + it.toUInt())
+        },
     )
+
+    private fun loadHexFixture(resourceName: String): ByteArray = javaClass.classLoader!!
+        .getResourceAsStream(resourceName)!!
+        .bufferedReader()
+        .readText()
+        .filterNot(Char::isWhitespace)
+        .chunked(2)
+        .map { it.toInt(16).toByte() }
+        .toByteArray()
 }

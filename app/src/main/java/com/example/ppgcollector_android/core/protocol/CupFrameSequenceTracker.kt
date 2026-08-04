@@ -12,18 +12,20 @@ data class CupSequenceStats(
     val previous: UByte? = null,
     val receivedFrames: Int = 0,
     val missingFrames: Int = 0,
+    val missingSamples: Int = 0,
     val duplicateFrames: Int = 0,
     val outOfOrderFrames: Int = 0,
-) {
-    val missingSamples: Int
-        get() = missingFrames * CupBatchProtocolV1.samplesPerFrame
-}
+)
 
 class CupFrameSequenceTracker {
     var stats: CupSequenceStats = CupSequenceStats()
         private set
 
-    fun observe(sequence: UByte): CupSequenceEvent {
+    fun observe(
+        sequence: UByte,
+        samplesPerFrame: Int = CupBatchProtocolV1.samplesPerFrame,
+    ): CupSequenceEvent {
+        require(samplesPerFrame > 0) { "samplesPerFrame must be positive" }
         val previous = stats.previous
         stats = stats.copy(receivedFrames = stats.receivedFrames + 1)
         if (previous == null) {
@@ -46,6 +48,7 @@ class CupFrameSequenceTracker {
                 stats = stats.copy(
                     previous = sequence,
                     missingFrames = stats.missingFrames + missing,
+                    missingSamples = stats.missingSamples + missing * samplesPerFrame,
                 )
                 CupSequenceEvent.Gap(missing)
             }

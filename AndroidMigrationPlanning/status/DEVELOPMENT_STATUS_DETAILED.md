@@ -2449,6 +2449,46 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在新硬件上确认连接错误已消失；导出完整 GATT service/characteristic properties，并在 FFF1 记录至少一段原始通知 hex。如果订阅后无通知，向硬件方取得 FFF2 的准确 START/STOP 字节和时序，再以 fixture/fake transport 先补测试后实现控制写；随后执行新旧设备 30 分钟 receiving/重连门禁。
 
+## 2026-08-04 · M1 · Adopt 168-byte planar CUP receive protocol
+
+### 本轮目标
+
+按用户提供的新硬件帧说明更改接收协议，其余 BLE transport、100 Hz 时间轴、raw/CSV/session、实时窗口、算法和 UI 行为保持不变；同时避免破坏已有 408-byte 录制会话的只读分析能力。
+
+### 需求/参考/Android 目标
+
+- Requirement: `PROTO-001`～`PROTO-004`、`CAP-003`～`CAP-005`、`REL-001`；开放决策 `D-001`，风险 `R-001`。
+- Primary source: 用户提供的 168-byte 帧结构和 offset 表；历史只读 Swift/Python/C++ protocol 与旧 golden 仅作 compatibility reference；[ADR-0003](../docs/adr/ADR-0003-cup-168-byte-planar-wire-protocol.md)。
+- Tests/golden: 新 `golden_seq42.hex`、历史 `legacy_golden_seq42.hex`、`CupBatchProtocolTest`、sequence/preview/live/session/replay/offline/long-duration JVM suites。
+- Android target: `CupBatchProtocolV1`、`CupBatchStreamDecoder`、sequence tracker、preview/recording/replay/offline analysis、writer metadata、capture profile 固化及相关 JVM tests。
+- Non-goals: 不修改只读 `reference_sources/`；不改变 NUS/FFF0 UUID/CCCD 流程；不猜测 FFF2 START/STOP；不改变 CUPRAW1、25 列 CSV、session schema、100 Hz、800/100、HR/SQI/R/SpO2/BP/UI；不把 JVM 结果称为新硬件真机通过。
+
+### 实现事实
+
+- 当前 profile 为 `cup-batch-168-planar-0.1`：168 bytes，`AB BA`、function `0x15`、LE length `161`、sequence at offset 5、RED[0..19] at 6～85、IR[0..19] at 86～165、`CD DC` at 166～167；encoder 只生成该布局。
+- production stream decoder 仍支持任意 BLE notification 分片/粘包/噪声 resync，并可读取 `cup-batch-408-interleaved-legacy-0.1`。首个合法帧后锁定 data length，reset/reconnect 前拒绝静默混用布局。
+- sequence gap 的 missing samples、preview/recording accepted index、离线 replay gap 时间轴和 progress frame boundary 均按实际 `frame.samples.size` 计算；当前帧为 20，legacy 为 50。
+- CUPRAW1 容器和 notification boundary 不变；CSV/session schema 不升级。writer 根据实际观察帧写 `protocol_profile` 与 `samples_per_frame`；`transport_profile` 独立记录 NUS/FFF0，foreground service 初始 protocol profile 使用当前 168-byte identifier。
+- 30 min/2 h 模拟按 20 samples/frame 调整 frame count 与 host time，保持总 accepted samples、100 Hz、800/100 cadence、5 Hz waveform publication 和 bounded-memory 断言不变。
+- 新 ADR-0003 和规划文档记录证据优先级、当前/legacy wire 边界和仍待真机确认的 D-001；历史详细状态不重写。
+
+### 验证
+
+- 定向 protocol/BLE/live/session/replay/offline tests → `BUILD SUCCESSFUL`；新增 current golden、legacy direct/fragment/raw replay/profile metadata、single-stream layout lock 和 dynamic missing-sample tests 均通过。
+- 完整命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 1m 20s`、130 actionable tasks；138 JVM tests/0 failures/0 errors/skips，debug lint、debug/release/androidTest APK、R8、REL-002/003/004/005/006/007 contracts passed。
+- `git diff --check` → passed；用户既有 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 和未跟踪 `app/release/` 不属于本轮变更。release 门禁会清理该目录中的 APK/metadata/baseline profile，因此测试前已备份，测试后恢复并用 `diff -qr` 确认与备份完全一致；APK SHA-256 仍为 `bfa28d2f9b89246d795536778a367875ac8968f93d3c0574c908ae9f67659305`。
+- Hardware validation: pending；未运行 emulator/新旧 CUP 真机。仍需采集 FFF1 原始 notification hex 和 characteristic properties，确认 FFF2 是否需控制命令、实际采样率/分片/MTU及 30 分钟 receiving。
+
+### 风险与决策变化
+
+- D-001 已取得明确的 168-byte layout 输入，但仍是 Open/Block：说明文档不能替代真实固件通知和控制流程证据；当前 profile 保持 `0.1` bring-up，不称为 production。
+- `protocol_profile` 从旧草案切换为 `cup-batch-168-planar-0.1`；schema、algorithm、preprocess 和 transport profile 未改变。旧 408-byte 会话被显式标为 legacy，不会被当前 encoder 继续产生。
+- 单流 layout lock 防止噪声或设备异常导致 168/408 模式中途切换；连接 reset 后可重新识别，便于旧设备/旧 raw 兼容。
+
+### 下一轮
+
+在新硬件连接后记录 FFF1 properties 与至少一段原始通知 hex，验证 `A1 00`、20+20 planar、sequence 和实际 100 Hz；若订阅后没有通知，向硬件方取得 FFF2 的准确 START/STOP payload/时序，再先补 fake fixture 后实现控制写。随后执行新旧设备 30 分钟 receiving/断连重连门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

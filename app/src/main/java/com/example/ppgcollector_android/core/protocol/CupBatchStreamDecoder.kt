@@ -2,7 +2,7 @@ package com.example.ppgcollector_android.core.protocol
 
 /** Incremental decoder for arbitrary BLE notification boundaries. */
 class CupBatchStreamDecoder(
-    private val maxPendingBytes: Int = CupBatchProtocolV1.frameLength * 2,
+    private val maxPendingBytes: Int = CupBatchProtocolV1.maximumFrameLength * 2,
 ) {
     init {
         require(maxPendingBytes >= CupBatchProtocolV1.frameLength) {
@@ -11,8 +11,16 @@ class CupBatchStreamDecoder(
     }
 
     private val buffer = ArrayList<Byte>(maxPendingBytes)
+    private var detectedDataLength: Int? = null
     var stats: CupDecoderStats = CupDecoderStats()
         private set
+
+    val detectedProtocolProfile: String?
+        get() = when (detectedDataLength) {
+            CupBatchProtocolV1.dataLength -> CupBatchProtocolV1.profileIdentifier
+            CupBatchProtocolV1.legacyDataLength -> CupBatchProtocolV1.legacyProfileIdentifier
+            else -> null
+        }
 
     val pendingByteCount: Int
         get() = buffer.size
@@ -37,7 +45,9 @@ class CupBatchStreamDecoder(
             }
 
             val dataLength = readUInt16Le(3)
-            if (dataLength != CupBatchProtocolV1.dataLength) {
+            if (!CupBatchProtocolV1.isSupportedDataLength(dataLength) ||
+                detectedDataLength?.let { it != dataLength } == true
+            ) {
                 stats = stats.withInvalidLength()
                 discardFirst(1)
                 continue
@@ -55,6 +65,7 @@ class CupBatchStreamDecoder(
 
             val wire = buffer.subList(0, totalLength).toByteArray()
             frames += decodeCupBatchFrame(wire)
+            detectedDataLength = dataLength
             stats = stats.withFrame()
             buffer.subList(0, totalLength).clear()
         }
@@ -65,6 +76,7 @@ class CupBatchStreamDecoder(
 
     fun reset() {
         buffer.clear()
+        detectedDataLength = null
         stats = CupDecoderStats()
     }
 
