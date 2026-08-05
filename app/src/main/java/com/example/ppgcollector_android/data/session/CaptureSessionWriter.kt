@@ -3,6 +3,7 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
 import java.nio.file.FileStore
@@ -88,7 +89,8 @@ fun interface CaptureStorageCapacityProvider {
 
 object CaptureSessionWriterPolicy {
     const val sessionSchemaVersion = "ppgcollector_session_v1"
-    const val sampleSchemaVersion = "ppgcollector_samples_v1"
+    const val sampleSchemaVersion = CaptureCsvSchema.version1
+    const val sensorPacketSampleSchemaVersion = CaptureCsvSchema.version2
     const val minimumAvailableCapacityBytes = 20L * 1024L * 1024L
     private val namePattern = Regex("[A-Za-z0-9_-]+")
 
@@ -221,11 +223,15 @@ class CaptureSessionWriter(
                 csv.append(
                     CaptureCsvFormatter.format(
                         CaptureCsvRow(
-                            CaptureSessionWriterPolicy.sampleSchemaVersion,
+                            if (decoded.frame.wireProfile == CupWireFrameProfile.SENSOR_PACKET_168) {
+                                CaptureSessionWriterPolicy.sensorPacketSampleSchemaVersion
+                            } else {
+                                CaptureSessionWriterPolicy.sampleSchemaVersion
+                            },
                             configuration.sessionId,
                             nextSampleIndex,
                             hostMonotonicNanoseconds,
-                            decoded.frame.sequence,
+                            decoded.frame.sequenceNumber,
                             sampleInFrame,
                             sample.red,
                             sample.ir,

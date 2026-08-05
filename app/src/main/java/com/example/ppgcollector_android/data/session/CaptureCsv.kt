@@ -4,6 +4,8 @@ import java.util.Locale
 import kotlin.math.abs
 
 object CaptureCsvSchema {
+    const val version1 = "ppgcollector_samples_v1"
+    const val version2 = "ppgcollector_samples_v2"
     val columns: List<String> = listOf(
         "schema_version",
         "session_id",
@@ -49,7 +51,7 @@ data class CaptureCsvRow(
     val sessionId: String,
     val sampleIndex: Long,
     val hostFrameTimeNanoseconds: ULong,
-    val frameSequence: UByte,
+    val frameSequence: UInt,
     val sampleInFrame: Int,
     val red: UInt,
     val ir: UInt,
@@ -187,12 +189,22 @@ object CaptureCsvParser {
             if (abs(deviceTimeSeconds - expectedDeviceTime) > 0.0000005) {
                 throw CaptureCsvParseException("device_time_s does not match sample_index")
             }
+            val schemaVersion = fields[0]
+            val maximumFrameSequence = when (schemaVersion) {
+                CaptureCsvSchema.version1 -> 255u
+                CaptureCsvSchema.version2 -> UInt.MAX_VALUE
+                else -> throw CaptureCsvParseException("unsupported schema_version: $schemaVersion")
+            }
             CaptureCsvRow(
-                schemaVersion = fields[0],
+                schemaVersion = schemaVersion,
                 sessionId = fields[1],
                 sampleIndex = sampleIndex,
                 hostFrameTimeNanoseconds = fields[4].toULongStrict("host_frame_time_ns"),
-                frameSequence = fields[5].toUIntInRange("frame_sequence", 0u, 255u).toUByte(),
+                frameSequence = fields[5].toUIntInRange(
+                    "frame_sequence",
+                    0u,
+                    maximumFrameSequence,
+                ),
                 sampleInFrame = fields[6].toIntStrict("sample_in_frame"),
                 red = fields[7].toUIntStrict("red"),
                 ir = fields[8].toUIntStrict("ir"),

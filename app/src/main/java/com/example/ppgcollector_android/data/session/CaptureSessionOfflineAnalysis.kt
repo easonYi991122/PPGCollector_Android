@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.signal.OfflineAverageCycle
 import com.example.ppgcollector_android.core.signal.OfflinePpgAnalysis
 import com.example.ppgcollector_android.core.signal.OfflinePpgAnalyzer
@@ -136,6 +137,7 @@ object CaptureSessionOfflineAnalysisService {
         val replayed = loadRawInput(
             path = files.raw,
             expectedSampleCount = session.metadata?.sampleCount,
+            protocolProfile = session.metadata?.protocolProfile,
             progress = progress,
             cancellationCheck = cancellationCheck,
         )
@@ -226,6 +228,7 @@ object CaptureSessionOfflineAnalysisService {
         val loaded = loadRawInput(
             path = files.raw,
             expectedSampleCount = session.metadata?.sampleCount,
+            protocolProfile = session.metadata?.protocolProfile,
             progress = {},
             cancellationCheck = cancellationCheck,
         )
@@ -246,6 +249,7 @@ object CaptureSessionOfflineAnalysisService {
     private fun loadRawInput(
         path: Path,
         expectedSampleCount: Long?,
+        protocolProfile: String?,
         progress: (CaptureSessionAnalysisProgress) -> Unit,
         cancellationCheck: () -> Unit,
     ): LoadedRawInput {
@@ -258,19 +262,13 @@ object CaptureSessionOfflineAnalysisService {
         val time = DoubleArrayBuilder(expected)
         val breaks = IntArrayBuilder()
         var logicalSampleIndex = 0L
-        var previousFrameSequence: UByte? = null
         var lastPublishedFrame = 0
-        val replay = CupRawReplayEngine.replay(path) { sample ->
+        val protocolMode = CupStreamProtocolMode.fromProtocolProfileIdentifier(protocolProfile)
+        val replay = CupRawReplayEngine.replay(path, protocolMode) { sample ->
             cancellationCheck()
-            if (sample.sampleInFrame == 0) {
-                previousFrameSequence?.let { previous ->
-                    val delta = (sample.frameSequence.toInt() - previous.toInt()) and 0xFF
-                    if (delta in 2 until 128) {
-                        logicalSampleIndex += (delta - 1L) * sample.samplesPerFrame
-                        breaks.add(red.size)
-                    }
-                }
-                previousFrameSequence = sample.frameSequence
+            if (sample.sampleInFrame == 0 && sample.missingFramesBefore > 0) {
+                logicalSampleIndex += sample.missingFramesBefore.toLong() * sample.samplesPerFrame
+                breaks.add(red.size)
             }
             if (red.size >= maximumAcceptedSamples) {
                 error("离线分析样本超过 $maximumAcceptedSamples 上限")

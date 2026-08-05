@@ -3,6 +3,7 @@ package com.example.ppgcollector_android.core.protocol
 /** Incremental decoder for arbitrary BLE notification boundaries. */
 class CupBatchStreamDecoder(
     private val maxPendingBytes: Int = CupBatchProtocolV1.maximumFrameLength * 2,
+    private val protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
 ) {
     init {
         require(maxPendingBytes >= CupBatchProtocolV1.frameLength) {
@@ -16,10 +17,14 @@ class CupBatchStreamDecoder(
         private set
 
     val detectedProtocolProfile: String?
-        get() = when (detectedDataLength) {
-            CupBatchProtocolV1.dataLength -> CupBatchProtocolV1.profileIdentifier
-            CupBatchProtocolV1.legacyDataLength -> CupBatchProtocolV1.legacyProfileIdentifier
-            else -> null
+        get() = if (protocolMode == CupStreamProtocolMode.SENSOR_PACKET_168) {
+            if (stats.frames > 0) CupSensorPacketProtocolV1.profileIdentifier else null
+        } else {
+            when (detectedDataLength) {
+                CupBatchProtocolV1.dataLength -> CupBatchProtocolV1.profileIdentifier
+                CupBatchProtocolV1.legacyDataLength -> CupBatchProtocolV1.legacyProfileIdentifier
+                else -> null
+            }
         }
 
     val pendingByteCount: Int
@@ -36,6 +41,21 @@ class CupBatchStreamDecoder(
                 break
             }
             if (headerIndex > 0) discardFirst(headerIndex)
+            if (protocolMode == CupStreamProtocolMode.SENSOR_PACKET_168) {
+                if (buffer.size < CupSensorPacketProtocolV1.frameLength) break
+                if (buffer[CupSensorPacketProtocolV1.tailOffset] != CupBatchProtocolV1.tail[0] ||
+                    buffer[CupSensorPacketProtocolV1.tailOffset + 1] != CupBatchProtocolV1.tail[1]
+                ) {
+                    stats = stats.withInvalidTail()
+                    discardFirst(1)
+                    continue
+                }
+                val wire = buffer.subList(0, CupSensorPacketProtocolV1.frameLength).toByteArray()
+                frames += decodeCupSensorPacketFrame(wire)
+                stats = stats.withFrame()
+                buffer.subList(0, CupSensorPacketProtocolV1.frameLength).clear()
+                continue
+            }
             if (buffer.size < 5) break
 
             val function = buffer[2].toUByte()

@@ -6,8 +6,8 @@
 
 | 主题 | 首读文件 | Android 去向 |
 |---|---|---|
-| CUP profile | [CUPDeviceProfile.swift:9](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift#L9)、[ADR-0002](adr/ADR-0002-cup-ble-profile-registry.md) | `:data:ble` profile registry；iOS NUS + 新硬件 FFF0 证据 |
-| 帧布局 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md)、[ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md)、历史 [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | `:core:protocol` 当前 168-byte + 8-byte auxiliary + legacy replay |
+| CUP profile | [CUPDeviceProfile.swift:9](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift#L9)、[ADR-0002](adr/ADR-0002-cup-ble-profile-registry.md)、[ADR-0005](adr/ADR-0005-nordic-nus-sensor-packet-profile.md) | `core/ble` profile registry；NUS/FFF0 transport + exact-name wire selection |
+| 帧布局 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md)、[ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md)、[ADR-0005](adr/ADR-0005-nordic-nus-sensor-packet-profile.md)、历史 [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | `core/protocol` 两个 168-byte profile + auxiliary + legacy replay |
 | 任意碎片解码 | [CUPBatchStreamDecoder.swift:3](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchStreamDecoder.swift#L3) | `:core:protocol` |
 | 序号/gap | [CUPFrameSequenceTracker.swift:21](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPFrameSequenceTracker.swift#L21) | `:core:protocol` |
 | BLE 状态链 | [BLECentralService.swift:5](../reference_sources/ios_current/PPGCollector/Infrastructure/Bluetooth/BLECentralService.swift#L5) | `:data:ble` 平台重写 |
@@ -26,7 +26,7 @@
 
 | 快照文件/符号 | 要提取的契约 | 等级 |
 |---|---|---|
-| [CUPDeviceProfile.swift](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift) | CUP 名称前缀、既有 NUS service/notify/control UUID、passive stream | P0 保留既有 profile；新硬件 FFF0 profile 来自 ADR-0002 的真实设备证据；BLE API 平台重写 |
+| [CUPDeviceProfile.swift](../reference_sources/ios_current/PPGCollector/Domain/Configuration/CUPDeviceProfile.swift) | CUP 名称前缀、既有 NUS service/notify/control UUID、passive stream | P0 保留；FFF0 来自 ADR-0002，`Nordic_UART_Service` 的 NUS + sensor wire 来自 ADR-0005；BLE API 平台重写 |
 | [BluetoothModels.swift](../reference_sources/ios_current/PPGCollector/Domain/Models/BluetoothModels.swift) | availability、连接阶段、发现设备、诊断、资源快照、freshness | P0 移植 typed state |
 | [CaptureModels.swift](../reference_sources/ios_current/PPGCollector/Domain/Models/CaptureModels.swift) | raw chunk event、stop reason、first-reason lifecycle gate、capture state | P0 移植 |
 | [CaptureSessionMetadata.swift:3](../reference_sources/ios_current/PPGCollector/Domain/Models/CaptureSessionMetadata.swift#L3) | session JSON 字段、snake_case、ISO-8601、recovery provenance | P0 格式兼容 |
@@ -55,7 +55,7 @@
 - [Freshness tests](../reference_sources/ios_current/PPGCollectorTests/Bluetooth/CUPStreamFreshnessTrackerTests.swift)
 - [BLE integration tests](../reference_sources/ios_current/PPGCollectorTests/Integration/BLECentralServiceIntegrationTests.swift)
 
-注意：Python 快照的旧 BLE/NUS/transport 没有归档，Android 不应以它们替代上述当前 profile。新 FFF0 profile 是 2026-08-03 的硬件 UUID 证据，不回写只读 iOS reference；通知 payload 与 FFF2 控制命令仍需抓包。
+注意：Python 快照的旧 BLE/NUS/transport 没有归档，Android 不应以它们替代上述当前 profile。FFF0 来自 2026-08-03 硬件证据；`Nordic_UART_Service` 的 NUS GATT 与 sensor packet 来自 2026-08-05 nRF 日志。两者不回写只读 iOS reference；固件身份、实际采样率与控制命令仍需真机证据。
 
 ## 4. iOS 当前实现：协议
 
@@ -63,6 +63,7 @@
 |---|---|---|
 | [ADR-0003](adr/ADR-0003-cup-168-byte-planar-wire-protocol.md) | 当前 168-byte layout、20+20 planar、函数/头尾与兼容策略 | `:core:protocol` 当前常量、model 与 golden |
 | [ADR-0004](adr/ADR-0004-cup-eight-byte-auxiliary-frames.md) | `testdevice1` 中 8-byte FFF1 辅助帧、功能码白名单与完整性分类 | stream decoder auxiliary diagnostics、raw replay/inspection |
+| [ADR-0005](adr/ADR-0005-nordic-nus-sensor-packet-profile.md) | exact-name NUS 设备、UInt32 sequence sensor packet、CSV v2 与 decoder 路由 | `CupSensorPacketProtocolV1`、BLE mode、preview/recording/replay/inspection |
 | [CUPBatchProtocol.swift:7](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchProtocol.swift#L7) | 历史 408-byte interleaved、100 Hz、50 samples | legacy raw/session 读取与回放兼容，不作为当前 encoder |
 | [CUPBatchStreamDecoder.swift:3](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPBatchStreamDecoder.swift#L3) | 任意 byte chunk、resync、LE decode、invalid stats | `CupBatchStreamDecoder` |
 | [CUPFrameSequenceTracker.swift:21](../reference_sources/ios_current/PPGCollector/Infrastructure/Protocol/CUPFrameSequenceTracker.swift#L21) | continuity/gap/duplicate/out-of-order/wrap | `CupFrameSequenceTracker` |

@@ -25,11 +25,11 @@
 当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值；当前 app 只有默认 Hello Android Compose 壳和示例测试，尚未实现 BLE、CUP 协议、信号处理、会话存储、前台服务或正式页面。不要把 app versionName=1.0 当作迁移完成版本。
 
 必须保持或显式验证的核心契约：
-- CUP transport profile 当前包含既有 NUS `6E400001/3/2` 与新硬件证据 `FFF0/FFF1/FFF2` 两组 service/notify/control UUID；连接后按实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
-- 当前接收帧以 2026-08-04 用户提供的新硬件协议和 `testdevice1` 真实导出为准：PPG 数据帧为 `AB BA`、function `0x15`、little-endian data length `161`、UInt8 sequence、20 个 UInt32 LE RED 后接 20 个 UInt32 LE IR、`CD DC`，总长 168 字节；100 Hz 采样契约保持不变。FFF1 同时出现头尾完整的 8-byte 辅助帧，已观测功能码为 `0x02/0x06/0x0C/0x0F`；它们只计诊断，不产生样本或 freshness。历史 408-byte/50-pair interleaved 仅保留 raw/session 回放兼容，见 ADR-0003/ADR-0004。
+- CUP transport profile 当前包含 NUS `6E400001/3/2` 与 FFF0/FFF1/FFF2 两组 service/notify/control UUID；连接后按设备身份和实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
+- 当前存在两个 168-byte 接收 wire profile：`CUP*` 设备沿用 `AB BA + 0x15 + LE length 161 + UInt8 sequence + 20 RED + 20 IR + CD DC`，并识别 FFF1 的 8-byte auxiliary；精确名称 `Nordic_UART_Service` 使用 NUS 和 `AB BA + UInt32 LE seq_no + 20 RED + 20 IR + CD DC`。两者必须按连接身份显式选择，不能因总长度相同而自动混用。历史 408-byte/50-pair interleaved 仅保留 raw/session 回放兼容，见 ADR-0003/0004/0005。
 - decoder 必须支持碎片、粘包、噪声重同步、错误 tail/length/function、有限缓冲；sequence first/continuous/gap 接受，duplicate/out-of-order 不进入样本流并保留诊断。
 - raw 是恢复与再分析真源：CUPRAW1\0 + 每个原始 BLE notification chunk 的 host monotonic ns、LE 长度和原始字节；先确认 raw append 成功，再派生 CSV/指标。任何队列、decoder、分析窗口和波形 ring 都必须有上限，不能静默丢 raw。
-- CSV 保持当前 25 列顺序、snake_case/session JSON、soft_version/alg_version/profile/version 追踪和兼容读取；数据格式或算法语义改变必须升级版本并保留旧版本重放测试。
+- CSV 保持当前 25 列顺序、snake_case/session JSON、soft_version/alg_version/profile/version 追踪和兼容读取；batch 行为使用 `ppgcollector_samples_v1`，UInt32 sequence sensor packet 使用 `ppgcollector_samples_v2`，其 `frame_sequence` 不得截断。数据格式或算法语义改变必须升级版本并保留旧版本重放测试。
 - 采集链路目标为 100 Hz accepted RED/IR、800 样本/8 秒 live window、每 100 样本分析一次；默认波形快照 5 Hz（支持范围 1–60 Hz），HR/SQI/R 每秒更新。R 只是未校准 ratio-of-ratios 诊断，不能变成 SpO2 或血压。
 - 指标必须带 value、valid、provisional、reason、algorithm version、source sample/time；无效、未热身、断流、校准缺失时显示明确状态，不沿用旧数字制造“实时有效”的错觉。
 - 录制 gate 至少要求已连接、流 fresh、名称合法、不在录制、存储预检通过；停止采用 first stop reason wins、单一幂等 finalizer。Android 长录制由 connectedDevice 前台服务唯一持有，Activity 只观察/绑定。
@@ -109,8 +109,8 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 
 ### 6.1 协议与 BLE
 
-- 名称前缀保持 `CUP`；支持既有 NUS service/notify/control `6E400001/3/2-...` 与新硬件 service/notify/write `0000FFF0/1/2-0000-1000-8000-00805F9B34FB`，服务发现后精确选择一组。Android V1 不凭 UUID 名称猜测 START/STOP payload；实际 profile 必须固化到会话 metadata。
-- 当前 bring-up frame：`AB BA` + `0x15` + LE length `161` + sequence + 20×LE `UInt32 RED` + 20×LE `UInt32 IR` + `CD DC`，168 bytes，100 Hz，每帧 20 samples；历史 408-byte interleaved profile 仅保留读取/回放兼容。
+- 名称筛选保留 `CUP*`，并只额外接受精确名称 `Nordic_UART_Service`；支持 NUS `6E400001/3/2-...` 与 FFF0 `0000FFF0/1/2-...`。服务发现后精确选择 transport，wire mode 由连接身份固化；Android V1 不猜测 START/STOP payload。
+- bring-up wire profile：batch 为 `AB BA + 0x15 + LE length 161 + UInt8 sequence + 20 RED + 20 IR + CD DC`；sensor packet 为 `AB BA + UInt32 LE sequence + 20 RED + 20 IR + CD DC`。两者均 168 bytes/20 samples；项目暂沿用 100 Hz，sensor 设备真实采样率待真机确认。历史 408-byte 仅兼容回放。
 - decoder 支持任意通知分片/粘包/噪声重同步，并对 invalid function/length/tail、discarded bytes、pending buffer 计数且有上限。
 - sequence `first`、`continuous`、合理 `gap` 进入 accepted stream；duplicate/out-of-order 拒绝但保留诊断；`UInt8` wrap 必须测试。
 - GATT callback 只复制通知 bytes、记录 monotonic 时间、投递有界队列；旧 generation 的晚到 callback 不得污染新连接。

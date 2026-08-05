@@ -43,7 +43,15 @@ object CupBatchProtocolV1 {
 
 data class CupPpgSample(val red: UInt, val ir: UInt)
 
-data class CupBatchFrame(val sequence: UByte, val samples: List<CupPpgSample>) {
+data class CupBatchFrame(
+    /** Compatibility view for the existing UInt8 batch profile. */
+    val sequence: UByte,
+    val samples: List<CupPpgSample>,
+    /** Full wire value; sensor-packet devices use all 32 bits. */
+    val sequenceNumber: UInt = sequence.toUInt(),
+    val wireProfile: CupWireFrameProfile =
+        CupWireFrameProfile.batchProfileForSampleCount(samples.size),
+) {
     init {
         require(
             samples.size == CupBatchProtocolV1.samplesPerFrame ||
@@ -55,11 +63,7 @@ data class CupBatchFrame(val sequence: UByte, val samples: List<CupPpgSample>) {
     }
 
     val protocolProfileIdentifier: String
-        get() = if (samples.size == CupBatchProtocolV1.samplesPerFrame) {
-            CupBatchProtocolV1.profileIdentifier
-        } else {
-            CupBatchProtocolV1.legacyProfileIdentifier
-        }
+        get() = wireProfile.identifier
 }
 
 data class CupDecoderStats(
@@ -81,6 +85,9 @@ data class CupDecoderStats(
 class CupProtocolException(message: String) : IllegalArgumentException(message)
 
 fun encodeCupBatchFrame(frame: CupBatchFrame): ByteArray {
+    require(frame.wireProfile == CupWireFrameProfile.BATCH_168) {
+        "current batch encoder requires the 168-byte batch wire profile"
+    }
     require(frame.samples.size == CupBatchProtocolV1.samplesPerFrame) {
         "current encoder requires ${CupBatchProtocolV1.samplesPerFrame} samples"
     }
@@ -145,7 +152,13 @@ fun decodeCupBatchFrame(wire: ByteArray): CupBatchFrame {
             )
         }
     }
-    return CupBatchFrame(wire[5].toUByte(), samples)
+    val sequence = wire[5].toUByte()
+    val wireProfile = if (dataLength == CupBatchProtocolV1.dataLength) {
+        CupWireFrameProfile.BATCH_168
+    } else {
+        CupWireFrameProfile.BATCH_408_LEGACY
+    }
+    return CupBatchFrame(sequence, samples, sequence.toUInt(), wireProfile)
 }
 
 private fun writeUInt16Le(target: ByteArray, offset: Int, value: Int) {

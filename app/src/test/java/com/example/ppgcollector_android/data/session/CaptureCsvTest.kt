@@ -121,6 +121,26 @@ class CaptureCsvTest {
         }
     }
 
+    @Test
+    fun versionTwoPreservesUInt32FrameSequenceWhileVersionOneRemainsUInt8() {
+        val versionTwo = sampleRow().copy(
+            schemaVersion = CaptureCsvSchema.version2,
+            frameSequence = 0xFEDC_BA98u,
+        )
+        assertEquals(
+            0xFEDC_BA98u,
+            CaptureCsvParser.parseRow(CaptureCsvFormatter.format(versionTwo, 0)).frameSequence,
+        )
+        assertParseFailure {
+            CaptureCsvParser.parseRow(
+                CaptureCsvFormatter.format(
+                    versionTwo.copy(schemaVersion = CaptureCsvSchema.version1),
+                    0,
+                ),
+            )
+        }
+    }
+
     private fun sampleRow(
         sessionId: String = "capture-001",
         sampleIndex: Long = 49,
@@ -137,7 +157,7 @@ class CaptureCsvTest {
         sessionId = sessionId,
         sampleIndex = sampleIndex,
         hostFrameTimeNanoseconds = 72_623_859_790_382_856u,
-        frameSequence = 255u.toUByte(),
+        frameSequence = 255u,
         sampleInFrame = 49,
         red = 100_000u,
         ir = 120_000u,

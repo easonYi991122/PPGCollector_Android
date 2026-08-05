@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.signal.StreamFreshness
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,6 +75,7 @@ data class BleCoordinatorSnapshot(
     val phase: BleConnectionPhase,
     val connectionGeneration: Long,
     val activeProfile: CupBleDeviceProfile?,
+    val activeStreamProtocolMode: CupStreamProtocolMode?,
     val isScanning: Boolean,
     val discoveredDevices: List<DiscoveredBleDevice>,
     val discoveredServiceUuids: List<String>,
@@ -217,7 +219,10 @@ class BleCoordinator(
         if (next.connectionGeneration != previewGeneration ||
             (!previewActive && previewWasActive)
         ) {
-            previewRuntime.reset(next.connectionGeneration)
+            previewRuntime.reset(
+                next.connectionGeneration,
+                next.activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
+            )
             previewGeneration = next.connectionGeneration
         }
         previewWasActive = previewActive
@@ -252,6 +257,7 @@ class BleCoordinator(
         phase = owner.phase,
         connectionGeneration = owner.connectionGeneration,
         activeProfile = owner.activeProfile,
+        activeStreamProtocolMode = owner.activeStreamProtocolMode,
         isScanning = owner.isScanning,
         discoveredDevices = owner.discoveredDevices.toList(),
         discoveredServiceUuids = owner.discoveredServiceUuids,

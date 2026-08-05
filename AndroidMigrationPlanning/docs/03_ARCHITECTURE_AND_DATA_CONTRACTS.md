@@ -96,7 +96,7 @@ ConnectRequested
 
 Android 不保证 callback 线程固定；callback 中复制 `characteristic.value`/新 API 参数，立即 `trySend` 到串行事件 channel。重复 callback、`GATT 133`、bonding、蓝牙关闭和 `onServiceChanged` 均转换为 typed error；关闭顺序是 cancel deadline → disable/cancel collection → `disconnect()` → `close()` → generation++。
 
-支持的 CUP transport profile 是有序 registry：既有 NUS `6E400001/3/2-...` 和新硬件 `FFF0/FFF1/FFF2`。扫描阶段的 `CUP` 名称前缀不能证明协议；必须等服务发现后按 service UUID 选择 profile，再只发现该组特征。选中的 profile、发现的 service/characteristic 要进入诊断快照，录制开始时将实际 profile 固化到 session。若设备同时暴露多组，registry 顺序决定优先级；若一组都没有则失败并报告期望/实际 UUID。
+支持的 CUP transport profile 是有序 registry：NUS `6E400001/3/2-...` 和 FFF0/FFF1/FFF2。`CUP*` 名称继续进入 batch-compatible bring-up；精确名称 `Nordic_UART_Service` 进入 NUS sensor-packet bring-up，相似前缀不接受。连接开始时固化设备对应 wire mode，服务发现后还必须按 service UUID 选择 transport，再只发现该组特征。选中的 transport/wire、发现的 service/characteristic 进入诊断与 raw chunk，录制开始时分别固化 `transport_profile`/`protocol_profile`。若 service 与设备身份不匹配则失败，不回退到另一个同长 decoder 猜测数据。
 
 建议 deadline 初值与 iOS 相同：连接 12 s；发现 service、characteristic、订阅各 8 s。它们应来自 profile/config，使用虚拟时钟测试，不散落 magic number。
 
@@ -113,6 +113,8 @@ BLE callback 到 session actor 之间使用有界 `Channel<RawNotificationChunk>
 
 ### 4.1 字节布局
 
+`CUP*` batch-compatible profile：
+
 | Offset | 长度 | 字段 | 规则 |
 |---:|---:|---|---|
 | 0 | 2 | header | `AB BA` |
@@ -123,7 +125,17 @@ BLE callback 到 session actor 之间使用有界 `Channel<RawNotificationChunk>
 | 86 | 80 | IR[0..19] | 20 个 UInt32 LE |
 | 166 | 2 | tail | `CD DC` |
 
-当前说明没有 checksum。布局证据来自 2026-08-04 用户协议和 `testdevice1` 真实 FFF1 导出，详见 ADR-0003/0004；短时数据支持 168-byte/20 samples/约 100 Hz，但固件版本、characteristic properties、辅助/控制语义和长稳仍未确认，因此仍是 bring-up profile。历史 Swift/Python/C++ reference 的 408-byte、50-pair interleaved 布局不再用于当前接收编码，只用于既有 raw/session 兼容读取。单个 decoder/连接在首个合法帧后锁定布局，不能在同一流中静默混用两种 wire profile。
+精确名称 `Nordic_UART_Service` 的 sensor-packet profile：
+
+| Offset | 长度 | 字段 | 规则 |
+|---:|---:|---|---|
+| 0 | 2 | header | `AB BA` |
+| 2 | 4 | sequence | UInt32 little-endian，`UInt.MAX_VALUE` 后回 0 |
+| 6 | 80 | RED[0..19] | 20 个 UInt32 LE |
+| 86 | 80 | IR[0..19] | 20 个 UInt32 LE |
+| 166 | 2 | tail | `CD DC` |
+
+两个 168-byte profile 都没有已知 checksum。batch 布局证据来自 2026-08-04 用户协议和 `testdevice1` FFF1 导出（ADR-0003/0004）；sensor 布局来自 2026-08-05 nRF Connect 导出，97 条通知全部 168 bytes、sequence 0…96（ADR-0005）。sensor 日志的通知间隔不作为真实采样率证明，算法/metadata 暂沿用项目 100 Hz 合同。历史 408-byte、50-pair interleaved 只用于既有 raw/session 兼容读取。decoder 由连接身份显式选择；同一 connection generation/session 不能静默切换 wire profile。
 
 `testdevice1` 真实导出还确认 FFF1 会穿插完整 8-byte 辅助帧：offset 0～1 为 `AB BA`，2 为 function，3～5 为未解释 payload，6～7 为 `CD DC`；已观测 function 为 `0x02/0x06/0x0C/0x0F`。decoder 仅对这四种“精确 8-byte + 正确头尾”组合做 auxiliary 计数并消费，不输出 `CupBatchFrame`。payload 语义未知，不能映射为传感器结果或控制状态；其他 function、长度或坏尾继续进入 invalid/discard 诊断，见 ADR-0004。
 
@@ -146,7 +158,7 @@ while enough bytes:
   consume calculated frame length; emit frame
 ```
 
-decoder 输出结构合法帧；sequence gate 决定是否进入 accepted stream。gap 计数为 `(current - previous - 1) mod 256` 的合理前向距离；duplicate 和明显反向/旧帧拒绝。移植时不要把 `ByteBuffer` 默认 big-endian 当成设备端序。
+decoder 输出结构合法帧；sequence gate 决定是否进入 accepted stream。batch 的 gap 在 8-bit 模空间计算，sensor packet 在 32-bit 模空间计算；两者都把小于半模空间的差值视作前向，delta 0 为 duplicate，明显反向/旧帧拒绝。移植时不要把 `ByteBuffer` 默认 big-endian 当成设备端序，也不能把 sensor `seq_no` 截成 UInt8 后再做连续性判断。
 
 ## 5. 捕获状态机与统一结束
 
@@ -222,6 +234,8 @@ ratio_of_ratios,ratio_of_ratios_valid,ratio_of_ratios_time_s
 
 `device_time_s = sample_index / 100.0`，从第一条 accepted sample 开始；frame host time 可在该帧全部样本复用。首个 8 s live 指标对应 window end index 799、时间 `7.99`。数字使用 `Locale.ROOT` 和固定格式，禁止设备地区把小数点写成逗号。字符串字段虽然当前受控，writer 仍实现 RFC 4180 转义。
 
+列顺序/header 不变，但 row-level schema 有两个兼容版本：`ppgcollector_samples_v1` 约束 `frame_sequence=0…255`；sensor packet 写 `ppgcollector_samples_v2`，允许完整 UInt32。parser 必须按 `schema_version` 验证范围。session metadata 的 `protocol_profile` 决定 raw replay decoder；`CUPRAW1` record 容器无需升级。
+
 CSV 中的指标列是 raw notification 写入时携带的 point-in-time snapshot，不是异步分析结果的回填目标：writer 已经确认的行不可被后续 HR/SQI/R 计算改写，metric 的 `*_time_s` 必须继续来自真实 `sourceSampleIndex`。录制中的分析结果通过 StateFlow/UI 观察；离线分析使用独立、版本化的结果文件，不能反向修改源 CSV。
 
 ### 6.4 Metadata
@@ -232,7 +246,7 @@ CSV 中的指标列是 raw notification 写入时携带的 point-in-time snapsho
 
 ### 6.5 检查与恢复
 
-- inspection 不改源：hash、raw scan、同 production pipeline 重放、CSV streaming scan、metadata cross-check。
+- inspection 不改源：先读取 metadata 的 `protocol_profile`，再用相同 production decoder 重放 raw，随后做 hash、CSV streaming scan 与 metadata cross-check。
 - recovery 不“修复”原目录：计算源 hash → 找 safe raw/CSV prefix → 复制到 staging → 写新 session ID/incomplete metadata 和 recovery provenance → sync → 原子移动到新且不重名目录。
 - CSV 无完整换行的末行不复制；raw 不完整 record 不复制。恢复后的 CSV 可以保留源 session ID，但 metadata 必须记录这一点。
 

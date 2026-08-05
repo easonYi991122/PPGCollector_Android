@@ -1,5 +1,6 @@
 package com.example.ppgcollector_android.data.session
 
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -46,9 +47,28 @@ object CaptureSessionInspectionService {
         val metadataPath = directory.resolve("$baseName.session.json")
         val findings = ArrayList<CaptureInspectionFinding>()
 
+        // Decode metadata first because the NUS transport now supports two
+        // same-length but structurally different wire profiles.
+        val metadata = if (Files.exists(metadataPath)) {
+            try {
+                CaptureSessionMetadataCodec.decode(metadataPath)
+            } catch (error: Exception) {
+                findings += finding("metadata-unreadable", CaptureInspectionSeverity.ERROR,
+                    "metadata cannot be parsed: ${error.message ?: error::class.simpleName}")
+                null
+            }
+        } else {
+            findings += finding("metadata-missing", CaptureInspectionSeverity.ERROR,
+                "missing session metadata")
+            null
+        }
+        val protocolMode = CupStreamProtocolMode.fromProtocolProfileIdentifier(
+            metadata?.protocolProfile,
+        )
+
         val replay = if (Files.exists(rawPath)) {
             try {
-                CupRawReplayEngine.replay(rawPath).also {
+                CupRawReplayEngine.replay(rawPath, protocolMode).also {
                     appendReplayFindings(it, findings)
                 }
             } catch (error: Exception) {
@@ -75,20 +95,6 @@ object CaptureSessionInspectionService {
         } else {
             findings += finding("csv-missing", CaptureInspectionSeverity.ERROR,
                 "missing .csv file")
-            null
-        }
-
-        val metadata = if (Files.exists(metadataPath)) {
-            try {
-                CaptureSessionMetadataCodec.decode(metadataPath)
-            } catch (error: Exception) {
-                findings += finding("metadata-unreadable", CaptureInspectionSeverity.ERROR,
-                    "metadata cannot be parsed: ${error.message ?: error::class.simpleName}")
-                null
-            }
-        } else {
-            findings += finding("metadata-missing", CaptureInspectionSeverity.ERROR,
-                "missing session metadata")
             null
         }
 
@@ -199,7 +205,7 @@ object CaptureSessionInspectionService {
     ) {
         if (!csv.hasExpectedHeader) {
             findings += finding("csv-header", CaptureInspectionSeverity.ERROR,
-                "CSV header does not match the v1 schema")
+                "CSV header does not match the supported schema")
         }
         if (csv.hasTruncatedFinalLine) {
             findings += finding("csv-tail", CaptureInspectionSeverity.WARNING,

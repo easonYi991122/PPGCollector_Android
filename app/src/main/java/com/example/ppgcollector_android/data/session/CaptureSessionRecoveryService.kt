@@ -1,5 +1,6 @@
 package com.example.ppgcollector_android.data.session
 
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -173,7 +174,12 @@ object CaptureSessionRecoveryService {
             val sourceMetadata = sourceMetadataBytes?.let {
                 runCatching { CaptureSessionMetadataCodec.decode(it) }.getOrNull()
             }
-            val replay = CupRawReplayEngine.replay(sourceFiles.raw)
+            val replay = CupRawReplayEngine.replay(
+                sourceFiles.raw,
+                CupStreamProtocolMode.fromProtocolProfileIdentifier(
+                    sourceMetadata?.protocolProfile ?: session.metadata?.protocolProfile,
+                ),
+            )
             val recoveryMetadata = CaptureSessionRecoveryMetadata(
                 strategy = strategy,
                 recoveredUtc = recoveredAt,

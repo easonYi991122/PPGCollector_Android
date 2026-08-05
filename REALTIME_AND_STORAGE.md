@@ -2,9 +2,9 @@
 
 日期：2026-08-05
 
-代码基线：`main` / `899d8e2`
+代码基线：2026-08-05 M1/M2 多设备 wire-profile 兼容实现
 
-适用范围：当前 NUS/FFF0 bring-up transport、168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时 RAW/CAUSAL 波形、HR/SQI/R 指标、`CUPRAW1`/CSV/session/analysis 文件链路。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时 RAW/CAUSAL 波形、HR/SQI/R 指标、`CUPRAW1`/CSV/session/analysis 文件链路。
 
 本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。
 
@@ -58,6 +58,15 @@ BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollecto
 | `cup-nus-bringup-0.1` | `6E400001-...` | `6E400003-...` | `6E400002-...` | 保留旧设备兼容 |
 | `cup-fff0-bringup-0.1` | `0000FFF0-...` | `0000FFF1-...` | `0000FFF2-...` | 新设备 profile；暂不发送未知 FFF2 命令 |
 
+扫描身份与 wire mode 是显式映射：
+
+| 广播名 | Transport | Wire mode / protocol profile |
+|---|---|---|
+| `CUP*` | 服务发现后选择 NUS 或 FFF0 | batch-compatible；当前 168-byte function/length，历史 raw 可识别 408-byte |
+| 精确 `Nordic_UART_Service` | NUS | `cup-sensor-168-planar-u32seq-0.1` |
+
+`CupBleDeviceProfile.streamProtocolModeForAdvertisedName()` 只接受上述身份；相似的 `Nordic_UART_Service_*` 不会进入列表。`CupBleGattStateMachine.connect()` 在 connection generation 开始时固化 `activeStreamProtocolMode`，`handleServices()` 同时要求设备身份和 service 匹配，`handleValue()` 将 mode 写入 `BleRawNotificationChunk`。因此共享 NUS UUID 不会导致两个同长 168-byte payload 互相误解。
+
 `CupBleGattStateMachine.handleServices()` 根据设备实际发现的 service UUID 精确选择 profile；`handleCharacteristics()` 检查 notify 特征及 notify/indicate 能力；`handleValue()` 仅在当前设备、当前 connection generation、已订阅/接收 phase 且 notification 非空时创建 `BleRawNotificationChunk`。
 
 平台回调由 [`AndroidBleTransport.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt) 的两个 `onCharacteristicChanged()` 重载接收，并统一进入 `emitCharacteristicValue()`：
@@ -73,7 +82,7 @@ BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollecto
 
 ### 2.2 CUP 流式协议解析
 
-协议常量与单帧解析位于 [`CupBatchProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt)：
+batch 协议常量与单帧解析位于 [`CupBatchProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt)：
 
 | 偏移 | 长度 | 当前 168-byte PPG 帧 |
 |---:|---:|---|
@@ -90,7 +99,19 @@ BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollecto
 - `CupBatchProtocolV1`：帧长、offset、采样率和 profile identifier；
 - `decodeCupBatchFrame()`：校验 header/function/length/tail，并按 planar offset 解出 20 组 RED/IR；
 - `encodeCupBatchFrame()`：只生成当前 168-byte 帧，用于 fixture/test；
-- `CupBatchFrame.protocolProfileIdentifier`：按 20/50 samples 标记当前/legacy profile。
+- `CupBatchFrame.protocolProfileIdentifier`：来自显式 `wireProfile`，区分 batch 168、legacy 408 与 sensor packet 168。
+
+sensor packet 位于 [`CupSensorPacketProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupSensorPacketProtocol.kt)：
+
+| 偏移 | 长度 | `cup-sensor-168-planar-u32seq-0.1` |
+|---:|---:|---|
+| 0 | 2 | `AB BA` |
+| 2 | 4 | UInt32 LE `seq_no` |
+| 6 | 80 | 20 × UInt32 LE RED |
+| 86 | 80 | 20 × UInt32 LE IR |
+| 166 | 2 | `CD DC` |
+
+`decodeCupSensorPacketFrame()`/`encodeCupSensorPacketFrame()` 保留完整 UInt32 sequence；`CupBatchFrame.sequence` 只是旧调用方的低 8-bit 兼容视图，生产连续性、CSV 和 replay 使用 `sequenceNumber`。nRF 日志的 97 条通知全部符合此布局且 sequence 0…96，但 transport 通知间隔不能替代固件采样率证明，当前处理仍沿用项目既有 100 Hz 合同。
 
 [`CupBatchStreamDecoder.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) 的 `CupBatchStreamDecoder.feed()` 面向任意 notification 边界增量处理：
 
@@ -99,10 +120,11 @@ BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollecto
 - 首个合法数据帧后锁定 data length，单次连接/重放内不允许 168/408 布局静默切换；
 - 历史 `408-byte / 50 RED-IR interleaved` 只用于已有 raw/session 回放兼容；
 - function `0x02/0x06/0x0C/0x0F` 只有在总长精确为 8 且 tail 正确时计入 `auxiliaryFrames` 并消费；未知 function 或坏 tail 仍计结构错误。
+- constructor 的 `protocolMode` 由连接身份传入；sensor mode 固定按 168-byte/header/tail 解码，不读取不存在的 function/length，也不接受 batch auxiliary。
 
 ### 2.3 Sequence gate 与 accepted sample 时间轴
 
-[`CupFrameSequenceTracker.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) 的 `observe()` 使用 UInt8 环形差值 `(current - previous) & 0xFF`：
+[`CupFrameSequenceTracker.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) 的 `observe(frame)` 根据 `wireProfile.sequenceBitWidth` 使用 UInt8 或 UInt32 模空间：
 
 | 事件 | 判定 | 是否接受 PPG 样本 | 后续动作 |
 |---|---|---:|---|
@@ -110,7 +132,7 @@ BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollecto
 | `Continuous` | delta = 1 | 是 | 连续处理 |
 | `Gap(n)` | delta = 2…127 | 是 | 累计缺帧/缺样本；实时滤波和 8 s 窗口清空后重新 warm-up |
 | `Duplicate` | delta = 0 | 否 | 只累计诊断，不推进 sample index |
-| `OutOfOrder` | delta ≥ 128 | 否 | 只累计诊断，不修改 previous |
+| `OutOfOrder` | delta 位于后半模空间 | 否 | 只累计诊断，不修改 previous |
 
 decoder 输出的 `CupBatchFrame` 会包装成 [`CupDecodedFrameEvent.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupDecodedFrameEvent.kt) 中的 `CupDecodedFrameEvent`，`isAccepted` 是 preview、CSV、重放和离线分析共同遵循的入口门槛。
 
@@ -180,7 +202,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 | `ppg-capture-writer` | `CaptureRecordingController.onRawChunk()` / `workerLoop()` | 256 chunks | raw-first、decode、CSV、checkpoint | queue 满则 `RESOURCE_PRESSURE`，停止为 incomplete |
 | `ppg-capture-analysis` | `analysisLoop()` | 256 decoded inputs | 录制期 waveform/metric | overflow 只使 analysis FAILED；已写 raw 不受影响 |
 
-connection generation 变化或连接退出 subscribed/receiving 时，`BleCoordinator.publish()` 调用 `BlePreviewRuntime.reset()`，清空旧 queue、decoder、sequence 和 signal runtime，防止晚到 callback 污染新连接。
+connection generation 变化或连接退出 subscribed/receiving 时，`BleCoordinator.publish()` 调用 `BlePreviewRuntime.reset(generation, streamProtocolMode)`，清空旧 queue、decoder、sequence 和 signal runtime，防止晚到 callback 或旧 wire mode 污染新连接。
 
 ### 2.8 实时状态如何到达 UI
 
@@ -235,7 +257,7 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 保存的是 **notification 原始分块**，不是 decoder 重组后的协议帧。因此：
 
 - 一帧可跨多个 record，一个 record 也可能含多帧；
-- 168-byte PPG、8-byte auxiliary、历史 408-byte 帧和对齐前后字节都原样保留；
+- 两种 168-byte PPG、8-byte auxiliary、历史 408-byte 帧和对齐前后字节都原样保留；
 - raw 可在未来使用新 decoder 重新分析，是恢复与审计的第一真源。
 
 `CupRawWriter.append()` 追加单条 record；`flush()` 与 `close()` 使用 `FileChannel.force(true)`。`CupRawReader.scan()` 流式读取，只为当前 record 分配有界 buffer；截断 header、超长 chunk 或截断 payload 会返回 safe-prefix 和 `CupRawTailIssue`，不会把残缺尾部当完整数据。
@@ -258,6 +280,8 @@ append CSV rows
 
 核心函数是 `CaptureSessionWriter.appendRawThenDerive()`：它在调用传入的 `decode` lambda 前先执行 `rawWriter.append()`。如果 decoder/CSV 随后失败，已经 append 的 raw record 仍保留，finalizer 将 stop reason 升级为 `writeError` 并保持 session incomplete。
 
+`CaptureForegroundService.startRecording()` 从 `BleCoordinatorSnapshot.activeStreamProtocolMode` 固化 `protocolProfile`；`CaptureRecordingController.start()` 据此创建对应 decoder，并拒绝录制中途变化的 chunk mode。这样新设备不是只在预览可见，而是 raw、CSV、metadata 和后续 replay 使用同一 wire profile。
+
 注意：每个 chunk 的 append 成功不等同于每个 chunk 都单独 fsync；durability checkpoint 为约 1 秒一次，停止/关闭时再次 force。
 
 ### 3.4 25 列 CSV
@@ -268,8 +292,8 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 
 | # | 列名 | 语义 |
 |---:|---|---|
-| 1–2 | `schema_version`, `session_id` | 当前 sample schema 为 `ppgcollector_samples_v1`；会话标识 |
-| 3–7 | `sample_index`, `device_time_s`, `host_frame_time_ns`, `frame_sequence`, `sample_in_frame` | accepted 样本连续索引；相对 100 Hz 时间；完成该帧解码的 notification 时间；sequence；帧内索引 |
+| 1–2 | `schema_version`, `session_id` | batch/legacy 为 `ppgcollector_samples_v1`；sensor packet 为 `ppgcollector_samples_v2`；会话标识 |
+| 3–7 | `sample_index`, `device_time_s`, `host_frame_time_ns`, `frame_sequence`, `sample_in_frame` | accepted 样本连续索引；相对 100 Hz 时间；notification 时间；v1 UInt8/v2 UInt32 sequence；帧内索引 |
 | 8–9 | `red`, `ir` | UInt32 原始光电样本的十进制表示 |
 | 10–12 | `heart_rate_bpm`, `heart_rate_valid`, `heart_rate_time_s` | 心率值、有效性、指标来源样本相对时间 |
 | 13–15 | `spo2_percent`, `spo2_valid`, `spo2_time_s` | SpO2；当前无标定，通常为空/false/空 |
@@ -282,6 +306,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - 只有 accepted PPG 帧产生行；当前每帧 20 行，legacy 每帧 50 行；
 - auxiliary、duplicate、out-of-order 不产生行；gap 不补空行；
 - 同一 decoded frame 的行共用 `host_frame_time_ns` 和 `frame_sequence`；
+- v2 只扩大 `frame_sequence` 的合法范围到 UInt32，25 列顺序、header、时间和指标语义不变；parser 按行内 `schema_version` 验证范围；
 - 指标是 raw notification 被确认时传入 writer 的 point-in-time snapshot，已写行永不回填；
 - 当前 production `CaptureRecordingController.workerLoop()` 没有把异步 `analysisLoop()` 的最新结果传给 `appendRawThenDerive()`，因此录制 CSV 的 HR/SQI/R/SpO2 字段目前按默认 unavailable snapshot 写入。这是当前实现事实，不能把录制期 UI 已显示的指标误认为已经写入 CSV。
 
@@ -322,6 +347,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 
 [`CaptureSessionInspection.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionInspection.kt) 的 `CaptureSessionInspectionService.inspect()` 只读核对：
 
+- 先读取 metadata `protocol_profile`，据此选择 batch 或 sensor production decoder；
 - raw 是否可读、是否有 record 截尾、重放结构是否干净；
 - CSV header、完整换行行数和截断尾行；
 - metadata 是否可读/complete；
@@ -371,6 +397,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 | [`BleCoordinator.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt) | `dispatchRawChunk()`, `publish()`, `handlePreviewAcceptedFrame()` | 分发 preview/recording，连接边界 reset，accepted frame 回写 freshness |
 | [`BlePreviewRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BlePreviewRuntime.kt) | `offer()`, `loop()`, `process()`, `reset()` | 有界后台 preview pipeline |
 | [`CupBatchProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt) | `CupBatchProtocolV1`, `decodeCupBatchFrame()` | wire layout 与单帧解码 |
+| [`CupSensorPacketProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupSensorPacketProtocol.kt) | `CupSensorPacketProtocolV1`, `decodeCupSensorPacketFrame()`, `CupStreamProtocolMode` | 新 NUS sensor packet、UInt32 sequence 与显式 decoder mode |
 | [`CupBatchStreamDecoder.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) | `feed()`, `reset()` | arbitrary-boundary 组帧、辅助帧分类、重同步、布局锁定 |
 | [`CupFrameSequenceTracker.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) | `observe()`, `reset()` | first/continuous/gap/duplicate/out-of-order 判定 |
 | [`LivePpgSignalRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntime.kt) | `ingest()`, `poll()`, `publishNow()`, `invalidateContinuity()` | 单一 raw/causal ring、5 Hz publication、800/100 request |
@@ -403,7 +430,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 
 | 需求类型 | 首要修改位置 | 必须同步验证 |
 |---|---|---|
-| 新 wire frame/function | `CupBatchProtocolV1`、`decodeCupBatchFrame()`、`CupBatchStreamDecoder.feed()` | profile/version、golden、碎片/粘包/噪声、raw replay、metadata/CSV |
+| 新 wire frame/function | `CupBatchProtocolV1`/`CupSensorPacketProtocolV1`、对应 codec、`CupBatchStreamDecoder.feed()` | identity→mode、profile/version、golden、碎片/粘包/噪声、UInt sequence、raw replay、metadata/CSV |
 | 修改 sequence 接受规则 | `CupFrameSequenceTracker.observe()` | preview、recording、CSV 行数、replay、gap 时间轴 |
 | 修改实时滤波 | `PpgPreprocessingProfile`、`PpgPreprocessor`、`LivePpgSignalRuntime` | causal fixture、gap reset、800 ring、指标窗口一致性、algorithm/preprocess version |
 | 修改指标 | 对应 estimator + `LiveMetricAnalyzer` | valid/provisional/reason/source time、CSV policy、算法版本；不得自动生成 SpO2/BP |
@@ -421,7 +448,10 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - [`CupRawFileTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CupRawFileTest.kt)
 - [`CaptureCsvTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureCsvTest.kt)
 - [`CaptureSessionInspectionTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionInspectionTest.kt)
+- [`CupSensorPacketProtocolTest.kt`](app/src/test/java/com/example/ppgcollector_android/core/protocol/CupSensorPacketProtocolTest.kt)
+- [`NordicSensorDeviceCompatibilityTest.kt`](app/src/test/java/com/example/ppgcollector_android/core/ble/NordicSensorDeviceCompatibilityTest.kt)
+- [`NordicSensorCaptureCompatibilityTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/NordicSensorCaptureCompatibilityTest.kt)
 - [`CaptureSessionRecoveryServiceTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryServiceTest.kt)
 - [`LongDurationDataPathTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/LongDurationDataPathTest.kt)
 
-真机仍需验证 FFF1 characteristic properties、auxiliary payload 语义、FFF2 是否需要控制命令、真实分片/MTU、30 分钟 receiving、2 小时录制以及锁屏/后台/重连行为；这些待验收项不改变本文记录的当前代码调用关系。
+真机仍需验证 FFF1 characteristic properties、auxiliary payload 语义、FFF2/NUS RX 是否需要控制命令、`Nordic_UART_Service` 量产身份与真实采样率、真实分片/MTU、30 分钟 receiving、2 小时录制以及锁屏/后台/重连行为；这些待验收项不改变本文记录的当前代码调用关系。

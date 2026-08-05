@@ -1,6 +1,6 @@
 # ADR-0003：CUP 168-byte planar 接收协议
 
-> 后续证据：`testdevice1` 已确认 168-byte PPG 布局与约 100 Hz，并暴露额外 8-byte 辅助帧；其分类规则见 [ADR-0004](ADR-0004-cup-eight-byte-auxiliary-frames.md)。
+> 后续证据：`testdevice1` 已确认本 ADR 的 168-byte PPG 布局与约 100 Hz，并暴露额外 8-byte 辅助帧；其分类规则见 [ADR-0004](ADR-0004-cup-eight-byte-auxiliary-frames.md)。另一个共享 NUS transport、但使用 UInt32 sequence 且无 function/length 的 168-byte profile 见 [ADR-0005](ADR-0005-nordic-nus-sensor-packet-profile.md)。
 
 - 状态：Accepted for bring-up
 - 日期：2026-08-04

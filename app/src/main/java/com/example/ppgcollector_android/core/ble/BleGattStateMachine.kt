@@ -1,11 +1,13 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.time.Instant
 
 data class BleRawNotificationChunk(
     val connectionGeneration: Long,
     val hostMonotonicNanos: Long,
     val bytes: ByteArray,
+    val streamProtocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
 ) {
     fun copyOfBytes(): BleRawNotificationChunk = copy(bytes = bytes.copyOf())
 }
@@ -58,6 +60,8 @@ class CupBleGattStateMachine(
         private set
     var activeProfile: CupBleDeviceProfile? = null
         private set
+    var activeStreamProtocolMode: CupStreamProtocolMode? = null
+        private set
     var discoveredServiceUuids: List<String> = emptyList()
         private set
     var discoveredCharacteristics: List<BleCharacteristicDiagnostic> = emptyList()
@@ -69,6 +73,7 @@ class CupBleGattStateMachine(
     private val freshnessTracker = CupStreamFreshnessTracker(2.0)
     private var shouldScanWhenReady = false
     private var activeDeviceId: String? = null
+    private var activeDeviceName: String? = null
     private var lastRequestedDeviceId: String? = null
     private var notifyCharacteristicUuid: String? = null
     private var controlCharacteristicUuid: String? = null
@@ -102,8 +107,11 @@ class CupBleGattStateMachine(
             discoveredDevices.none { it.id == deviceId } || phase.isBusy
         ) return false
         stopScanning()
+        val discovered = discoveredDevices.first { it.id == deviceId }
         lastRequestedDeviceId = deviceId
         activeDeviceId = deviceId
+        activeDeviceName = discovered.name
+        activeStreamProtocolMode = discovered.streamProtocolMode
         activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
@@ -203,6 +211,8 @@ class CupBleGattStateMachine(
             lastError = "${value.title}，当前连接已结束。"
             phase = BleConnectionPhase.Failed(lastError!!)
             activeDeviceId = null
+            activeDeviceName = null
+            activeStreamProtocolMode = null
         }
         freshnessTracker.reset()
         freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.UNAVAILABLE
@@ -223,13 +233,15 @@ class CupBleGattStateMachine(
 
     private fun updateDiscovered(discovery: BleTransportDiscovery) {
         val name = discovery.name ?: return
-        if (profiles.none { it.acceptsAdvertisedName(name) }) return
+        val matchingProfile = profiles.firstOrNull { it.acceptsAdvertisedName(name) } ?: return
+        val streamProtocolMode = matchingProfile.streamProtocolModeForAdvertisedName(name) ?: return
         val device = DiscoveredBleDevice(
             id = discovery.deviceId,
             name = name,
             rssi = discovery.rssi,
             isConnectable = discovery.isConnectable,
             lastSeen = discovery.seenAt,
+            streamProtocolMode = streamProtocolMode,
         )
         val index = discoveredDevices.indexOfFirst { it.id == device.id }
         if (index >= 0) discoveredDevices[index] = device else discoveredDevices += device
@@ -253,6 +265,8 @@ class CupBleGattStateMachine(
         }
         cancelDeadline()
         activeDeviceId = null
+        activeDeviceName = null
+        activeStreamProtocolMode = null
         phase = BleConnectionPhase.Failed(message ?: "无法连接设备。")
         lastError = phase.let { (it as BleConnectionPhase.Failed).message }
     }
@@ -264,6 +278,8 @@ class CupBleGattStateMachine(
         }
         cancelDeadline()
         activeDeviceId = null
+        activeDeviceName = null
+        activeStreamProtocolMode = null
         activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
@@ -285,7 +301,8 @@ class CupBleGattStateMachine(
         }
         discoveredServiceUuids = event.serviceUuids.sorted()
         val selectedProfile = profiles.firstOrNull { candidate ->
-            event.serviceUuids.any { it.equals(candidate.serviceUuid, ignoreCase = true) }
+            candidate.acceptsAdvertisedName(activeDeviceName) &&
+                event.serviceUuids.any { it.equals(candidate.serviceUuid, ignoreCase = true) }
         }
         if (selectedProfile == null) {
             val expected = profiles.joinToString { it.serviceUuid }
@@ -402,6 +419,8 @@ class CupBleGattStateMachine(
                 connectionGeneration = connectionGeneration,
                 hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
                 bytes = data.copyOf(),
+                streamProtocolMode = activeStreamProtocolMode
+                    ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
             ),
         )
         phase = BleConnectionPhase.Receiving(event.deviceId)

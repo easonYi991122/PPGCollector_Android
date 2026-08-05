@@ -4,6 +4,7 @@ import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
@@ -41,12 +42,14 @@ class BlePreviewRuntime(
         val generation: Long,
         val hostMonotonicNanos: Long,
         val bytes: ByteArray,
+        val streamProtocolMode: CupStreamProtocolMode,
     )
 
     private val queue = ArrayBlockingQueue<Input>(queueCapacity)
     private val lock = Any()
     private val _snapshot = MutableStateFlow(BlePreviewSnapshot())
     private var activeGeneration = 0L
+    private var activeStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE
     private var droppedChunkCount = 0L
     private var acceptedSampleIndex = 0L
     private var stopRequested = false
@@ -61,7 +64,12 @@ class BlePreviewRuntime(
     fun offer(chunk: BleRawNotificationChunk): Boolean {
         val copied = chunk.copyOfBytes()
         val accepted = queue.offer(
-            Input(copied.connectionGeneration, copied.hostMonotonicNanos, copied.bytes),
+            Input(
+                copied.connectionGeneration,
+                copied.hostMonotonicNanos,
+                copied.bytes,
+                copied.streamProtocolMode,
+            ),
         )
         if (!accepted) {
             synchronized(lock) {
@@ -75,11 +83,15 @@ class BlePreviewRuntime(
         return accepted
     }
 
-    fun reset(generation: Long) {
+    fun reset(
+        generation: Long,
+        streamProtocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+    ) {
         synchronized(lock) {
             activeGeneration = generation
+            activeStreamProtocolMode = streamProtocolMode
             queue.clear()
-            decoder = CupBatchStreamDecoder()
+            decoder = CupBatchStreamDecoder(protocolMode = streamProtocolMode)
             sequenceTracker = CupFrameSequenceTracker()
             signalRuntime = LivePpgSignalRuntime()
             acceptedSampleIndex = 0L
@@ -119,9 +131,15 @@ class BlePreviewRuntime(
         var acceptedFrame = false
         synchronized(lock) {
             if (input.generation != activeGeneration) return
+            if (input.streamProtocolMode != activeStreamProtocolMode) {
+                _snapshot.value = _snapshot.value.copy(
+                    lastError = "preview protocol mode does not match the active connection",
+                )
+                return
+            }
             try {
                 val events = decoder.feed(input.bytes).map { frame ->
-                    val sequence = sequenceTracker.observe(frame.sequence, frame.samples.size)
+                    val sequence = sequenceTracker.observe(frame)
                     CupDecodedFrameEvent(
                         frame = frame,
                         sequenceEvent = sequence,

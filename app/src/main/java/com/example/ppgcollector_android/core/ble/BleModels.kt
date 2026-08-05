@@ -1,6 +1,12 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.time.Instant
+
+data class CupAdvertisedProtocolVariant(
+    val exactAdvertisedName: String,
+    val streamProtocolMode: CupStreamProtocolMode,
+)
 
 data class CupBleDeviceProfile(
     val identifier: String,
@@ -9,9 +15,19 @@ data class CupBleDeviceProfile(
     val notifyCharacteristicUuid: String,
     val controlCharacteristicUuid: String,
     val isPassiveStream: Boolean,
+    val defaultStreamProtocolMode: CupStreamProtocolMode =
+        CupStreamProtocolMode.BATCH_COMPATIBLE,
+    val additionalAdvertisedVariants: List<CupAdvertisedProtocolVariant> = emptyList(),
 ) {
     fun acceptsAdvertisedName(name: String?): Boolean =
-        name?.startsWith(advertisedNamePrefix) == true
+        streamProtocolModeForAdvertisedName(name) != null
+
+    fun streamProtocolModeForAdvertisedName(name: String?): CupStreamProtocolMode? {
+        if (name == null) return null
+        additionalAdvertisedVariants.firstOrNull { it.exactAdvertisedName == name }
+            ?.let { return it.streamProtocolMode }
+        return if (name.startsWith(advertisedNamePrefix)) defaultStreamProtocolMode else null
+    }
 
     companion object {
         val cupNusBringUp = CupBleDeviceProfile(
@@ -21,6 +37,12 @@ data class CupBleDeviceProfile(
             notifyCharacteristicUuid = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
             controlCharacteristicUuid = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
             isPassiveStream = true,
+            additionalAdvertisedVariants = listOf(
+                CupAdvertisedProtocolVariant(
+                    exactAdvertisedName = "Nordic_UART_Service",
+                    streamProtocolMode = CupStreamProtocolMode.SENSOR_PACKET_168,
+                ),
+            ),
         )
 
         /**
@@ -113,6 +135,7 @@ data class DiscoveredBleDevice(
     val rssi: Int?,
     val isConnectable: Boolean,
     val lastSeen: Instant,
+    val streamProtocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
 )
 
 data class BleCharacteristicDiagnostic(

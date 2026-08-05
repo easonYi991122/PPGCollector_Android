@@ -1,6 +1,6 @@
 # ADR-0002：CUP BLE transport profile registry
 
-> 后续说明：本 ADR 的 NUS/FFF0 transport 选择仍有效；其中关于 408-byte wire 不变的决定已由 [ADR-0003](ADR-0003-cup-168-byte-planar-wire-protocol.md) 替代，后续真实 FFF1 辅助帧证据见 [ADR-0004](ADR-0004-cup-eight-byte-auxiliary-frames.md)。
+> 后续说明：本 ADR 的 NUS/FFF0 transport 选择仍有效；其中关于 408-byte wire 不变的决定已由 [ADR-0003](ADR-0003-cup-168-byte-planar-wire-protocol.md) 替代，后续真实 FFF1 辅助帧证据见 [ADR-0004](ADR-0004-cup-eight-byte-auxiliary-frames.md)。共享 NUS transport 但使用独立 sensor-packet wire 的设备见 [ADR-0005](ADR-0005-nordic-nus-sensor-packet-profile.md)。
 
 - 状态：Accepted for M2 bring-up；wire protocol 与控制命令仍开放
 - 日期：2026-08-03

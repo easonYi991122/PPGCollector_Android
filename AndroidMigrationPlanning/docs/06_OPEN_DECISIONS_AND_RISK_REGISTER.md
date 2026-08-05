@@ -6,7 +6,7 @@
 
 | ID | 状态 | 最晚时间 | 需要决定/取得的证据 | 当前建议/默认 |
 |---|---|---|---|---|
-| D-001 | Open/Block | Phase 0 | 已知旧设备使用 NUS；新设备使用 `FFF0/FFF1/FFF2`。`testdevice1` 真实导出已确认 FFF1 的 168-byte PPG、连续 sequence、约 100 Hz 和 8-byte functions `02/06/0C/0F`；仍缺固件版本、特征 properties、辅助 payload 语义、FFF2 命令契约及 30 分钟门禁 | transport 按 service 选择且不猜测 control write；168-byte PPG 与已观测 auxiliary 精确分类，未知帧仍报错；旧 408-byte 仅兼容回放，见 ADR-0002/0003/0004 |
+| D-001 | Open/Block | Phase 0 | 已知 NUS、FFF0 两类 transport；`testdevice1` 已确认 batch 168-byte/auxiliary。2026-08-05 的 `Nordic_UART_Service` 日志又确认 NUS 上的 168-byte UInt32-sequence sensor packet（97/97 合法且 sequence 0…96）；仍缺各固件版本、sensor 实际采样率、稳定身份字段、控制语义及 30 分钟门禁 | 设备身份 + service 显式选择 transport/wire；不猜 control；CSV/profile version 化；未知帧仍报错；见 ADR-0002/0003/0004/0005 |
 | D-002 | Open/Block | Phase 0 | Android 目标设备/OS/厂商清单 | 当前工程 `minSdk=26`、target/compile 37；发布前按设备矩阵和官方政策确认，并做更高 API 前向测 |
 | D-003 | Open/Block | Phase 0 | 录制在后台/锁屏/划掉任务时是否继续 | 开始后由 `connectedDevice` FGS 继续；notification 明确停止；`START_NOT_STICKY` |
 | D-004 | Open/Block | Phase 0 | applicationId、app 名、签名 owner、Play/企业分发 | 独立于 iOS bundle；正式 keystore 不进 repo |
@@ -29,7 +29,7 @@
 
 | ID | 风险 | 概率 | 影响 | 早期信号 | 缓解/应急 | Owner 建议 |
 |---|---|---:|---:|---|---|---|
-| R-001 | 硬件存在 NUS/FFF0 transport、168/408 data 与未解释 auxiliary 变体 | H | H | 新 firmware 出现未知短帧、需 FFF2 命令，或 payload/采样率改变 | service 精确选 profile、禁止猜测写入；仅白名单精确辅助帧；记录 properties/通知/控制流程；wire version 化并保留 fixtures | Firmware + Android |
+| R-001 | 硬件存在 NUS/FFF0 transport、两个同长 168-byte wire、历史 408 data 与未解释 auxiliary 变体 | H | H | 广播名变化、同 NUS payload 变化、新短帧/控制命令或采样率改变 | identity + service 显式选 profile、禁止猜写；记录 properties/通知/控制；wire/CSV version 化并保留 fixtures | Firmware + Android |
 | R-002 | Android GATT 厂商差异、133、callback 晚到 | H | H | 快速重连后旧状态污染、订阅偶发失败 | generation gate、严格 close、分阶段 timeout、目标厂商矩阵 | Android |
 | R-003 | 后台启动/FGS 权限随 API 演进导致 crash | M | H | API34+ SecurityException/StartNotAllowed | 可见启动、connectedDevice type、API matrix、官方规则复核 | Android/Release |
 | R-004 | 通知速度超过文件 writer，raw queue 溢出 | M | H | queue high-water/flush latency 上升 | callback 极简、有界 actor、批量 buffer、性能 trace；溢出安全 stop | Android |

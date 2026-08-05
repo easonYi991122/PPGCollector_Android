@@ -2600,6 +2600,49 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 继续按 `REALTIME_AND_STORAGE.md` 维护实现索引；技术下一步仍是正式 capture version/profile 和 CSV metric snapshot 绑定策略。
 
+## 2026-08-05 · M1/M2 · Add Nordic NUS sensor-packet compatibility
+
+### 本轮目标
+
+让现有 Android app 在不破坏 `CUP*` NUS/FFF0 设备的前提下，扫描、连接并捕获精确广播名 `Nordic_UART_Service` 的新设备；按连接设备显式切换新 168-byte UInt32 sequence wire，并让 preview、raw-first recording、CSV/session、replay、inspection/recovery/offline 全链路一致。
+
+### 需求/参考/Android 目标
+
+- Requirement: `BLE-002/003/005`、`PROTO-001～004`、`CAP-001/003～005/009`、`REL-001`；开放决策 `D-001`，风险 `R-001`。
+- Primary source: 用户给出的 `sensor_packet_t`；只读 `CollectedData/Log 2026-08-05 17_04_47.txt` nRF Connect 导出；既有 ADR-0002/0003/0004；新 [ADR-0005](../docs/adr/ADR-0005-nordic-nus-sensor-packet-profile.md)。
+- Android target: `BleModels`/`CupBleGattStateMachine`/`BleCoordinator`/`BlePreviewRuntime`，`CupSensorPacketProtocolV1`/stream decoder/sequence tracker，FGS/recording/writer/CSV/raw replay/inspection/recovery/offline analysis。
+- Non-goals: 不修改用户日志；不接受任意 Nordic/NUS 广播；不猜 RX/FFF2 命令；不宣称通知时间证明真实采样率；不改变 `CUPRAW1`、session JSON、25 列 header、信号算法或旧设备 wire。
+
+### 实现事实
+
+- 日志 97 条 TX notification 全部为 168 bytes，97/97 header `AB BA`/tail `CD DC` 有效；UInt32 LE sequence 从 0 连续到 96。首帧 RED[0]/IR[0] 解为 45376/52318。日志平均通知间隔约 222.9 ms，但这包含 BLE/日志调度，只记录为 transport evidence，不据此改采样合同。
+- `CupBleDeviceProfile` 只为 NUS 新增精确名 `Nordic_UART_Service` variant；相似前缀仍过滤。connect 固化 `activeStreamProtocolMode`，service discovery 同时检查身份与 UUID，raw chunk 携带 mode；旧 `CUP*` 仍按 service 选择 NUS/FFF0 和 batch-compatible mode。
+- 新 `cup-sensor-168-planar-u32seq-0.1` 固定 `AB BA + UInt32 LE seq + 20 RED + 20 IR + CD DC`；stream decoder 在显式 sensor mode 下处理任意 notification 边界、坏尾与重同步，不读取不存在的 function/length。
+- `CupBatchFrame` 新增完整 `sequenceNumber` 和 `wireProfile`，旧 `sequence: UByte` 保留作源码兼容。sequence tracker 按 profile 使用 8-bit/32-bit 模空间，production preview/recording/replay 都改为观察完整 frame。
+- FGS 从连接 snapshot 固化 protocol profile；recording decoder 使用该 mode，mode 中途变化以 `protocolError` 停止。raw-first 顺序和 `CUPRAW1` record 不变。
+- CSV 25 列/header 不变：batch/legacy 继续 `ppgcollector_samples_v1` 且 parser 限制 sequence ≤255；sensor 使用 `ppgcollector_samples_v2` 保存 UInt32。metadata 记录 sensor profile；inspection、recovery、offline analysis 在重放前按 metadata 选择 decoder，gap break 直接使用 replay sequence event，避免 UInt8 截断。
+- 新增 ADR-0005，并同步 agent brief、需求矩阵、架构/数据合同、source index、风险登记和根目录实现指南。
+
+### 验证
+
+- 用户日志只读审计：85,290 bytes/256 lines，SHA-256 `771ce1a7f39062ad4b0db450a14768afaeb584236215097be8b1b368cdefd28f`；97 notifications、`{168=97}`、sequence 0…96、96/96 continuous，源文件未修改且不纳入提交。
+- 临时 production-decoder verification test 将日志 97 条 notification 原样送入 `CupBatchStreamDecoder(SENSOR_PACKET_168)`，得到 97 frames、sequence 0…96、0 invalid/discard/pending，`BUILD SUCCESSFUL in 8s`；临时 test 随后删除且不纳入 diff。首次测试使用仓库根相对路径，但 Gradle unit test 工作目录为 `app/`，出现 `NoSuchFileException`；改为 `../CollectedData/...` 后通过，该失败是 verification harness 路径问题，不是 decoder 失败。
+- 定向命令：sensor protocol、fake BLE/preview、capture/replay/inspection、CSV v1/v2 tests → `BUILD SUCCESSFUL`。
+- 全量 JVM 回归：`:app:testDebugUnitTest` → `BUILD SUCCESSFUL`。
+- 完整命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 1m 12s`、130 actionable tasks；148 JVM tests/0 failures/0 errors/skips，debug lint 0 errors/9 dependency-version warnings，debug/release/androidTest APK、R8、REL-002/003/004/005/006/007 contracts passed。
+- `git diff --check` 与指南 75 个源码链接检查通过。用户 `.idea` 修改和未跟踪 `app/release/` 不纳入本轮；release 目录已预先备份，门禁后 `diff -qr` 确认无差异。
+- Hardware validation: pending。本轮未操作真机；扫描、CCCD、首帧 freshness、长稳、断连重连、后台与实际 sampling cadence 待设备验收。
+
+### 风险与决策变化
+
+- D-001 从“未知该 NUS 设备 payload”缩小为“短时结构/序号已有日志证据”；固件/型号、量产身份、真实采样率、RX 命令、MTU/分片与 30 分钟 receiving 未关闭。
+- 两个 wire 都恰好 168 bytes，不能仅以长度自动检测。production 必须依赖连接身份与 metadata；如果量产广播名变化，需要硬件方提供稳定 manufacturer/service-data 身份，不能扩大为任意 NUS。
+- `ppgcollector_samples_v2` 是 row-level sequence 范围升级；`CUPRAW1` 与 session schema 未升级。跨平台读取方若只支持 v1，需在 D-006 中补充 v2 reader。
+
+### 下一轮
+
+在新设备上执行 exact-name scan→NUS service/TX CCCD→首帧 fresh→录制→保存→inspection 的真机验收，并至少运行 30 分钟 receiving/reconnect；同步采集固件/型号、稳定身份字段、实际采样率、MTU/分片和 RX 控制要求。随后继续正式 capture version/profile 与动态 FGS health 工作。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

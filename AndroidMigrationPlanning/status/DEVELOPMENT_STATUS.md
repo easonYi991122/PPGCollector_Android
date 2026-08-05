@@ -3,7 +3,9 @@
 更新时间：2026-08-05
 当前迁移版本：`M6`
 当前规划阶段：Phase 6（V1.1 离线分析与工作台）
-状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。M2 BLE 同时支持既有 NUS 和新硬件 FFF0/FFF1/FFF2 profile；当前接收协议为 168-byte planar，并按真实 `testdevice1` 证据分类 8-byte auxiliary，历史 408-byte 会话保留回放兼容。141 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过。新硬件辅助 payload/FFF2 命令/properties、真机 UI/性能/runtime 与 `D-014` 跨进程后台策略仍待验证。
+状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。M2 BLE 支持 NUS 与 FFF0 transport，并可对精确名称 `Nordic_UART_Service` 显式选择 UInt32-sequence sensor packet；`CUP*` 继续使用既有 batch/auxiliary，历史 408-byte 会话保留回放兼容。148 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过。sensor 真实采样率/稳定身份/长稳、辅助 payload/控制命令、真机 UI/runtime 与 `D-014` 仍待验证。
+
+本轮增量：只读审计 `CollectedData/Log 2026-08-05 17_04_47.txt` 确认 97/97 条 NUS TX 通知均为 168 bytes，头尾有效且 UInt32 LE sequence 从 0 连续到 96。扫描现只额外接受精确名 `Nordic_UART_Service`，复用 `cup-nus-bringup-0.1` transport，同时将 `cup-sensor-168-planar-u32seq-0.1` wire mode 贯穿 GATT chunk、preview、raw-first recording、CSV/session、replay、inspection/recovery/offline；`CUP*` 设备路径不变。sensor CSV 使用相同 25 列/header 的 `ppgcollector_samples_v2` 保存完整 UInt32 `frame_sequence`，旧 v1 仍限制 0…255。新增 ADR-0005 和 7 个 JVM tests；完整 130-task 门禁成功，148 tests/0 failures/errors/skips，lint 仅 9 个依赖版本 warning，用户 `.idea` 与 `app/release/` 保持未提交且 release 目录经备份 diff 不变。真机未执行，100 Hz 暂沿用既有合同而非由 nRF 通知间隔推断。
 
 本轮增量：新增根目录 [`REALTIME_AND_STORAGE.md`](../../REALTIME_AND_STORAGE.md)，按当前 production 代码串联 BLE notification、stream decoder、sequence gate、统一 causal/raw runtime、800/100 指标、FGS raw-first 录制、`CUPRAW1`、25 列 CSV、session metadata、inspection/recovery/export 和不可变 analysis JSON，并为每一步列出准确 Kotlin 文件/函数。根据 Codex 文件浏览无法打开原深层路径的反馈，正文已迁移到短 ASCII 根路径并重写全部源码相对链接；文档同时明确当前 CSV 不接收异步 analysis 回填、`complete` 不等于 verified、20 MiB 仅为静态低空间门槛，以及 capture version/profile 命名未冻结。本轮不修改 runtime/schema/算法。
 
@@ -67,7 +69,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 Compose 采集与独立会话工作台，并可按 service 自动连接 NUS/FFF0 两类 CUP transport；当前接收 168-byte planar wire、识别真实导出中的 8-byte auxiliary，并可回放历史 408-byte 会话。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步确认 FFF1 properties、辅助 payload/FFF2 命令并执行 30 分钟 receiving，再修复正式 capture version 与动态 FGS 健康状态并执行 runtime 矩阵。
+Android 工程已形成可运行的 Compose 采集与独立会话工作台，可连接 NUS/FFF0，并按连接设备在 batch UInt8 与 sensor-packet UInt32 两个 168-byte wire 间显式选择；旧 auxiliary/408 replay 均保留。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步在 `Nordic_UART_Service` 真机确认采样率、稳定身份、持续 receiving/reconnect，同时继续关闭 FFF1/FFF2 与 runtime 矩阵。
 
 ## 与 MigrationPlanning 对照
 
@@ -75,8 +77,8 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台，并
 |---|---|---|---|---|
 | `M0.1` | Phase 0 | Agent 入口 prompt、项目级工作约定、详细/简版状态、当前 Android 基线核对 | 已完成（文档） | `M0.2`：工程基础、ADR、测试门禁 |
 | `M0.2` | Phase 0 | Android 基线 ADR、CI JVM/build 门禁 | 已实现并经 JDK 验证 | `M1`：纯 Kotlin CUP protocol golden slice |
-| `M1` | Phase 1 | 当前 168-byte planar CUP protocol、真实 8-byte auxiliary 分类、历史 408-byte replay、CUPRAW1、25 列 CSV、snake_case session metadata codec、bounded replay/inspection、preprocessing parity、peak detector、HR estimator、SQI、diagnostic ratio-of-ratios、MetricResult、800/100 live scheduler | `testdevice1` 生产 inspection、新旧 golden/direct/fragment/replay/profile、未知/坏尾和固定种子 resync 已验证；辅助 payload/长稳待硬件方确认 | M2 FFF1 properties/FFF2 与 30 min receiving 门禁 |
-| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断 | NUS/FFF0 profile registry、按 service 自动选择、实际 profile metadata、权限/phase/deadline/freshness、fake transport/GATT、Android scanner/GATT adapter、10 s scan timeout 与 Compose seam 已实现并经 JVM/build 验证；已有短时 FFF1 导出 | 新硬件确认 FFF1 properties/辅助 payload/FFF2 命令；新旧 CUP 30 min receiving 与 M5 runtime matrix |
+| `M1` | Phase 1 | batch 168-byte UInt8、sensor 168-byte UInt32、真实 8-byte auxiliary、历史 408-byte replay、CUPRAW1、CSV v1/v2、session/replay/inspection、信号算法与 live scheduler | `testdevice1` 与新 nRF 日志结构证据；两个 168-byte codec/fragment/sequence/storage/replay 测试通过；sensor 实际采样率与长稳待真机 | M2 sensor/NUS 与 FFF1/FFF2 的 30 min receiving 门禁 |
+| `M2` | Phase 2 | BLE 权限、扫描、GATT、订阅、freshness、诊断与 device→wire mode | NUS/FFF0 registry；`CUP*` 按 service 选 transport，精确 `Nordic_UART_Service` 选 NUS + sensor mode；mode 贯穿 preview/recording，fake GATT/JVM/build 已验证 | 真机确认广播身份、采样率、RX/FFF2 控制、reconnect 与 runtime matrix |
 | `M3` | Phase 3 | raw-first writer、CSV/session、开始前 gate、幂等 finalizer、accepted raw stream controller、connectedDevice FGS seam、session catalog/checkpoint、safe-prefix recovery、export seam、async live-analysis seam | writer/session/controller/manifest/service/repository/recovery/export/analysis 已实现并经 JVM/build 验证；系统后台/重建行为、用户正式页面仍未验收 | formal capture/sessions UI、lifecycle binding、metrics CSV policy |
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
@@ -96,6 +98,7 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 验证与真机策略
 
+- 2026-08-05 M1/M2 sensor 兼容轮只读审计新 nRF 日志：97 notifications、长度全部 168、header/tail 97/97、UInt32 sequence 0…96 连续；文件 SHA-256 `771ce1a7f39062ad4b0db450a14768afaeb584236215097be8b1b368cdefd28f`，未修改/未提交。定向 sensor protocol/BLE/capture/CSV tests 通过；完整 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 1m 12s`、130 tasks、148 JVM tests/0 failures/errors/skips，lint 0 errors/9 dependency warnings，debug/release/androidTest、R8 与 REL contracts 通过。真机未执行；用户 `app/release/` 测试前备份、测试后 `diff -qr` 无差异。
 - 2026-08-04 M1 auxiliary 修复轮对 `testdevice1.zip` 做只读二进制审计与 production inspection，确认 212 data + 60 auxiliary、4240 samples、0 sequence anomaly/invalid/discard/finding；随后完整运行 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 4s`、130 tasks、141 JVM tests/0 failures/errors/skips，debug lint、debug/release/androidTest APK、R8/lifecycle/BLE/privacy contracts 通过。源 ZIP SHA-256 保持 `1b9ba2bfee58191abcadfe03056a80b53b36bc9a00cb6558dbe833dc0700f1bf`。
 - 2026-08-04 M1 协议轮使用 Android Studio JBR 完成定向 protocol/replay/session/offline 回归及 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 20s`、130 tasks；138 JVM tests/0 failures/0 errors/skips，debug lint、debug/release/androidTest APK、R8、BLE/lifecycle/privacy contracts 通过。真机未执行，FFF1 原始通知、FFF2 命令和实际 100 Hz 仍是 D-001 门禁。
 - 2026-08-03 M2 FFF0 兼容轮使用 Android Studio JBR 完成 BLE 定向测试与 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`，`BUILD SUCCESSFUL in 1m 14s`；133 JVM tests/0 failures/0 errors/skips、debug lint 0 errors/9 个依赖版本 warning、debug/release/androidTest APK 和 REL-002/003/004/005/006/007 静态契约通过。真机未执行，FFF1 数据与 FFF2 命令仍是 D-001 门禁。
@@ -109,6 +112,6 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 当前开放阻塞
 
-`D-001` 真实 CUP 协议/固件抓包；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。代码/运行时/发布余项详见 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)。
+`D-001` 各设备固件、sensor 稳定身份/真实采样率、控制与长稳；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。代码/运行时/发布余项详见 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)。
 
 详细事实记录见 [`DEVELOPMENT_STATUS_DETAILED.md`](DEVELOPMENT_STATUS_DETAILED.md)。

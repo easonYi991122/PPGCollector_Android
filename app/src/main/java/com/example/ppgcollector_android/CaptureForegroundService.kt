@@ -13,7 +13,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.ppgcollector_android.core.ble.BleCoordinator
-import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.data.session.CaptureDeviceContext
 import com.example.ppgcollector_android.data.session.CaptureRecordingController
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
@@ -176,7 +175,8 @@ class CaptureForegroundService : Service() {
         }
 
         val profile = snapshot.activeProfile
-        if (profile == null) {
+        val streamProtocolMode = snapshot.activeStreamProtocolMode
+        if (profile == null || streamProtocolMode == null) {
             stopRecording(CaptureStopReason.PROTOCOL_ERROR)
             return
         }
@@ -190,7 +190,7 @@ class CaptureForegroundService : Service() {
                 softVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
                 algorithmVersion = "unavailable",
                 preprocessProfile = "ios-baseline-0.1",
-                protocolProfile = CupBatchProtocolV1.profileIdentifier,
+                protocolProfile = streamProtocolMode.configuredProfileIdentifier,
                 transportProfile = profile.identifier,
                 device = CaptureDeviceContext(
                     name = deviceName,

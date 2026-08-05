@@ -324,7 +324,7 @@ class CaptureSessionInspectionTest {
         sessionId = "session",
         sampleIndex = index.toLong(),
         hostFrameTimeNanoseconds = 1_000u,
-        frameSequence = frame[5].toUByte(),
+        frameSequence = frame[5].toUByte().toUInt(),
         sampleInFrame = index,
         red = (100_000 + index).toUInt(),
         ir = (120_000 + index).toUInt(),

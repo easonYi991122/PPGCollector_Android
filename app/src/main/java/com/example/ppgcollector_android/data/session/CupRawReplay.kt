@@ -5,15 +5,17 @@ import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.nio.file.Path
 
 data class CupReplaySample(
     val sampleIndex: Long,
     val hostMonotonicNanoseconds: ULong,
-    val frameSequence: UByte,
+    val frameSequence: UInt,
     val sampleInFrame: Int,
     val samplesPerFrame: Int,
     val sample: CupPpgSample,
+    val missingFramesBefore: Int = 0,
 )
 
 data class CupRawReplayReport(
@@ -62,22 +64,29 @@ data class CupRawReplayReport(
 object CupRawReplayEngine {
     const val recentSampleCapacity = 800
 
-    fun replay(path: Path): CupRawReplayReport = replay(path) {}
+    fun replay(
+        path: Path,
+        protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+    ): CupRawReplayReport = replay(path, protocolMode) {}
 
     /** Streams every accepted sample while retaining the same bounded replay report. */
     fun replay(
         path: Path,
+        protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
         onAcceptedSample: (CupReplaySample) -> Unit,
     ): CupRawReplayReport {
-        val accumulator = ReplayAccumulator(onAcceptedSample)
+        val accumulator = ReplayAccumulator(protocolMode, onAcceptedSample)
         val summary = CupRawReader.scan(path) { record ->
             accumulator.receive(record)
         }
         return accumulator.report(summary)
     }
 
-    fun replay(bytes: ByteArray): CupRawReplayReport {
-        val accumulator = ReplayAccumulator()
+    fun replay(
+        bytes: ByteArray,
+        protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+    ): CupRawReplayReport {
+        val accumulator = ReplayAccumulator(protocolMode)
         val summary = CupRawReader.scan(bytes) { record ->
             accumulator.receive(record)
         }
@@ -85,9 +94,10 @@ object CupRawReplayEngine {
     }
 
     private class ReplayAccumulator(
+        protocolMode: CupStreamProtocolMode,
         private val onAcceptedSample: (CupReplaySample) -> Unit = {},
     ) {
-        private val decoder = CupBatchStreamDecoder()
+        private val decoder = CupBatchStreamDecoder(protocolMode = protocolMode)
         private val sequenceTracker = CupFrameSequenceTracker()
         private val recentSamples = ArrayDeque<CupReplaySample>(recentSampleCapacity)
         private var rawPayloadBytes = 0L
@@ -109,17 +119,22 @@ object CupRawReplayEngine {
                 hasDecodedFrame = true
             }
             frames.forEach { frame ->
-                when (sequenceTracker.observe(frame.sequence, frame.samples.size)) {
+                when (val event = sequenceTracker.observe(frame)) {
                     CupSequenceEvent.Duplicate,
                     CupSequenceEvent.OutOfOrder -> Unit
                     CupSequenceEvent.First,
-                    CupSequenceEvent.Continuous,
-                    is CupSequenceEvent.Gap -> acceptFrame(frame, record)
+                    CupSequenceEvent.Continuous -> acceptFrame(frame, record)
+                    is CupSequenceEvent.Gap ->
+                        acceptFrame(frame, record, event.missingFrames)
                 }
             }
         }
 
-        private fun acceptFrame(frame: CupBatchFrame, record: CupRawRecord) {
+        private fun acceptFrame(
+            frame: CupBatchFrame,
+            record: CupRawRecord,
+            missingFramesBefore: Int = 0,
+        ) {
             acceptedFrames += 1
             if (firstFrameHostNanoseconds == null) {
                 firstFrameHostNanoseconds = record.hostMonotonicNanoseconds
@@ -129,10 +144,11 @@ object CupRawReplayEngine {
                 val replaySample = CupReplaySample(
                     sampleIndex = acceptedSamples,
                     hostMonotonicNanoseconds = record.hostMonotonicNanoseconds,
-                    frameSequence = frame.sequence,
+                    frameSequence = frame.sequenceNumber,
                     sampleInFrame = sampleInFrame,
                     samplesPerFrame = frame.samples.size,
                     sample = sample,
+                    missingFramesBefore = if (sampleInFrame == 0) missingFramesBefore else 0,
                 )
                 if (recentSamples.size == recentSampleCapacity) {
                     recentSamples.removeFirst()

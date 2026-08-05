@@ -6,6 +6,7 @@ import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
@@ -77,6 +78,7 @@ class CaptureRecordingController(
         val generation: Long,
         val hostMonotonicNanoseconds: ULong,
         val bytes: ByteArray,
+        val streamProtocolMode: CupStreamProtocolMode,
     )
 
     private val lock = Any()
@@ -84,6 +86,7 @@ class CaptureRecordingController(
     private val analysisQueue = ArrayBlockingQueue<AnalysisInput>(queueCapacity)
     private var writer: CaptureSessionWriter? = null
     private var activeGeneration: Long? = null
+    private var activeStreamProtocolMode: CupStreamProtocolMode? = null
     private var stopReason: CaptureStopReason? = null
     private var stopRequested = false
     private var queueOverflowCount = 0L
@@ -140,6 +143,8 @@ class CaptureRecordingController(
             return try {
                 writer = writerFactory(configuration, sessionsRoot, capacityProvider)
                 activeGeneration = connectionGeneration
+                activeStreamProtocolMode =
+                    CupStreamProtocolMode.fromProtocolProfileIdentifier(configuration.protocolProfile)
                 stopReason = null
                 stopRequested = false
                 queue.clear()
@@ -172,11 +177,20 @@ class CaptureRecordingController(
         synchronized(lock) {
             if (writer == null || snapshotValue.state != CaptureRecordingState.RECORDING) return false
             if (chunk.connectionGeneration != activeGeneration) return false
+            if (chunk.streamProtocolMode != activeStreamProtocolMode) {
+                requestStopLocked(
+                    CaptureStopReason.PROTOCOL_ERROR,
+                    "raw chunk protocol mode changed within one recording",
+                )
+                publish(CaptureRecordingState.STOPPING)
+                return false
+            }
             if (!queue.offer(
                     QueuedChunk(
                         chunk.connectionGeneration,
                         chunk.hostMonotonicNanos.toULong(),
                         copied.bytes,
+                        copied.streamProtocolMode,
                     ),
                 )
             ) {
@@ -245,13 +259,19 @@ class CaptureRecordingController(
 
     private fun workerLoop() {
         workerStartGate?.await()
-        val decoder = CupBatchStreamDecoder()
+        val protocolMode = synchronized(lock) {
+            activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE
+        }
+        val decoder = CupBatchStreamDecoder(protocolMode = protocolMode)
         val sequenceTracker = CupFrameSequenceTracker()
         var acceptedSampleIndex = 0L
         try {
             while (true) {
                 val item = queue.poll(100, TimeUnit.MILLISECONDS)
                 if (item != null) {
+                    check(item.streamProtocolMode == protocolMode) {
+                        "queued raw chunk protocol mode changed within one recording"
+                    }
                     val acceptedBefore = acceptedSampleIndex
                     var events: List<CupDecodedFrameEvent> = emptyList()
                     writer?.appendRawThenDerive(
@@ -261,7 +281,7 @@ class CaptureRecordingController(
                     ) {
                         // The writer has already acknowledged raw before this lambda runs.
                         events = decoder.feed(item.bytes).map { frame ->
-                            val sequence = sequenceTracker.observe(frame.sequence, frame.samples.size)
+                            val sequence = sequenceTracker.observe(frame)
                             CupDecodedFrameEvent(
                                 frame = frame,
                                 sequenceEvent = sequence,
@@ -377,6 +397,7 @@ class CaptureRecordingController(
                 .getOrNull()
             writer = null
             activeGeneration = null
+            activeStreamProtocolMode = null
             publish(if (finalSummary != null) CaptureRecordingState.FINALIZED else CaptureRecordingState.FAILED)
         }
     }
