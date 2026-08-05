@@ -2567,6 +2567,39 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 优先关闭正式 capture algorithm/preprocess version 追踪；若产品要求 CSV 保存实时指标，先明确 point-in-time snapshot 与异步 cadence 的可验证绑定语义，再实现而不是回填历史行。随后按真实设备证据继续 FFF1/FFF2 与 30 分钟 receiving 门禁。
 
+## 2026-08-05 · M6 docs · Make the implementation guide directly discoverable
+
+### 本轮目标
+
+修复用户在 Codex 文件浏览中无法打开实时处理/存储指南的问题，使文档位于工作区根目录并可通过短 ASCII 路径直接定位。
+
+### 需求/参考/Android 目标
+
+- Requirement: Codex 文件浏览可发现、可打开指南。
+- Primary source: 已提交指南和用户实际文件浏览反馈。
+- Android target: 将正文从 `AndroidMigrationPlanning/docs/09_REALTIME_PROCESSING_AND_DATA_STORAGE_GUIDE.md` 迁移为根目录 `REALTIME_AND_STORAGE.md`，同步入口与相对链接。
+- Non-goals: 不修改指南技术结论，不修改 app/runtime/schema/算法或用户数据。
+
+### 实现事实
+
+- 原文件经检查为 Git tracked、`0644`、UTF-8、34,146 bytes/427 lines，工具可完整读取，未发现内容损坏；因此优先按 Codex 文件浏览的路径发现/解析兼容性处理。
+- 正文迁移到仓库根目录的 `REALTIME_AND_STORAGE.md`，避免较深目录和长文件名；文档内所有 `../../app/...` 链接重写为根目录下的 `app/...`。
+- agent brief 与简版状态入口同步到新路径，仓库只保留一个正文真源，不复制两份会漂移的指南。
+
+### 验证
+
+- 新文件为 Git working tree 中的根目录 Markdown；旧路径已移除，不再作为正文入口。
+- 全部相对源码链接存在性检查 → 0 missing；`git diff --check` 与 `git diff --cached --check` → passed；Git 将变更识别为单一文档 rename，用户 `.idea` 和 `app/release/` 未暂存。
+- 本轮为文档可访问性修复，不运行 Gradle；hardware validation 不适用。
+
+### 风险与决策变化
+
+- 没有数据合同或 runtime 行为变化；若 Codex UI 仍显示旧树，需要刷新 workspace，但根目录文件也可通过交付中的绝对链接直接打开。
+
+### 下一轮
+
+继续按 `REALTIME_AND_STORAGE.md` 维护实现索引；技术下一步仍是正式 capture version/profile 和 CSV metric snapshot 绑定策略。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

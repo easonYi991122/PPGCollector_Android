@@ -79,7 +79,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 7. [实施路线与验收](docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md)：阶段、任务和门禁。
 8. [源代码参考索引](docs/05_SOURCE_REFERENCE_INDEX.md)：从需求/模块跳转到参考符号和测试。
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：未决证据和风险，不得在代码中偷偷作决定。
-10. [实时数据处理与数据存储实现指南](docs/09_REALTIME_PROCESSING_AND_DATA_STORAGE_GUIDE.md)：当前 Android production 调用链、文件格式、函数索引与修改边界。
+10. [实时数据处理与数据存储实现指南](../REALTIME_AND_STORAGE.md)：当前 Android production 调用链、文件格式、函数索引与修改边界。
 
 ## 4. 证据优先级与冲突处理
 

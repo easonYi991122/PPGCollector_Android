@@ -51,7 +51,7 @@ flowchart LR
 
 ### 2.1 BLE transport 与 notification 接入
 
-BLE profile 定义在 [`BleModels.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BleModels.kt) 的 `CupBleDeviceProfile`：
+BLE profile 定义在 [`BleModels.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleModels.kt) 的 `CupBleDeviceProfile`：
 
 | Profile | Service | Notify | Control | 当前策略 |
 |---|---|---|---|---|
@@ -60,20 +60,20 @@ BLE profile 定义在 [`BleModels.kt`](../../app/src/main/java/com/example/ppgco
 
 `CupBleGattStateMachine.handleServices()` 根据设备实际发现的 service UUID 精确选择 profile；`handleCharacteristics()` 检查 notify 特征及 notify/indicate 能力；`handleValue()` 仅在当前设备、当前 connection generation、已订阅/接收 phase 且 notification 非空时创建 `BleRawNotificationChunk`。
 
-平台回调由 [`AndroidBleTransport.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt) 的两个 `onCharacteristicChanged()` 重载接收，并统一进入 `emitCharacteristicValue()`：
+平台回调由 [`AndroidBleTransport.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt) 的两个 `onCharacteristicChanged()` 重载接收，并统一进入 `emitCharacteristicValue()`：
 
 - 立即复制 `ByteArray`，避免平台对象后续复用或修改；
 - 同时记录 `SystemClock.elapsedRealtimeNanos()` 对应的 monotonic timestamp；
 - 再投递成 `BleTransportEvent.ValueReceived`，交由单一有序 owner 处理。
 
-[`BleCoordinator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt) 的 `dispatchRawChunk()` 把每个合法 notification 同时送往：
+[`BleCoordinator.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt) 的 `dispatchRawChunk()` 把每个合法 notification 同时送往：
 
 - `BlePreviewRuntime.offer()`：始终存在的实时预览；
 - `recordingRawSink`：只有前台录制启动后才安装的录制入口。
 
 ### 2.2 CUP 流式协议解析
 
-协议常量与单帧解析位于 [`CupBatchProtocol.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt)：
+协议常量与单帧解析位于 [`CupBatchProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt)：
 
 | 偏移 | 长度 | 当前 168-byte PPG 帧 |
 |---:|---:|---|
@@ -92,7 +92,7 @@ BLE profile 定义在 [`BleModels.kt`](../../app/src/main/java/com/example/ppgco
 - `encodeCupBatchFrame()`：只生成当前 168-byte 帧，用于 fixture/test；
 - `CupBatchFrame.protocolProfileIdentifier`：按 20/50 samples 标记当前/legacy profile。
 
-[`CupBatchStreamDecoder.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) 的 `CupBatchStreamDecoder.feed()` 面向任意 notification 边界增量处理：
+[`CupBatchStreamDecoder.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) 的 `CupBatchStreamDecoder.feed()` 面向任意 notification 边界增量处理：
 
 - 支持一帧被拆到多个 notification、一个 notification 含多帧、帧间噪声与 header 重同步；
 - 缓冲上限默认为最大帧长的 2 倍，避免无限增长；
@@ -102,7 +102,7 @@ BLE profile 定义在 [`BleModels.kt`](../../app/src/main/java/com/example/ppgco
 
 ### 2.3 Sequence gate 与 accepted sample 时间轴
 
-[`CupFrameSequenceTracker.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) 的 `observe()` 使用 UInt8 环形差值 `(current - previous) & 0xFF`：
+[`CupFrameSequenceTracker.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) 的 `observe()` 使用 UInt8 环形差值 `(current - previous) & 0xFF`：
 
 | 事件 | 判定 | 是否接受 PPG 样本 | 后续动作 |
 |---|---|---:|---|
@@ -112,13 +112,13 @@ BLE profile 定义在 [`BleModels.kt`](../../app/src/main/java/com/example/ppgco
 | `Duplicate` | delta = 0 | 否 | 只累计诊断，不推进 sample index |
 | `OutOfOrder` | delta ≥ 128 | 否 | 只累计诊断，不修改 previous |
 
-decoder 输出的 `CupBatchFrame` 会包装成 [`CupDecodedFrameEvent.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupDecodedFrameEvent.kt) 中的 `CupDecodedFrameEvent`，`isAccepted` 是 preview、CSV、重放和离线分析共同遵循的入口门槛。
+decoder 输出的 `CupBatchFrame` 会包装成 [`CupDecodedFrameEvent.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupDecodedFrameEvent.kt) 中的 `CupDecodedFrameEvent`，`isAccepted` 是 preview、CSV、重放和离线分析共同遵循的入口门槛。
 
 accepted `sample_index` 是从 0 开始的连续计数，不为缺失样本补空行或插值；`device_time_s = sample_index / 100`。离线完整信号分析会另外利用 sequence gap 建立 discontinuity/break，以避免 zero-phase 或窗口跨 gap。
 
 ### 2.4 单一实时信号 runtime
 
-production preview 与 recording analysis 各自持有一个 [`LivePpgSignalRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntime.kt) 的 `LivePpgSignalRuntime`。每个 runtime 内部只有一组逐样本预处理状态，并从同一 bounded ring 同时生成波形与指标请求。
+production preview 与 recording analysis 各自持有一个 [`LivePpgSignalRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntime.kt) 的 `LivePpgSignalRuntime`。每个 runtime 内部只有一组逐样本预处理状态，并从同一 bounded ring 同时生成波形与指标请求。
 
 `LivePpgSignalRuntime.ingest()` 的处理顺序为：
 
@@ -141,7 +141,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 
 ### 2.5 实时预处理
 
-预处理实现在 [`PpgPreprocessing.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/PpgPreprocessing.kt)：
+预处理实现在 [`PpgPreprocessing.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/PpgPreprocessing.kt)：
 
 - `PpgPreprocessingProfile.iosBaseline01`：100 Hz，profile id `ios_baseline_0.1`；
 - `PpgPreprocessor.process()`：0.5 s DC tracker 去基线，然后执行固定的 3 阶、3 个 SOS causal Butterworth 0.6–4 Hz bandpass；
@@ -152,7 +152,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 
 ### 2.6 实时指标
 
-[`LiveMetricRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricRuntime.kt) 的 `LiveMetricAnalyzer.analyze()` 接收一个不可变 800 点请求，并输出 `LiveMetricAnalysisResult`：
+[`LiveMetricRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricRuntime.kt) 的 `LiveMetricAnalyzer.analyze()` 接收一个不可变 800 点请求，并输出 `LiveMetricAnalysisResult`：
 
 | 指标 | 输入与函数 | 当前语义 |
 |---|---|---|
@@ -164,10 +164,10 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 
 相关文件：
 
-- [`HeartRateEstimator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/HeartRateEstimator.kt)
-- [`TemplateMatchSqi.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/TemplateMatchSqi.kt)
-- [`RatioOfRatiosEstimator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt)
-- [`LiveMetricModels.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricModels.kt)
+- [`HeartRateEstimator.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/HeartRateEstimator.kt)
+- [`TemplateMatchSqi.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/TemplateMatchSqi.kt)
+- [`RatioOfRatiosEstimator.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt)
+- [`LiveMetricModels.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricModels.kt)
 
 每个 `MetricResult` 都携带 `value/isValid/isProvisional/unavailableReason/measuredAt/sourceSampleIndex/sourceTimeSeconds/algorithmVersion/calibrationId`，UI 不应在 stale、gap、warm-up 或计算失败后继续展示旧数值。
 
@@ -184,11 +184,11 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 
 ### 2.8 实时状态如何到达 UI
 
-- [`BlePreviewRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BlePreviewRuntime.kt) 发布 `StateFlow<BlePreviewSnapshot>`；
-- [`CaptureRecordingController.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) 发布 recording、analysis、waveform 三组 `StateFlow`；
-- [`CaptureForegroundService.kt`](../../app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) 在长录制期间持有 controller，并通过 binder 暴露 flows；
-- [`CaptureServiceViewModel.kt`](../../app/src/main/java/com/example/ppgcollector_android/CaptureServiceViewModel.kt) 的 `CaptureServiceClient.observeRecording()`、`observeAnalysis()`、`observeWaveform()` 绑定 service flow，`CaptureViewModel.previewState` 直接观察 app-scope preview；
-- [`MainActivity.kt`](../../app/src/main/java/com/example/ppgcollector_android/MainActivity.kt) 使用 `collectAsStateWithLifecycle()` 收集状态。
+- [`BlePreviewRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BlePreviewRuntime.kt) 发布 `StateFlow<BlePreviewSnapshot>`；
+- [`CaptureRecordingController.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) 发布 recording、analysis、waveform 三组 `StateFlow`；
+- [`CaptureForegroundService.kt`](app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) 在长录制期间持有 controller，并通过 binder 暴露 flows；
+- [`CaptureServiceViewModel.kt`](app/src/main/java/com/example/ppgcollector_android/CaptureServiceViewModel.kt) 的 `CaptureServiceClient.observeRecording()`、`observeAnalysis()`、`observeWaveform()` 绑定 service flow，`CaptureViewModel.previewState` 直接观察 app-scope preview；
+- [`MainActivity.kt`](app/src/main/java/com/example/ppgcollector_android/MainActivity.kt) 使用 `collectAsStateWithLifecycle()` 收集状态。
 
 因此 Activity/Compose 是观察者，不拥有 GATT、decoder、滤波器或 writer。
 
@@ -196,7 +196,7 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 
 ### 3.1 存储位置与会话目录
 
-[`PpgCollectorApplication.kt`](../../app/src/main/java/com/example/ppgcollector_android/PpgCollectorApplication.kt) 定义：
+[`PpgCollectorApplication.kt`](app/src/main/java/com/example/ppgcollector_android/PpgCollectorApplication.kt) 定义：
 
 ```text
 <app filesDir>/sessions/
@@ -212,11 +212,11 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 
 开始录制前和 writer 创建时都会检查可用空间；当前静态最低门槛为 20 MiB。该值只是拒绝明显低空间的保护，不是 2 小时录制容量承诺，项目尚未实现按预计时长/notification bitrate 的动态预算。
 
-[`CaptureSessionRepository.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) 直接扫描文件系统列出会话；没有数据库真源。`expectedFiles()` 根据目录名确定三个主文件。
+[`CaptureSessionRepository.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) 直接扫描文件系统列出会话；没有数据库真源。`expectedFiles()` 根据目录名确定三个主文件。
 
 ### 3.2 `CUPRAW1` 原始文件
 
-格式由 [`CupRawFile.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CupRawFile.kt) 的 `CupRawFormat`、`CupRawWriter` 和 `CupRawReader` 实现。
+格式由 [`CupRawFile.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CupRawFile.kt) 的 `CupRawFormat`、`CupRawWriter` 和 `CupRawReader` 实现。
 
 #### 文件头
 
@@ -242,7 +242,7 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 
 ### 3.3 Raw-first 写入顺序
 
-[`CaptureRecordingController.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) 与 [`CaptureSessionWriter.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionWriter.kt) 共同保证：
+[`CaptureRecordingController.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) 与 [`CaptureSessionWriter.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionWriter.kt) 共同保证：
 
 ```text
 copy/enqueue notification
@@ -262,7 +262,7 @@ append CSV rows
 
 ### 3.4 25 列 CSV
 
-CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureCsv.kt)。编码为 UTF-8、逗号分隔、`\n` 行尾、RFC 4180 风格引号转义、浮点使用 `Locale.ROOT` 固定 6 位小数。
+CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureCsv.kt)。编码为 UTF-8、逗号分隔、`\n` 行尾、RFC 4180 风格引号转义、浮点使用 `Locale.ROOT` 固定 6 位小数。
 
 固定列顺序：
 
@@ -287,7 +287,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 
 ### 3.5 Session metadata JSON
 
-[`CaptureSessionMetadata.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) 定义 `CaptureSessionMetadata` 与 `CaptureSessionMetadataCodec`。JSON 为 UTF-8、snake_case，当前 schema 为 `ppgcollector_session_v1`，主要字段分组如下：
+[`CaptureSessionMetadata.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) 定义 `CaptureSessionMetadata` 与 `CaptureSessionMetadataCodec`。JSON 为 UTF-8、snake_case，当前 schema 为 `ppgcollector_session_v1`，主要字段分组如下：
 
 | 分组 | 字段 |
 |---|---|
@@ -308,11 +308,11 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 - `complete=true` 只表示 writer 有序结束，不等价于 raw/CSV/metadata 已通过一致性复核；
 - live writer 当前把 metadata 的 `invalid_frames/discarded_bytes` 写为 0，结构真相应以 raw replay/inspection 为准。
 
-当前 production service 在 [`CaptureForegroundService.kt`](../../app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) 的 `startRecording()` 中固化版本。已知未关闭项是 `algorithmVersion="unavailable"`，且 service 写入的 `preprocessProfile="ios-baseline-0.1"` 与 runtime identifier `ios_baseline_0.1` 命名不一致；在正式版本策略确定前，不应把这两个字段解释为已冻结 production 版本。
+当前 production service 在 [`CaptureForegroundService.kt`](app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) 的 `startRecording()` 中固化版本。已知未关闭项是 `algorithmVersion="unavailable"`，且 service 写入的 `preprocessProfile="ios-baseline-0.1"` 与 runtime identifier `ios_baseline_0.1` 命名不一致；在正式版本策略确定前，不应把这两个字段解释为已冻结 production 版本。
 
 ### 3.6 重放与完整性复核
 
-[`CupRawReplay.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CupRawReplay.kt) 的 `CupRawReplayEngine.replay()`：
+[`CupRawReplay.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CupRawReplay.kt) 的 `CupRawReplayEngine.replay()`：
 
 - 通过 `CupRawReader.scan()` 流式读每个完整 raw record；
 - 复用 production `CupBatchStreamDecoder` 与 `CupFrameSequenceTracker`；
@@ -320,7 +320,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 - 输出 raw records、PPG/auxiliary frames、accepted samples、sequence、invalid/discard、pending decoder bytes、record tail 等计数；
 - 将录制从协议帧中途开始造成的首帧前丢弃字节单列为 `leadingAlignmentBytes`，不把已成功对齐后的数据误报为结构损坏。
 
-[`CaptureSessionInspection.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionInspection.kt) 的 `CaptureSessionInspectionService.inspect()` 只读核对：
+[`CaptureSessionInspection.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionInspection.kt) 的 `CaptureSessionInspectionService.inspect()` 只读核对：
 
 - raw 是否可读、是否有 record 截尾、重放结构是否干净；
 - CSV header、完整换行行数和截断尾行；
@@ -331,7 +331,7 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 
 ### 3.7 Safe-prefix 恢复
 
-[`CaptureSessionRecoveryService.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryService.kt) 的 `assess()` 与 `recover()` 遵循只读源目录策略：
+[`CaptureSessionRecoveryService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryService.kt) 的 `assess()` 与 `recover()` 遵循只读源目录策略：
 
 1. 扫描 raw 最后完整 record 与 CSV 最后完整换行；
 2. 计算源文件 SHA-256；
@@ -344,14 +344,14 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 
 ### 3.8 导出与分享
 
-- [`CaptureSessionExportService.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) 的 `exportZip()` 流式打包 raw、CSV、session JSON，支持进度和取消；目标文件使用临时文件后 no-overwrite move。
-- [`CaptureAndroidExport.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) 的 `CaptureSafExportService.export()` 写入用户选择的 SAF Uri；`CaptureFileProviderExportService.createShare()` 在 cache 生成 ZIP 并通过 `content://` 分享，不暴露内部路径。
+- [`CaptureSessionExportService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) 的 `exportZip()` 流式打包 raw、CSV、session JSON，支持进度和取消；目标文件使用临时文件后 no-overwrite move。
+- [`CaptureAndroidExport.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) 的 `CaptureSafExportService.export()` 写入用户选择的 SAF Uri；`CaptureFileProviderExportService.createShare()` 在 cache 生成 ZIP 并通过 `content://` 分享，不暴露内部路径。
 
 当前 ZIP 只包含三个主会话文件；`analysis/` 历史不在 `CaptureSessionExportService` 的 sources 列表中。
 
 ### 3.9 离线分析结果
 
-[`CaptureSessionOfflineAnalysis.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) 的 `CaptureSessionOfflineAnalysisService.analyzeAndSave()` 只从 raw replay 构造 accepted signal，并把结果写为不可覆盖的独立 JSON：
+[`CaptureSessionOfflineAnalysis.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) 的 `CaptureSessionOfflineAnalysisService.analyzeAndSave()` 只从 raw replay 构造 accepted signal，并把结果写为不可覆盖的独立 JSON：
 
 - schema：`ppgcollector_analysis_v1`；
 - 文件名：`<UTC>_<analysisProfile>_<analysisId>.json`；
@@ -365,39 +365,39 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 
 | 文件 | 主要类/函数 | 职责 |
 |---|---|---|
-| [`BleModels.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BleModels.kt) | `CupBleDeviceProfile`, `supportedBringUpProfiles` | NUS/FFF0 transport profile 注册 |
-| [`AndroidBleTransport.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt) | `onCharacteristicChanged()`, `emitCharacteristicValue()` | Android callback 适配、复制 bytes 和记录 monotonic time |
-| [`BleGattStateMachine.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BleGattStateMachine.kt) | `handleServices()`, `handleCharacteristics()`, `handleValue()`, `markValidFrame()` | profile/phase/generation/freshness 所有权与 raw chunk 入口 |
-| [`BleCoordinator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt) | `dispatchRawChunk()`, `publish()`, `handlePreviewAcceptedFrame()` | 分发 preview/recording，连接边界 reset，accepted frame 回写 freshness |
-| [`BlePreviewRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/ble/BlePreviewRuntime.kt) | `offer()`, `loop()`, `process()`, `reset()` | 有界后台 preview pipeline |
-| [`CupBatchProtocol.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt) | `CupBatchProtocolV1`, `decodeCupBatchFrame()` | wire layout 与单帧解码 |
-| [`CupBatchStreamDecoder.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) | `feed()`, `reset()` | arbitrary-boundary 组帧、辅助帧分类、重同步、布局锁定 |
-| [`CupFrameSequenceTracker.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) | `observe()`, `reset()` | first/continuous/gap/duplicate/out-of-order 判定 |
-| [`LivePpgSignalRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntime.kt) | `ingest()`, `poll()`, `publishNow()`, `invalidateContinuity()` | 单一 raw/causal ring、5 Hz publication、800/100 request |
-| [`PpgPreprocessing.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/PpgPreprocessing.kt) | `PpgPreprocessor.process()`, `reset()`, `PpgWindowNormalizer.normalize()` | causal DC/SOS 与窗口归一化 |
-| [`LiveMetricRuntime.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricRuntime.kt) | `LiveMetricAnalyzer.analyze()` | 汇总 HR/SQI/R 为版本化 metric snapshot |
-| [`HeartRateEstimator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/HeartRateEstimator.kt) | `estimate()`, `acceptedBpm()` | 心率候选、频谱和置信度门控 |
-| [`TemplateMatchSqi.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/TemplateMatchSqi.kt) | `compute()` | template-match SQI |
-| [`RatioOfRatiosEstimator.kt`](../../app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt) | `estimate()` | diagnostic ratio-of-ratios |
+| [`BleModels.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleModels.kt) | `CupBleDeviceProfile`, `supportedBringUpProfiles` | NUS/FFF0 transport profile 注册 |
+| [`AndroidBleTransport.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/AndroidBleTransport.kt) | `onCharacteristicChanged()`, `emitCharacteristicValue()` | Android callback 适配、复制 bytes 和记录 monotonic time |
+| [`BleGattStateMachine.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleGattStateMachine.kt) | `handleServices()`, `handleCharacteristics()`, `handleValue()`, `markValidFrame()` | profile/phase/generation/freshness 所有权与 raw chunk 入口 |
+| [`BleCoordinator.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BleCoordinator.kt) | `dispatchRawChunk()`, `publish()`, `handlePreviewAcceptedFrame()` | 分发 preview/recording，连接边界 reset，accepted frame 回写 freshness |
+| [`BlePreviewRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/ble/BlePreviewRuntime.kt) | `offer()`, `loop()`, `process()`, `reset()` | 有界后台 preview pipeline |
+| [`CupBatchProtocol.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocol.kt) | `CupBatchProtocolV1`, `decodeCupBatchFrame()` | wire layout 与单帧解码 |
+| [`CupBatchStreamDecoder.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupBatchStreamDecoder.kt) | `feed()`, `reset()` | arbitrary-boundary 组帧、辅助帧分类、重同步、布局锁定 |
+| [`CupFrameSequenceTracker.kt`](app/src/main/java/com/example/ppgcollector_android/core/protocol/CupFrameSequenceTracker.kt) | `observe()`, `reset()` | first/continuous/gap/duplicate/out-of-order 判定 |
+| [`LivePpgSignalRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntime.kt) | `ingest()`, `poll()`, `publishNow()`, `invalidateContinuity()` | 单一 raw/causal ring、5 Hz publication、800/100 request |
+| [`PpgPreprocessing.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/PpgPreprocessing.kt) | `PpgPreprocessor.process()`, `reset()`, `PpgWindowNormalizer.normalize()` | causal DC/SOS 与窗口归一化 |
+| [`LiveMetricRuntime.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricRuntime.kt) | `LiveMetricAnalyzer.analyze()` | 汇总 HR/SQI/R 为版本化 metric snapshot |
+| [`HeartRateEstimator.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/HeartRateEstimator.kt) | `estimate()`, `acceptedBpm()` | 心率候选、频谱和置信度门控 |
+| [`TemplateMatchSqi.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/TemplateMatchSqi.kt) | `compute()` | template-match SQI |
+| [`RatioOfRatiosEstimator.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt) | `estimate()` | diagnostic ratio-of-ratios |
 
 ### 4.2 存储主链路
 
 | 文件 | 主要类/函数 | 职责 |
 |---|---|---|
-| [`CaptureForegroundService.kt`](../../app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) | `startRecording()`, `stopRecording()` | FGS owner、配置固化、安装/移除 raw sink、等待 finalization |
-| [`CaptureStartGate.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureStartGate.kt) | `CaptureStartGate.validate()` | 连接/freshness/名称/空间/重复录制 gate |
-| [`CaptureRecordingController.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) | `start()`, `onRawChunk()`, `workerLoop()`, `analysisLoop()`, `stop()`, `finalizeWriter()` | 两个有界 worker、first-stop-reason、单一 finalizer |
-| [`CaptureSessionWriter.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionWriter.kt) | `appendRawThenDerive()`, `checkpointIfDue()`, `finish()`, `writeMetadata()` | raw-first、CSV 派生、1 s checkpoint、原子 metadata |
-| [`CupRawFile.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CupRawFile.kt) | `CupRawWriter.append()/flush()`, `CupRawReader.scan()` | `CUPRAW1` 写入、流式读取与 safe tail |
-| [`CaptureCsv.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureCsv.kt) | `CaptureCsvSchema`, `CaptureCsvFormatter.format()`, `CaptureCsvParser.parseRow()` | 25 列 CSV 合同、转义与校验 |
-| [`CaptureSessionMetadata.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) | `CaptureSessionMetadataCodec.encode()/decode()` | session JSON 数据模型和 bounded codec |
-| [`CupRawReplay.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CupRawReplay.kt) | `CupRawReplayEngine.replay()` | production decoder/sequence 重放与计数 |
-| [`CaptureSessionInspection.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionInspection.kt) | `inspect()`, `scanCsv()` | raw/CSV/metadata 只读完整性复核 |
-| [`CaptureSessionRecoveryService.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryService.kt) | `assess()`, `recover()` | safe-prefix 非覆盖恢复与 provenance |
-| [`CaptureSessionRepository.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) | `listSessions()`, `incompleteSessions()`, `expectedFiles()` | 文件系统会话目录索引 |
-| [`CaptureSessionExportService.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) | `exportZip()` | 流式 ZIP 导出 |
-| [`CaptureAndroidExport.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) | `CaptureSafExportService.export()`, `CaptureFileProviderExportService.createShare()` | SAF 与 `content://` 平台适配 |
-| [`CaptureSessionOfflineAnalysis.kt`](../../app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) | `analyzeAndSave()`, `loadSignalTrace()`, `listArtifacts()` | raw 驱动的不可变版本化分析结果 |
+| [`CaptureForegroundService.kt`](app/src/main/java/com/example/ppgcollector_android/CaptureForegroundService.kt) | `startRecording()`, `stopRecording()` | FGS owner、配置固化、安装/移除 raw sink、等待 finalization |
+| [`CaptureStartGate.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureStartGate.kt) | `CaptureStartGate.validate()` | 连接/freshness/名称/空间/重复录制 gate |
+| [`CaptureRecordingController.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureRecordingController.kt) | `start()`, `onRawChunk()`, `workerLoop()`, `analysisLoop()`, `stop()`, `finalizeWriter()` | 两个有界 worker、first-stop-reason、单一 finalizer |
+| [`CaptureSessionWriter.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionWriter.kt) | `appendRawThenDerive()`, `checkpointIfDue()`, `finish()`, `writeMetadata()` | raw-first、CSV 派生、1 s checkpoint、原子 metadata |
+| [`CupRawFile.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CupRawFile.kt) | `CupRawWriter.append()/flush()`, `CupRawReader.scan()` | `CUPRAW1` 写入、流式读取与 safe tail |
+| [`CaptureCsv.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureCsv.kt) | `CaptureCsvSchema`, `CaptureCsvFormatter.format()`, `CaptureCsvParser.parseRow()` | 25 列 CSV 合同、转义与校验 |
+| [`CaptureSessionMetadata.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) | `CaptureSessionMetadataCodec.encode()/decode()` | session JSON 数据模型和 bounded codec |
+| [`CupRawReplay.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CupRawReplay.kt) | `CupRawReplayEngine.replay()` | production decoder/sequence 重放与计数 |
+| [`CaptureSessionInspection.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionInspection.kt) | `inspect()`, `scanCsv()` | raw/CSV/metadata 只读完整性复核 |
+| [`CaptureSessionRecoveryService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryService.kt) | `assess()`, `recover()` | safe-prefix 非覆盖恢复与 provenance |
+| [`CaptureSessionRepository.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) | `listSessions()`, `incompleteSessions()`, `expectedFiles()` | 文件系统会话目录索引 |
+| [`CaptureSessionExportService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) | `exportZip()` | 流式 ZIP 导出 |
+| [`CaptureAndroidExport.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) | `CaptureSafExportService.export()`, `CaptureFileProviderExportService.createShare()` | SAF 与 `content://` 平台适配 |
+| [`CaptureSessionOfflineAnalysis.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) | `analyzeAndSave()`, `loadSignalTrace()`, `listArtifacts()` | raw 驱动的不可变版本化分析结果 |
 
 ## 5. 修改代码时的落点与不可破坏边界
 
@@ -414,14 +414,14 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](../../app/src/main/ja
 
 现有自动证据主要位于：
 
-- [`CupBatchProtocolTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocolTest.kt)
-- [`LivePpgSignalRuntimeTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntimeTest.kt)
-- [`CaptureRecordingControllerTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CaptureRecordingControllerTest.kt)
-- [`CaptureSessionWriterTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionWriterTest.kt)
-- [`CupRawFileTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CupRawFileTest.kt)
-- [`CaptureCsvTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CaptureCsvTest.kt)
-- [`CaptureSessionInspectionTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionInspectionTest.kt)
-- [`CaptureSessionRecoveryServiceTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryServiceTest.kt)
-- [`LongDurationDataPathTest.kt`](../../app/src/test/java/com/example/ppgcollector_android/data/session/LongDurationDataPathTest.kt)
+- [`CupBatchProtocolTest.kt`](app/src/test/java/com/example/ppgcollector_android/core/protocol/CupBatchProtocolTest.kt)
+- [`LivePpgSignalRuntimeTest.kt`](app/src/test/java/com/example/ppgcollector_android/core/signal/LivePpgSignalRuntimeTest.kt)
+- [`CaptureRecordingControllerTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureRecordingControllerTest.kt)
+- [`CaptureSessionWriterTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionWriterTest.kt)
+- [`CupRawFileTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CupRawFileTest.kt)
+- [`CaptureCsvTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureCsvTest.kt)
+- [`CaptureSessionInspectionTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionInspectionTest.kt)
+- [`CaptureSessionRecoveryServiceTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryServiceTest.kt)
+- [`LongDurationDataPathTest.kt`](app/src/test/java/com/example/ppgcollector_android/data/session/LongDurationDataPathTest.kt)
 
 真机仍需验证 FFF1 characteristic properties、auxiliary payload 语义、FFF2 是否需要控制命令、真实分片/MTU、30 分钟 receiving、2 小时录制以及锁屏/后台/重连行为；这些待验收项不改变本文记录的当前代码调用关系。
