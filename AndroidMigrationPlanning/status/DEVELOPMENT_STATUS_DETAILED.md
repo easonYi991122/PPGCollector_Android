@@ -2530,6 +2530,43 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 向硬件方取得 functions `02/06/0C/0F` 的 3-byte payload 定义、FFF1 characteristic properties 和 FFF2 START/STOP 契约；再执行至少 30 分钟 receiving/重连，确认 data/auxiliary 分布、sequence、实际采样率和 queue/write counters。
 
+## 2026-08-05 · M6 docs · Document realtime processing and storage implementation
+
+### 本轮目标
+
+为当前 Android 工程提供一份可长期维护的中文实现指南，准确回答实时数据如何从 BLE notification 到达波形/指标，以及录制数据如何 raw-first 落盘、派生、复核、恢复和导出，并给出对应 Kotlin 文件、类和函数。
+
+### 需求/参考/Android 目标
+
+- Requirement: 实时处理调用链、数据存储方案/格式和代码索引；沿用 `PROTO-001～004`、`SIG-001～006`、`CAP-001～011` 的已实现合同。
+- Primary source: 当前 production Kotlin 源码、`docs/03` 架构/数据合同、`docs/07` 实时 causal 规划/实施结果、ADR-0003/0004 及 `docs/08` 剩余审计。
+- Android target: 新增 `docs/09_REALTIME_PROCESSING_AND_DATA_STORAGE_GUIDE.md`，并加入 agent 阅读入口。
+- Non-goals: 不修改 BLE、协议、滤波、指标、FGS、raw/CSV/session/analysis schema 或用户会话数据；不把未执行的真机门禁描述为已通过。
+
+### 实现事实
+
+- 新指南以端到端 Mermaid 流程说明 notification 在 `BleCoordinator.dispatchRawChunk()` 后分为 preview 与 recording 两个独立有界队列，并逐层映射 GATT callback、profile/generation gate、168-byte/auxiliary stream decode、sequence acceptance、`LivePpgSignalRuntime`、5 Hz waveform 和 800/100 HR/SQI/R。
+- 存储部分逐字节记录 `CUPRAW1\0 + <u64 LE hostNs><u32 LE length><payload>`、64 KiB 防御上限、notification boundary、raw-first 顺序、1 s checkpoint、25 列 CSV 字段/空值、session JSON 分组与 atomic metadata、streaming replay/inspection、safe-prefix recovery、SAF/FileProvider export 和 immutable analysis JSON。
+- 文档明确区分当前事实与目标合同：录制 worker 目前未把异步 analysis snapshot 传给 CSV writer；metadata `complete` 不是完整性验证；live metadata 的 invalid/discarded 仍写 0 而 inspection 从 raw 重算；20 MiB 是静态最低门槛；`algorithmVersion=unavailable` 和 preprocess profile 连字符/下划线不一致仍待 D-007 关闭。
+- `00_AGENT_MIGRATION_BRIEF.md` 的文档入口新增本指南，后续 agent 可先从实现索引定位 production 符号，再回到需求/ADR 判断变更边界。
+
+### 验证
+
+- `git diff --check` → passed。
+- 对指南内全部 `../../app/...` 相对链接执行存在性检查 → 0 missing。
+- 使用 `rg` 交叉检查文档引用的核心类/函数，包括 transport、Gatt state machine、decoder、sequence、signal runtime、writer、inspection、recovery、export 和 analysis symbols → 均存在于当前源码。
+- 本轮为 Markdown/status-only 变更，不运行 Gradle；既有 141 JVM/build/privacy 证据未冒充本轮 fresh test。
+- Hardware validation: pending；本轮未运行 emulator/真机，FFF1 properties、auxiliary payload、FFF2、30 min receiving 和 2 h runtime 门禁保持开放。
+
+### 风险与决策变化
+
+- 没有 schema/profile/algorithm/runtime 行为变化。
+- 指南暴露的 CSV async metric wiring、capture version/profile 命名和动态容量预算属于既有缺口，后续修复必须单独立项、测试并按需要升级版本，不能通过修改文档掩盖。
+
+### 下一轮
+
+优先关闭正式 capture algorithm/preprocess version 追踪；若产品要求 CSV 保存实时指标，先明确 point-in-time snapshot 与异步 cadence 的可验证绑定语义，再实现而不是回填历史行。随后按真实设备证据继续 FFF1/FFF2 与 30 分钟 receiving 门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text
