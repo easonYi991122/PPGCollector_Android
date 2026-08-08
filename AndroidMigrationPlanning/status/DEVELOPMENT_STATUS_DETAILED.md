@@ -2643,6 +2643,44 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 在新设备上执行 exact-name scan→NUS service/TX CCCD→首帧 fresh→录制→保存→inspection 的真机验收，并至少运行 30 分钟 receiving/reconnect；同步采集固件/型号、稳定身份字段、实际采样率、MTU/分片和 RX 控制要求。随后继续正式 capture version/profile 与动态 FGS health 工作。
 
+## 2026-08-08 · M7.0 docs · Plan capture traceability and subject archives
+
+### 本轮目标
+
+审计当前 M1～M6 Android 实现和迁移文档，把用户提出的 RAW 显示反相、PI/指标时间轴、手工参考血压、自由命名/被试信息、subject 档案/批量导出、0.5～12 Hz 实时滤波和最终 UI 优化，收敛为不超过五轮、每轮一次综合校验的可执行开发计划。
+
+### 需求/参考/Android 目标
+
+- Requirement: `M7-DSP-001/002`、`M7-MET-001/002`、`M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`、`M7-ARC-001`、`M7-EXP-001`、`M7-UI-001`。
+- Primary source: 用户 2026-08-08 增量需求；当前 production Kotlin；`00_AGENT_MIGRATION_BRIEF`、双层 status、`docs/01～08`、`docs/05_SOURCE_REFERENCE_INDEX`、根目录 `REALTIME_AND_STORAGE.md`；相关只读 Swift name/live metric/ratio/waveform 参考。
+- Android target: 新增 `docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`，同步 brief/README/status，并为 `docs/07/08` 增加适用性提示。
+- Non-goals: 不实现 M7 runtime/schema/UI；不修改 `reference_sources`；不改 raw、25 列 CSV、算法或用户会话；不运行 Gradle/emulator/真机；不把手工参考 BP 宣称为计算 BP。
+
+### 实现事实
+
+- 代码审计确认 `LivePpgSignalRuntime` 已有 800/100 PPG source timeline，`RatioOfRatiosEstimator` 已同时产出 RED/IR AC/DC，`CaptureSessionWriter` 仍写原 ADC 25 列 CSV，录制 analysis 尚未可靠输出 1 Hz 指标时序；repository/export/recovery 仍按三文件，会话页仍逐条平铺。
+- M7.0 计划冻结“RAW 仅在 presentation 取负”，建议 PI 复用同一次 RED AC/DC；用独立 `metrics.csv`/`blood-pressure.csv` sidecar 避免破坏样本 CSV；manual BP 以 dialog-open 的 session/generation/sample/time token 对齐。
+- 命名合同允许自由 ASCII 名，同时以严格 `PPG-{subject}-{seq}` parser 建议下一 seq；subject 资料使用 atomic revision repository + session participant snapshot，旧会话不批量迁移。
+- 滤波方案明确真正 zero-phase 不可无延迟实时；推荐约 1 秒延迟的 bounded 0.5～12 Hz fixed-lag forward/backward block，并用 versioned SciPy fixture、相关/NRMSE/峰时/PI 偏差决定准入，旧 0.6～4 Hz profile 保留回退。
+- 五轮顺序为 M7.1 数据合同，M7.2 DSP/PI/统一指标，M7.3 命名/资料/BP 交互，M7.4 档案/批量导出，M7.5 最终 UI/IME/集成收尾；每轮只安排一次完整 Gradle gate。
+- `docs/07` 已标为 M6 filter 历史基线，`docs/08` 已标为 2026-08-02 剩余审计快照；brief/README/简版 status 入口已指向 `docs/09`。既有 ADR、fixtures、reference snapshot 和详细历史继续保留。
+
+### 验证
+
+- 单次 docs gate：`git diff --check`、M7 文档存在性、五个 round heading、十个 requirement ID、README/brief/status/07/08 链接与适用性标记检查 → passed。
+- 本轮为 Markdown/status-only 规划，不运行 Gradle；既有 148 JVM/build/privacy 证据未冒充本轮 fresh test。
+- Hardware validation: not applicable；所有 M7 emulator/真机门禁均未执行并在计划中标 pending。
+
+### 风险与决策变化
+
+- 当前迁移版本进入 `M7.0（规划）`，不代表 M7.1～M7.5 任一产品能力已实现。
+- M7 会引入 session v2/sidecar 和新 preprocess/algorithm version；必须兼容读取 v1 和旧分析结果。计算 BP/SpO2 仍 unavailable，manual BP 仅是用户录入真值。
+- 用户现有 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 与未跟踪 `app/release/` 保持不触碰、不暂存。
+
+### 下一轮
+
+执行 M7.1：先实现 session v2 可选 sidecar、命名/canonical parser、subject profile revision 和 v1/v2 file manifest 的纯 Kotlin 合同，再用本轮规定的单次完整 Gradle gate 验收。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

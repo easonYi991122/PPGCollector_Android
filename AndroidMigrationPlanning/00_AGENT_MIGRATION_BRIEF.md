@@ -1,8 +1,8 @@
 # PPGCollector Android 移植：Codex Agent 目标模式说明
 
-版本：1.1（agent 执行基线）
-日期：2026-08-04
-当前迭代：`M6`（版本化离线分析、独立 Sessions 工作台与会话对比）
+版本：1.2（agent 执行基线）
+日期：2026-08-08
+当前迭代：`M7.0`（采集追溯、被试档案与 UI 增量规划；M7.1～M7.5 尚未实现）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -80,6 +80,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 8. [源代码参考索引](docs/05_SOURCE_REFERENCE_INDEX.md)：从需求/模块跳转到参考符号和测试。
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：未决证据和风险，不得在代码中偷偷作决定。
 10. [实时数据处理与数据存储实现指南](../REALTIME_AND_STORAGE.md)：当前 Android production 调用链、文件格式、函数索引与修改边界。
+11. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：2026-08-08 用户增量的权威实施顺序、数据合同、旧文档治理和单轮单次校验要求。
 
 ## 4. 证据优先级与冲突处理
 
@@ -103,7 +104,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟与 release shrink/lint/privacy/API/FGS 门禁已实现；2026-08-03 已由 Android Studio 生成并校验 fresh unsigned release APK。API/厂商/真机/正式 identity/签名/隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 版本化 raw replay、完整信号/全程 zero-phase、独立 Sessions/compare/横屏工作台均已实现；Live 现由统一 bounded runtime 同步发布 RAW/CAUSAL 0.6–4 Hz 与既有指标窗口。`D-014`、runtime/真机 UI/性能门禁待执行 |
-| `M7` | 后续 V2 | 专家诊断及经证据支持的扩展 | 未开始 |
+| `M7.0` | M7 规划 | RAW 显示、PI/统一时序、手工参考血压、命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与 UI 收敛 | 五轮规划已形成；M7.1～M7.5 代码均未实现，见 `docs/09` |
 
 ## 6. 不可破坏的核心契约
 

@@ -13,6 +13,7 @@
 7. [实施路线与验收](docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md)：分阶段任务、门禁、测试矩阵、估算与交付定义。
 8. [源代码参考索引](docs/05_SOURCE_REFERENCE_INDEX.md)：规划条目到归档源文件和关键符号的索引。
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：开工前必须确认的事项、风险、缓解与负责人建议。
+10. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：RAW 显示反相、PI/指标时间轴、手工参考血压、自由命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与最终 UI 收敛。
 
 ## 目录约定
 

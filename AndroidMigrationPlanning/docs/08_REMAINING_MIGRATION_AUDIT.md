@@ -1,5 +1,7 @@
 # PPGCollector Android 剩余移植工作审计
 
+> **适用性提示（2026-08-08）**：本文是 2026-08-02 的 M0～M7 剩余工作历史快照。用户新提出的 M7 采集追溯、被试档案、批量导出、滤波与 UI 工作范围以 [`09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准；本文继续作为 M1～M6 未闭环真机/发布门禁的参考，不再单独代表全部待办。
+
 日期：2026-08-02
 
 审计基线：`main` / `a2ab0c4`；2026-08-03 M5 unsigned release artifact 证据另见双层 status

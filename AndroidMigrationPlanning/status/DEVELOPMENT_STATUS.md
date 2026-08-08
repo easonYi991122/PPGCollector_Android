@@ -1,9 +1,11 @@
 # PPGCollector Android Development Status
 
-更新时间：2026-08-05
-当前迁移版本：`M6`
-当前规划阶段：Phase 6（V1.1 离线分析与工作台）
-状态：M1–M5 既有实现与本地证据均保留；M6 已有 raw replay 驱动、不可覆盖且可追溯的离线分析、完整 accepted signal/全程 zero-phase 工作台和独立 Sessions/compare。M2 BLE 支持 NUS 与 FFF0 transport，并可对精确名称 `Nordic_UART_Service` 显式选择 UInt32-sequence sensor packet；`CUP*` 继续使用既有 batch/auxiliary，历史 408-byte 会话保留回放兼容。148 个 JVM tests、debug lint/build/androidTest 编译及 release privacy 门禁通过。sensor 真实采样率/稳定身份/长稳、辅助 payload/控制命令、真机 UI/runtime 与 `D-014` 仍待验证。
+更新时间：2026-08-08
+当前迁移版本：`M7.0`（规划）
+当前规划阶段：M7 五轮增量规划；M7.1～M7.5 尚未实现
+状态：M1–M6 既有实现与本地证据均保留；新增 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](../docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)，把 RAW 仅显示取负、PI/统一 1 Hz PPG 时间轴、手工参考血压、自由命名/被试资料、subject 档案/批量导出、0.5～12 Hz fixed-lag 和最终 UI 收敛安排为不超过五轮的 M7.1～M7.5。当前 app 尚未具有这些 M7 能力，现有 25 列 CSV、三文件会话、0.6～4 Hz runtime 和逐会话 Sessions 行为仍是代码事实。
+
+本轮增量：完成当前代码/测试/迁移文档的只读审计，形成 M7.0 文件级开发计划与旧文档治理表。计划冻结 `{stem}.csv` 的 raw ADC/25 列兼容边界，建议新增 1 Hz metrics 与手工 BP sidecar、session v2 participant snapshot、全局 subject revision、严格 canonical parser 和多会话 export manifest；推荐用明确约 1 秒延迟的 0.5～12 Hz fixed-lag 方案接近离线 zero-phase，并保留旧 profile 回退。该内容均为规划，不宣称 runtime/schema/UI 已实现。
 
 本轮增量：只读审计 `CollectedData/Log 2026-08-05 17_04_47.txt` 确认 97/97 条 NUS TX 通知均为 168 bytes，头尾有效且 UInt32 LE sequence 从 0 连续到 96。扫描现只额外接受精确名 `Nordic_UART_Service`，复用 `cup-nus-bringup-0.1` transport，同时将 `cup-sensor-168-planar-u32seq-0.1` wire mode 贯穿 GATT chunk、preview、raw-first recording、CSV/session、replay、inspection/recovery/offline；`CUP*` 设备路径不变。sensor CSV 使用相同 25 列/header 的 `ppgcollector_samples_v2` 保存完整 UInt32 `frame_sequence`，旧 v1 仍限制 0…255。新增 ADR-0005 和 7 个 JVM tests；完整 130-task 门禁成功，148 tests/0 failures/errors/skips，lint 仅 9 个依赖版本 warning，用户 `.idea` 与 `app/release/` 保持未提交且 release 目录经备份 diff 不变。真机未执行，100 Hz 暂沿用既有合同而非由 nRF 通知间隔推断。
 
@@ -69,7 +71,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 Compose 采集与独立会话工作台，可连接 NUS/FFF0，并按连接设备在 batch UInt8 与 sensor-packet UInt32 两个 168-byte wire 间显式选择；旧 auxiliary/408 replay 均保留。本地算法/数据/长稳模拟/构建/隐私门禁通过；下一步在 `Nordic_UART_Service` 真机确认采样率、稳定身份、持续 receiving/reconnect，同时继续关闭 FFF1/FFF2 与 runtime 矩阵。
+Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作台；M7.0 已把十项新增需求收敛为五轮计划但尚无产品代码。下一步是 M7.1 的 session v2/sidecar、命名和 subject profile 纯 Kotlin 合同，同时保留 `Nordic_UART_Service`、FFF1/FFF2 与真实 runtime 矩阵门禁。
 
 ## 与 MigrationPlanning 对照
 
@@ -83,7 +85,7 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台，可
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/频谱/周期/诊断、横屏工作台、历史/取消/Sessions/compare，以及统一实时 RAW/CAUSAL 0.6–4 Hz runtime 均已实现并经 JVM/build/privacy 证据；runtime UI/性能和长任务跨进程策略待验收 | emulator/真机运行实时 causal、完整信号触控、横屏与性能；按 `D-014` 决定 WorkManager/用户可见 FGS |
-| `M7` | 后续 V2 | 专家诊断和有证据支持的扩展 | 未开始 | 另行决策 |
+| `M7.0` | 五轮增量规划 | 采集追溯、手工参考血压、被试档案/批量导出、滤波与 UI 收敛 | 规划文档已形成；全部产品代码仍待 M7.1～M7.5 实现 | M7.1：数据合同、sidecar、命名与 subject profile 内核 |
 
 ## 当前 Android 工程事实
 
@@ -94,7 +96,7 @@ Android 工程已形成可运行的 Compose 采集与独立会话工作台，可
 
 ## 当前未完成能力
 
-Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。metrics CSV 边界不变，SQI/ratio 仍为 provisional/diagnostic，SpO2/BP unavailable，IMU 不显示。
+Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。M7 的 RAW 显示反相、PI、1 Hz metrics sidecar、手工参考 BP、自由命名建议、被试资料/档案、批量导出、0.5～12 Hz fixed-lag 和录制态紧凑 UI 均尚未实现；当前 SQI/ratio 仍 provisional/diagnostic，计算 SpO2/BP unavailable，IMU 不显示。
 
 ## 验证与真机策略
 
@@ -112,6 +114,6 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 
 ## 当前开放阻塞
 
-`D-001` 各设备固件、sensor 稳定身份/真实采样率、控制与长稳；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。代码/运行时/发布余项详见 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)。
+`D-001` 各设备固件、sensor 稳定身份/真实采样率、控制与长稳；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` 计算 SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。M1～M6 的代码/运行时/发布余项详见带历史提示的 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)；M7 新范围以 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](../docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准。
 
 详细事实记录见 [`DEVELOPMENT_STATUS_DETAILED.md`](DEVELOPMENT_STATUS_DETAILED.md)。
