@@ -38,7 +38,7 @@ sealed class CaptureSessionExportException(message: String) : Exception(message)
     }
 }
 
-/** Streams a session's three files to one zip without exposing internal paths. */
+/** Streams the manifest-declared session files to one zip without exposing internal paths. */
 object CaptureSessionExportService {
     private const val copyBufferBytes = 64 * 1024
 
@@ -85,11 +85,7 @@ object CaptureSessionExportService {
         cancellation: CaptureExportCancellation = CaptureExportCancellation {},
     ): CaptureExportReport {
         val files = CaptureSessionRepository.expectedFiles(session.directory)
-        val sources = listOf(
-            files.raw to "${session.baseName}.cupraw",
-            files.csv to "${session.baseName}.csv",
-            files.metadata to "${session.baseName}.session.json",
-        )
+        val sources = files.allNamedPaths
         val sizes = sources.map { (path, name) ->
             if (!Files.isRegularFile(path)) throw CaptureSessionExportException.SourceFileMissing(name)
             path to Files.size(path)

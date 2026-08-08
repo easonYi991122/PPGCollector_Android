@@ -2,7 +2,6 @@ package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.signal.StreamFreshness
-import java.nio.file.Files
 import java.nio.file.Path
 
 sealed interface CaptureStartFailure {
@@ -46,7 +45,7 @@ object CaptureStartGate {
         if (context.phase !is BleConnectionPhase.Subscribed &&
             context.phase !is BleConnectionPhase.Receiving
         ) return CaptureStartFailure.DeviceNotReady
-        if (Files.exists(context.sessionsRoot.resolve(context.sessionName))) {
+        if (SessionNamePolicy.isDuplicate(context.sessionName, context.sessionsRoot)) {
             return CaptureStartFailure.SessionAlreadyExists
         }
         if (context.availableBytes != null &&

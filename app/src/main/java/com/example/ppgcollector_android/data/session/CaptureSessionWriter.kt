@@ -31,6 +31,9 @@ data class CaptureSessionConfiguration(
     val protocolProfile: String,
     val transportProfile: String,
     val device: CaptureDeviceContext,
+    val canonicalSubjectId: String? = null,
+    val canonicalSequence: Long? = null,
+    val participant: CaptureParticipantSnapshot? = null,
 )
 
 data class CaptureStreamChunkEvent(
@@ -55,6 +58,8 @@ data class CaptureWriterSnapshot(
     val duplicateFrames: Long = 0,
     val outOfOrderFrames: Long = 0,
     val lastFlushUtc: Instant? = null,
+    val metricsRows: Long = 0,
+    val bloodPressureRows: Long = 0,
 )
 
 data class CaptureSessionSummary(
@@ -88,14 +93,11 @@ fun interface CaptureStorageCapacityProvider {
 }
 
 object CaptureSessionWriterPolicy {
-    const val sessionSchemaVersion = "ppgcollector_session_v1"
+    const val sessionSchemaVersion = "ppgcollector_session_v2"
     const val sampleSchemaVersion = CaptureCsvSchema.version1
     const val sensorPacketSampleSchemaVersion = CaptureCsvSchema.version2
     const val minimumAvailableCapacityBytes = 20L * 1024L * 1024L
-    private val namePattern = Regex("[A-Za-z0-9_-]+")
-
-    fun isValidBaseName(name: String): Boolean =
-        name.isNotEmpty() && name.length <= 80 && namePattern.matches(name)
+    fun isValidBaseName(name: String): Boolean = SessionNamePolicy.isValid(name)
 }
 
 /** Synchronous raw-first writer; lifecycle/service code can safely wrap it later. */
@@ -110,6 +112,8 @@ class CaptureSessionWriter(
     val rawPath: Path = directory.resolve("${configuration.baseName}.cupraw")
     val csvPath: Path = directory.resolve("${configuration.baseName}.csv")
     val metadataPath: Path = directory.resolve("${configuration.baseName}.session.json")
+    val metricsPath: Path = directory.resolve("${configuration.baseName}.metrics.csv")
+    val bloodPressurePath: Path = directory.resolve("${configuration.baseName}.blood-pressure.csv")
 
     private val rawWriter: CupRawWriter
     private var closed = false
@@ -120,6 +124,8 @@ class CaptureSessionWriter(
     private var observedSamplesPerFrame: Int? = null
     private var observedProtocolProfile: String? = null
     private var lastCheckpointNanos = System.nanoTime()
+    private var metricsInitialized = false
+    private var bloodPressureInitialized = false
 
     private companion object {
         const val checkpointIntervalNanos = 1_000_000_000L
@@ -166,6 +172,33 @@ class CaptureSessionWriter(
             acceptedSampleStartIndex = event.acceptedSampleStartIndex,
             metrics = event.metrics,
         ) { event.decodedFrames }
+    }
+
+    /** Appends one complete 1 Hz epoch. This method is called by the writer owner. */
+    fun appendMetricEpoch(epoch: CaptureMetricEpoch): CaptureWriterSnapshot {
+        checkOpen()
+        require(epoch.sessionId == configuration.sessionId) { "metric session id mismatch" }
+        ensureMetricsFile()
+        appendBytes(metricsPath, CaptureMetricSeries.format(epoch).toByteArray(Charsets.UTF_8))
+        snapshot = snapshot.copy(metricsRows = snapshot.metricsRows + 1)
+        checkpointIfDue()
+        return snapshot
+    }
+
+    /** Appends one manually entered reference BP event without touching raw/CSV. */
+    fun appendBloodPressure(event: ManualBloodPressureEvent): CaptureWriterSnapshot {
+        checkOpen()
+        require(event.reference.sessionId == configuration.sessionId) {
+            "blood pressure session id mismatch"
+        }
+        ensureBloodPressureFile()
+        appendBytes(
+            bloodPressurePath,
+            CaptureBloodPressureSeries.format(event).toByteArray(Charsets.UTF_8),
+        )
+        snapshot = snapshot.copy(bloodPressureRows = snapshot.bloodPressureRows + 1)
+        checkpointIfDue()
+        return snapshot
     }
 
     /**
@@ -312,6 +345,8 @@ class CaptureSessionWriter(
         if (now - lastCheckpointNanos < checkpointIntervalNanos) return
         rawWriter.flush()
         forceCsv()
+        forceOptional(metricsPath, metricsInitialized)
+        forceOptional(bloodPressurePath, bloodPressureInitialized)
         snapshot = snapshot.copy(lastFlushUtc = Instant.now())
         writeMetadata(null, null, false, null)
         lastCheckpointNanos = now
@@ -321,6 +356,40 @@ class CaptureSessionWriter(
         if (!Files.isRegularFile(csvPath)) return
         FileChannel.open(csvPath, StandardOpenOption.WRITE).use { channel ->
             channel.force(true)
+        }
+    }
+
+    private fun forceOptional(path: Path, initialized: Boolean) {
+        if (!initialized || !Files.isRegularFile(path)) return
+        FileChannel.open(path, StandardOpenOption.WRITE).use { channel -> channel.force(true) }
+    }
+
+    private fun ensureMetricsFile() {
+        if (metricsInitialized) return
+        Files.newOutputStream(
+            metricsPath,
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        ).use { it.write(CaptureMetricSeries.header.toByteArray(Charsets.UTF_8)) }
+        metricsInitialized = true
+    }
+
+    private fun ensureBloodPressureFile() {
+        if (bloodPressureInitialized) return
+        Files.newOutputStream(
+            bloodPressurePath,
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        ).use { it.write(CaptureBloodPressureSeries.header.toByteArray(Charsets.UTF_8)) }
+        bloodPressureInitialized = true
+    }
+
+    private fun appendBytes(path: Path, bytes: ByteArray) {
+        FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.APPEND).use { channel ->
+            var offset = 0
+            while (offset < bytes.size) {
+                offset += channel.write(java.nio.ByteBuffer.wrap(bytes, offset, bytes.size - offset))
+            }
         }
     }
 
@@ -352,9 +421,26 @@ class CaptureSessionWriter(
             outOfOrderFrames = snapshot.outOfOrderFrames,
             invalidFrames = 0,
             discardedBytes = 0,
-            writer = CaptureSessionWriterMetadata(snapshot.lastFlushUtc, snapshot.rawFileBytes, snapshot.csvRows, error),
-            files = CaptureSessionFilesMetadata(rawPath.fileName.toString(), csvPath.fileName.toString()),
+            writer = CaptureSessionWriterMetadata(
+                lastFlushUtc = snapshot.lastFlushUtc,
+                rawBytes = snapshot.rawFileBytes,
+                csvRows = snapshot.csvRows,
+                error = error,
+                metricsRows = snapshot.metricsRows,
+                bloodPressureRows = snapshot.bloodPressureRows,
+            ),
+            files = CaptureSessionFilesMetadata(
+                raw = rawPath.fileName.toString(),
+                samples = csvPath.fileName.toString(),
+                metrics = metricsPath.fileName.toString().takeIf { metricsInitialized },
+                bloodPressure = bloodPressurePath.fileName.toString().takeIf { bloodPressureInitialized },
+            ),
             recovery = null,
+            canonicalSubjectId = configuration.canonicalSubjectId
+                ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.subject,
+            canonicalSequence = configuration.canonicalSequence
+                ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.sequence,
+            participant = configuration.participant,
         )
         val tempPath = metadataPath.resolveSibling(".${metadataPath.fileName}.tmp")
         val bytes = CaptureSessionMetadataCodec.encode(metadata).toByteArray(Charsets.UTF_8)

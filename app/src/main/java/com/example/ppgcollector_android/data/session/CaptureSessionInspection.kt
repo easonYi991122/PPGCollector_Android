@@ -28,12 +28,17 @@ data class CaptureSessionInspection(
     val csv: CaptureCsvScanReport?,
     val metadata: CaptureSessionMetadata?,
     val findings: List<CaptureInspectionFinding>,
+    val metrics: CaptureSidecarScanReport? = null,
+    val bloodPressure: CaptureSidecarScanReport? = null,
 ) {
     val isVerifiedConsistent: Boolean
         get() = findings.isEmpty() &&
             replay?.isStructurallyClean == true &&
             csv?.hasExpectedHeader == true &&
-            csv.hasTruncatedFinalLine == false
+            csv.hasTruncatedFinalLine == false &&
+            (metrics == null || (metrics.isStructurallyValid && !metrics.hasTruncatedFinalLine)) &&
+            (bloodPressure == null ||
+                (bloodPressure.isStructurallyValid && !bloodPressure.hasTruncatedFinalLine))
 
     val hasRecoverableTail: Boolean
         get() = replay?.tailIssue != null || csv?.hasTruncatedFinalLine == true
@@ -42,9 +47,10 @@ data class CaptureSessionInspection(
 object CaptureSessionInspectionService {
     fun inspect(directory: Path): CaptureSessionInspection {
         val baseName = directory.fileName.toString()
-        val rawPath = directory.resolve("$baseName.cupraw")
-        val csvPath = directory.resolve("$baseName.csv")
-        val metadataPath = directory.resolve("$baseName.session.json")
+        val files = CaptureSessionRepository.expectedFiles(directory)
+        val rawPath = files.raw
+        val csvPath = files.csv
+        val metadataPath = files.metadata
         val findings = ArrayList<CaptureInspectionFinding>()
 
         // Decode metadata first because the NUS transport now supports two
@@ -98,6 +104,19 @@ object CaptureSessionInspectionService {
             null
         }
 
+        val metrics = scanOptionalSidecar(
+            files.metrics,
+            CaptureMetricSeries.header,
+            findings,
+            "metrics",
+        )
+        val bloodPressure = scanOptionalSidecar(
+            files.bloodPressure,
+            CaptureBloodPressureSeries.header,
+            findings,
+            "blood-pressure",
+        )
+
         if (metadata != null) {
             if (!metadata.complete) {
                 findings += finding("metadata-incomplete", CaptureInspectionSeverity.WARNING,
@@ -115,13 +134,29 @@ object CaptureSessionInspectionService {
                 findings += finding("csv-sample-count", CaptureInspectionSeverity.ERROR,
                     "CSV rows ${csv.completeDataRowCount} do not match metadata ${metadata.sampleCount}")
             }
+            if (metrics != null && metrics.completeDataRowCount != metadata.writer.metricsRows) {
+                findings += finding(
+                    "metrics-row-count",
+                    CaptureInspectionSeverity.ERROR,
+                    "metrics rows ${metrics.completeDataRowCount} do not match metadata ${metadata.writer.metricsRows}",
+                )
+            }
+            if (bloodPressure != null &&
+                bloodPressure.completeDataRowCount != metadata.writer.bloodPressureRows
+            ) {
+                findings += finding(
+                    "blood-pressure-row-count",
+                    CaptureInspectionSeverity.ERROR,
+                    "blood-pressure rows ${bloodPressure.completeDataRowCount} do not match metadata ${metadata.writer.bloodPressureRows}",
+                )
+            }
         }
         if (replay != null && csv != null && replay.acceptedSamples != csv.completeDataRowCount) {
             findings += finding("raw-csv-sample-count", CaptureInspectionSeverity.ERROR,
                 "replayed samples ${replay.acceptedSamples} do not match CSV rows ${csv.completeDataRowCount}")
         }
 
-        return CaptureSessionInspection(replay, csv, metadata, findings)
+        return CaptureSessionInspection(replay, csv, metadata, findings, metrics, bloodPressure)
     }
 
     fun scanCsv(path: Path): CaptureCsvScanReport {
@@ -210,6 +245,56 @@ object CaptureSessionInspectionService {
         if (csv.hasTruncatedFinalLine) {
             findings += finding("csv-tail", CaptureInspectionSeverity.WARNING,
                 "CSV final line is not newline-terminated; safe prefix is ${csv.validByteCount} bytes")
+        }
+    }
+
+    private fun scanOptionalSidecar(
+        path: Path?,
+        expectedHeader: String,
+        findings: MutableList<CaptureInspectionFinding>,
+        label: String,
+    ): CaptureSidecarScanReport? {
+        if (path == null) return null
+        if (!Files.isRegularFile(path)) {
+            findings += finding(
+                "$label-missing",
+                CaptureInspectionSeverity.ERROR,
+                "metadata declares missing $label sidecar",
+            )
+            return null
+        }
+        return try {
+            val report = if (label == "metrics") {
+                CaptureMetricSeries.scan(path)
+            } else {
+                CaptureBloodPressureSeries.scan(path)
+            }
+            report.also {
+                if (!report.hasExpectedHeader) {
+                    findings += finding(
+                        "$label-header",
+                        CaptureInspectionSeverity.ERROR,
+                        "$label sidecar header does not match the supported schema",
+                    )
+                }
+                if (report.hasTruncatedFinalLine) {
+                    findings += finding(
+                        "$label-tail",
+                        CaptureInspectionSeverity.WARNING,
+                        "$label sidecar final line is not newline-terminated",
+                    )
+                }
+                report.monotonicityError?.let {
+                    findings += finding("$label-structure", CaptureInspectionSeverity.ERROR, it)
+                }
+            }
+        } catch (error: Exception) {
+            findings += finding(
+                "$label-unreadable",
+                CaptureInspectionSeverity.ERROR,
+                "$label sidecar cannot be read: ${error.message ?: error::class.simpleName}",
+            )
+            null
         }
     }
 

@@ -1,9 +1,11 @@
 # PPGCollector Android Development Status
 
 更新时间：2026-08-08
-当前迁移版本：`M7.0`（规划）
-当前规划阶段：M7 五轮增量规划；M7.1～M7.5 尚未实现
-状态：M1–M6 既有实现与本地证据均保留；新增 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](../docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)，把 RAW 仅显示取负、PI/统一 1 Hz PPG 时间轴、手工参考血压、自由命名/被试资料、subject 档案/批量导出、0.5～12 Hz fixed-lag 和最终 UI 收敛安排为不超过五轮的 M7.1～M7.5。当前 app 尚未具有这些 M7 能力，现有 25 列 CSV、三文件会话、0.6～4 Hz runtime 和逐会话 Sessions 行为仍是代码事实。
+当前迁移版本：`M7.1`（数据合同与追溯内核已实现）
+当前规划阶段：M7 五轮增量规划；M7.2 正在收口，M7.3～M7.5 尚未实现
+状态：M1–M6 既有实现与本地证据均保留；M7.1 已落地 session v2 可选 sidecar、命名/subject profile 合同和旧会话兼容，M7.2 正在处理 PI、统一指标时间轴与 fixed-lag 显示；档案页、批量导出交互、血压弹窗和最终 UI 仍待后续轮次。
+
+本轮增量：M7.1 新增 `SessionNamePolicy`、`SubjectProfileStore`、`CaptureMetricSeries`、`CaptureBloodPressureSeries` 和文件清单模型；writer/metadata/repository/inspection/recovery/export 已支持 v1 三文件会话与 v2 可选 metrics/BP sidecar。metrics 每个分析 epoch 保持一行，手工血压合同冻结 dialog-open 的 PPG source 时间戳；原 `{stem}.csv` 25 列与 `red`/`ir` 原始 ADC 未改变。`PpgCollectorApplication` 暴露独立 `subjectsRoot`，命名建议只由实际 raw chunk>0 的 canonical 会话推进，重复校验大小写不敏感。
 
 本轮增量：完成当前代码/测试/迁移文档的只读审计，形成 M7.0 文件级开发计划与旧文档治理表。计划冻结 `{stem}.csv` 的 raw ADC/25 列兼容边界，建议新增 1 Hz metrics 与手工 BP sidecar、session v2 participant snapshot、全局 subject revision、严格 canonical parser 和多会话 export manifest；推荐用明确约 1 秒延迟的 0.5～12 Hz fixed-lag 方案接近离线 zero-phase，并保留旧 profile 回退。该内容均为规划，不宣称 runtime/schema/UI 已实现。
 
@@ -85,7 +87,8 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/频谱/周期/诊断、横屏工作台、历史/取消/Sessions/compare，以及统一实时 RAW/CAUSAL 0.6–4 Hz runtime 均已实现并经 JVM/build/privacy 证据；runtime UI/性能和长任务跨进程策略待验收 | emulator/真机运行实时 causal、完整信号触控、横屏与性能；按 `D-014` 决定 WorkManager/用户可见 FGS |
-| `M7.0` | 五轮增量规划 | 采集追溯、手工参考血压、被试档案/批量导出、滤波与 UI 收敛 | 规划文档已形成；全部产品代码仍待 M7.1～M7.5 实现 | M7.1：数据合同、sidecar、命名与 subject profile 内核 |
+| `M7.0` | 五轮增量规划 | 采集追溯、手工参考血压、被试档案/批量导出、滤波与 UI 收敛 | 规划文档已形成；M7.1 已实现，后续轮次按 `docs/09` 推进 | M7.2：RAW 显示变换、PI/统一指标时间轴、fixed-lag candidate |
+| `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 manifest、sidecar inspection/recovery/export 兼容 | JVM/build/privacy 综合门禁通过；尚未执行真机/Android runtime 资料表单验收 | M7.2：完成显示/指标/固定时延滤波 wiring |
 
 ## 当前 Android 工程事实
 

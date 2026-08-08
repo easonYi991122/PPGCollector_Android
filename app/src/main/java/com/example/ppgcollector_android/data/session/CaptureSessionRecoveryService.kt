@@ -33,6 +33,10 @@ data class CaptureSessionRecoveryResult(
     val csvCopiedBytes: Long,
     val rawDiscardedTailBytes: Long,
     val csvDiscardedTailBytes: Long,
+    val metricsPath: Path? = null,
+    val bloodPressurePath: Path? = null,
+    val metricsCopiedBytes: Long = 0,
+    val bloodPressureCopiedBytes: Long = 0,
 )
 
 sealed class CaptureSessionRecoveryException(message: String) : Exception(message) {
@@ -162,9 +166,29 @@ object CaptureSessionRecoveryService {
                 raw = staging.resolve("$requestedBaseName.cupraw"),
                 csv = staging.resolve("$requestedBaseName.csv"),
                 metadata = staging.resolve("$requestedBaseName.session.json"),
+                metrics = sourceFiles.metrics?.let { staging.resolve("$requestedBaseName.metrics.csv") },
+                bloodPressure = sourceFiles.bloodPressure?.let {
+                    staging.resolve("$requestedBaseName.blood-pressure.csv")
+                },
             )
             copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw)
             copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv)
+            val metricsScan = sourceFiles.metrics?.let { path ->
+                if (!Files.isRegularFile(path)) null else CaptureMetricSeries.scan(path)
+            }
+            val bloodPressureScan = sourceFiles.bloodPressure?.let { path ->
+                if (!Files.isRegularFile(path)) null else CaptureBloodPressureSeries.scan(path)
+            }
+            if (destinationFiles.metrics != null && metricsScan != null) {
+                copyPrefix(sourceFiles.metrics!!, metricsScan.validByteCount, destinationFiles.metrics)
+            }
+            if (destinationFiles.bloodPressure != null && bloodPressureScan != null) {
+                copyPrefix(
+                    sourceFiles.bloodPressure!!,
+                    bloodPressureScan.validByteCount,
+                    destinationFiles.bloodPressure,
+                )
+            }
 
             val sourceMetadataBytes = if (Files.isRegularFile(sourceFiles.metadata)) {
                 Files.readAllBytes(sourceFiles.metadata)
@@ -194,9 +218,19 @@ object CaptureSessionRecoveryService {
                 sourceCsvTotalBytes = Files.size(sourceFiles.csv),
                 sourceCsvCopiedBytes = csvScan.validByteCount,
                 csvPreservesSourceSessionId = true,
+                sourceMetricsSha256 = sourceFiles.metrics?.takeIf(Files::isRegularFile)?.let(::sha256File),
+                sourceMetricsTotalBytes = sourceFiles.metrics?.takeIf(Files::isRegularFile)
+                    ?.let(Files::size) ?: 0L,
+                sourceMetricsCopiedBytes = metricsScan?.validByteCount ?: 0L,
+                sourceBloodPressureSha256 = sourceFiles.bloodPressure
+                    ?.takeIf(Files::isRegularFile)?.let(::sha256File),
+                sourceBloodPressureTotalBytes = sourceFiles.bloodPressure
+                    ?.takeIf(Files::isRegularFile)?.let(Files::size) ?: 0L,
+                sourceBloodPressureCopiedBytes = bloodPressureScan?.validByteCount ?: 0L,
             )
             val recoveredMetadata = buildRecoveredMetadata(
                 source = sourceMetadata ?: session.metadata,
+                sourceFiles = sourceFiles,
                 session = session,
                 recoverySessionId = recoverySessionId,
                 baseName = requestedBaseName,
@@ -219,6 +253,11 @@ object CaptureSessionRecoveryService {
                 csvCopiedBytes = csvScan.validByteCount,
                 rawDiscardedTailBytes = rawScan.trailingByteCount,
                 csvDiscardedTailBytes = csvScan.trailingByteCount,
+                metricsPath = destinationFiles.metrics?.let { destination.resolve(it.fileName.toString()) },
+                bloodPressurePath = destinationFiles.bloodPressure
+                    ?.let { destination.resolve(it.fileName.toString()) },
+                metricsCopiedBytes = metricsScan?.validByteCount ?: 0L,
+                bloodPressureCopiedBytes = bloodPressureScan?.validByteCount ?: 0L,
             )
         } catch (error: CaptureSessionRecoveryException) {
             throw error
@@ -231,6 +270,7 @@ object CaptureSessionRecoveryService {
 
     private fun buildRecoveredMetadata(
         source: CaptureSessionMetadata?,
+        sourceFiles: SessionFileSet,
         session: StoredCaptureSession,
         recoverySessionId: String,
         baseName: String,
@@ -275,8 +315,16 @@ object CaptureSessionRecoveryService {
             csvRows = csv.completeDataRowCount,
             error = "Recovered copy; source session was preserved unchanged.",
         ),
-        files = CaptureSessionFilesMetadata("$baseName.cupraw", "$baseName.csv"),
+                files = CaptureSessionFilesMetadata(
+                    raw = "$baseName.cupraw",
+                    samples = "$baseName.csv",
+                    metrics = sourceFiles.metrics?.let { "$baseName.metrics.csv" },
+                    bloodPressure = sourceFiles.bloodPressure?.let { "$baseName.blood-pressure.csv" },
+                ),
         recovery = recovery,
+        canonicalSubjectId = source?.canonicalSubjectId,
+        canonicalSequence = source?.canonicalSequence,
+        participant = source?.participant,
     )
 
     private fun copyPrefix(source: Path, count: Long, destination: Path) {

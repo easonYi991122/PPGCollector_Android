@@ -40,11 +40,27 @@ data class CaptureSessionWriterMetadata(
     val rawBytes: Long,
     val csvRows: Long,
     val error: String?,
+    val metricsRows: Long = 0,
+    val bloodPressureRows: Long = 0,
 )
 
 data class CaptureSessionFilesMetadata(
     val raw: String,
     val samples: String,
+    val metrics: String? = null,
+    val bloodPressure: String? = null,
+)
+
+data class CaptureParticipantSnapshot(
+    val subjectId: String? = null,
+    val sequence: Long? = null,
+    val profileRevisionId: String? = null,
+    val profileComplete: Boolean = false,
+    val sex: String? = null,
+    val ageYears: Int? = null,
+    val heightCm: Double? = null,
+    val weightKg: Double? = null,
+    val additionalFields: Map<String, String> = emptyMap(),
 )
 
 data class CaptureSessionRecoveryMetadata(
@@ -61,6 +77,12 @@ data class CaptureSessionRecoveryMetadata(
     val sourceCsvTotalBytes: Long,
     val sourceCsvCopiedBytes: Long,
     val csvPreservesSourceSessionId: Boolean,
+    val sourceMetricsSha256: String? = null,
+    val sourceMetricsTotalBytes: Long = 0,
+    val sourceMetricsCopiedBytes: Long = 0,
+    val sourceBloodPressureSha256: String? = null,
+    val sourceBloodPressureTotalBytes: Long = 0,
+    val sourceBloodPressureCopiedBytes: Long = 0,
 )
 
 data class CaptureSessionMetadata(
@@ -90,6 +112,9 @@ data class CaptureSessionMetadata(
     val writer: CaptureSessionWriterMetadata,
     val files: CaptureSessionFilesMetadata,
     val recovery: CaptureSessionRecoveryMetadata?,
+    val canonicalSubjectId: String? = null,
+    val canonicalSequence: Long? = null,
+    val participant: CaptureParticipantSnapshot? = null,
 )
 
 class CaptureSessionMetadataJsonException(message: String) :
@@ -169,12 +194,39 @@ object CaptureSessionMetadataCodec {
                 "raw_bytes" to number(metadata.writer.rawBytes),
                 "csv_rows" to number(metadata.writer.csvRows),
                 "error" to (metadata.writer.error?.let(::string) ?: JsonValue.NullValue),
+                "metrics_rows" to number(metadata.writer.metricsRows),
+                "blood_pressure_rows" to number(metadata.writer.bloodPressureRows),
             ),
             "files" to obj(
                 "raw" to string(metadata.files.raw),
                 "samples" to string(metadata.files.samples),
+                "metrics" to (metadata.files.metrics?.let(::string) ?: JsonValue.NullValue),
+                "blood_pressure" to
+                    (metadata.files.bloodPressure?.let(::string) ?: JsonValue.NullValue),
             ),
             "recovery" to (metadata.recovery?.let(::toJson) ?: JsonValue.NullValue),
+            "canonical_subject_id" to
+                (metadata.canonicalSubjectId?.let(::string) ?: JsonValue.NullValue),
+            "canonical_sequence" to
+                (metadata.canonicalSequence?.let(::number) ?: JsonValue.NullValue),
+            "participant" to
+                (metadata.participant?.let(::toJson) ?: JsonValue.NullValue),
+        )
+
+    private fun toJson(participant: CaptureParticipantSnapshot): JsonValue.ObjectValue =
+        obj(
+            "subject_id" to (participant.subjectId?.let(::string) ?: JsonValue.NullValue),
+            "sequence" to (participant.sequence?.let(::number) ?: JsonValue.NullValue),
+            "profile_revision_id" to
+                (participant.profileRevisionId?.let(::string) ?: JsonValue.NullValue),
+            "profile_complete" to JsonValue.BooleanValue(participant.profileComplete),
+            "sex" to (participant.sex?.let(::string) ?: JsonValue.NullValue),
+            "age_years" to (participant.ageYears?.let { number(it.toLong()) } ?: JsonValue.NullValue),
+            "height_cm" to (participant.heightCm?.let(::decimal) ?: JsonValue.NullValue),
+            "weight_kg" to (participant.weightKg?.let(::decimal) ?: JsonValue.NullValue),
+            "additional_fields" to JsonValue.ObjectValue(
+                participant.additionalFields.toSortedMap().mapValues { string(it.value) },
+            ),
         )
 
     private fun toJson(recovery: CaptureSessionRecoveryMetadata): JsonValue.ObjectValue =
@@ -195,6 +247,15 @@ object CaptureSessionMetadataCodec {
             "source_csv_copied_bytes" to number(recovery.sourceCsvCopiedBytes),
             "csv_preserves_source_session_id" to
                 JsonValue.BooleanValue(recovery.csvPreservesSourceSessionId),
+            "source_metrics_sha256" to
+                (recovery.sourceMetricsSha256?.let(::string) ?: JsonValue.NullValue),
+            "source_metrics_total_bytes" to number(recovery.sourceMetricsTotalBytes),
+            "source_metrics_copied_bytes" to number(recovery.sourceMetricsCopiedBytes),
+            "source_blood_pressure_sha256" to
+                (recovery.sourceBloodPressureSha256?.let(::string) ?: JsonValue.NullValue),
+            "source_blood_pressure_total_bytes" to number(recovery.sourceBloodPressureTotalBytes),
+            "source_blood_pressure_copied_bytes" to
+                number(recovery.sourceBloodPressureCopiedBytes),
         )
 
     private fun fromJson(value: JsonValue): CaptureSessionMetadata {
@@ -238,12 +299,41 @@ object CaptureSessionMetadataCodec {
                 rawBytes = writer.requiredLong("raw_bytes"),
                 csvRows = writer.requiredLong("csv_rows"),
                 error = writer.optionalString("error"),
+                metricsRows = writer.optionalLong("metrics_rows") ?: 0L,
+                bloodPressureRows = writer.optionalLong("blood_pressure_rows") ?: 0L,
             ),
             files = CaptureSessionFilesMetadata(
                 raw = files.requiredString("raw"),
                 samples = files.requiredString("samples"),
+                metrics = files.optionalString("metrics"),
+                bloodPressure = files.optionalString("blood_pressure"),
             ),
             recovery = root.optionalObject("recovery")?.let(::fromRecoveryJson),
+            canonicalSubjectId = root.optionalString("canonical_subject_id"),
+            canonicalSequence = root.optionalLong("canonical_sequence"),
+            participant = root.optionalObject("participant")?.let(::fromParticipantJson),
+        )
+    }
+
+    private fun fromParticipantJson(value: JsonValue): CaptureParticipantSnapshot {
+        val participant = value.asObject("participant")
+        val additional = participant.optionalObject("additional_fields")?.fields.orEmpty()
+            .mapValues { (key, child) -> child.asString("additional_fields.$key") }
+        return CaptureParticipantSnapshot(
+            subjectId = participant.optionalString("subject_id"),
+            sequence = participant.optionalLong("sequence"),
+            profileRevisionId = participant.optionalString("profile_revision_id"),
+            profileComplete = participant.optionalBoolean("profile_complete") ?: false,
+            sex = participant.optionalString("sex"),
+            ageYears = participant.optionalLong("age_years")?.let {
+                if (it !in Int.MIN_VALUE..Int.MAX_VALUE) {
+                    throw CaptureSessionMetadataJsonException("age_years is out of Int range")
+                }
+                it.toInt()
+            },
+            heightCm = participant.optionalDouble("height_cm"),
+            weightKg = participant.optionalDouble("weight_kg"),
+            additionalFields = additional,
         )
     }
 
@@ -265,6 +355,14 @@ object CaptureSessionMetadataCodec {
             csvPreservesSourceSessionId = recovery.requiredBoolean(
                 "csv_preserves_source_session_id",
             ),
+            sourceMetricsSha256 = recovery.optionalString("source_metrics_sha256"),
+            sourceMetricsTotalBytes = recovery.optionalLong("source_metrics_total_bytes") ?: 0L,
+            sourceMetricsCopiedBytes = recovery.optionalLong("source_metrics_copied_bytes") ?: 0L,
+            sourceBloodPressureSha256 = recovery.optionalString("source_blood_pressure_sha256"),
+            sourceBloodPressureTotalBytes =
+                recovery.optionalLong("source_blood_pressure_total_bytes") ?: 0L,
+            sourceBloodPressureCopiedBytes =
+                recovery.optionalLong("source_blood_pressure_copied_bytes") ?: 0L,
         )
     }
 
@@ -273,6 +371,7 @@ object CaptureSessionMetadataCodec {
 
     private fun string(value: String) = JsonValue.StringValue(value)
     private fun number(value: Long) = JsonValue.NumberValue(value.toString())
+    private fun decimal(value: Double) = JsonValue.NumberValue(value.toString())
 
     private fun JsonValue.ObjectValue.requiredString(name: String): String =
         field(name).asString(name)
@@ -282,6 +381,9 @@ object CaptureSessionMetadataCodec {
 
     private fun JsonValue.ObjectValue.requiredLong(name: String): Long =
         field(name).asLong(name)
+
+    private fun JsonValue.ObjectValue.optionalLong(name: String): Long? =
+        fields[name]?.let { if (it is JsonValue.NullValue) null else it.asLong(name) }
 
     private fun JsonValue.ObjectValue.requiredInt(name: String): Int =
         field(name).asLong(name).let {
@@ -293,6 +395,16 @@ object CaptureSessionMetadataCodec {
 
     private fun JsonValue.ObjectValue.requiredBoolean(name: String): Boolean =
         field(name).asBoolean(name)
+
+    private fun JsonValue.ObjectValue.optionalBoolean(name: String): Boolean? =
+        fields[name]?.let { if (it is JsonValue.NullValue) null else it.asBoolean(name) }
+
+    private fun JsonValue.ObjectValue.optionalDouble(name: String): Double? =
+        fields[name]?.let {
+            if (it is JsonValue.NullValue) null
+            else it.asNumber(name).toDoubleOrNull()?.takeIf(Double::isFinite)
+                ?: throw CaptureSessionMetadataJsonException("$name must be finite number")
+        }
 
     private fun JsonValue.ObjectValue.requiredInstant(name: String): Instant =
         field(name).asString(name).parseInstant(name)
@@ -326,6 +438,10 @@ object CaptureSessionMetadataCodec {
     private fun JsonValue.asLong(name: String): Long =
         ((this as? JsonValue.NumberValue)?.raw?.toLongOrNull()
             ?: throw CaptureSessionMetadataJsonException("$name must be an integer"))
+
+    private fun JsonValue.asNumber(name: String): String =
+        (this as? JsonValue.NumberValue)?.raw
+            ?: throw CaptureSessionMetadataJsonException("$name must be a number")
 
     private fun JsonValue.asBoolean(name: String): Boolean =
         ((this as? JsonValue.BooleanValue)?.value

@@ -2681,6 +2681,45 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 执行 M7.1：先实现 session v2 可选 sidecar、命名/canonical parser、subject profile revision 和 v1/v2 file manifest 的纯 Kotlin 合同，再用本轮规定的单次完整 Gradle gate 验收。
 
+## 2026-08-08 · M7.1 · Session traceability contracts and subject profile kernel
+
+### 本轮目标
+
+先交付 M7 需求的纯 Kotlin 数据前置：保持旧 raw/25 列 CSV 可读，增加可选 metrics/BP sidecar、session v2 participant/canonical identity、自由命名/建议名和 subject profile revision；旧 v1 会话必须继续可列举、检查、恢复和导出。
+
+### 需求/参考/Android 目标
+
+- Requirement: `M7-MET-002`、`M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`、`M7-EXP-001` 的底层合同。
+- Primary source: 用户 2026-08-08 需求、`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`、既有 `CaptureSessionMetadata`/writer/repository/inspection/recovery/export 代码。
+- Tests/golden: `SessionNamePolicyTest`、`SubjectProfileTest`、`CaptureSidecarTest` 与既有 raw/CSV/session/recovery/export 回归。
+- Android target: `data/session` v2 contracts and writer/repository/inspection/recovery/export seams；`PpgCollectorApplication.subjectsRoot`。
+- Non-goals: 不改 `{stem}.csv` 25 列或 raw ADC，不实现档案页/批量选择 UI，不把手工 BP 写入计算 BP，不迁移旧会话目录，不执行真机。
+
+### 实现事实
+
+- 新增 `SessionNamePolicy`：1–64 ASCII `[A-Za-z0-9_-]`、跨平台保留名拒绝、大小写不敏感 duplicate、`PPG-{subject}-{seq}` canonical parser，以及仅从 `raw_chunk_count > 0` 会话推进的建议名。
+- 新增 `SubjectProfileStore` 与 versioned atomic JSON revisions；必填人口学字段允许不完整快照，扩展字段有界；session metadata 固化 participant/profile revision snapshot，应用提供独立 `subjectsRoot`。
+- 新增 `CaptureMetricSeries`（`ppgcollector_metrics_v1`，HR/SQI/R/PI 同一行）和 `CaptureBloodPressureSeries`（`ppgcollector_manual_bp_v1`，dialog-open source index/time/host monotonic/UTC + saved UTC）；sidecar 逐行流式扫描并校验 epoch/event/source 单调性。
+- `CaptureSessionWriter` 保持 raw-first 与 25 列样本 CSV，按需创建 sidecar、checkpoint/force、metadata 行数；session metadata v2 追加 canonical identity、participant、sidecar 文件名/行数，v1 缺省值仍可读取。
+- repository、inspection、safe-prefix recovery、ZIP export 改为读取 metadata/manifest 的可选 sidecar；老三文件会话不因缺少 sidecar 被误报损坏。恢复副本保留 sidecar provenance/hash/byte counts。
+
+### 验证
+
+- 综合命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。
+- 结果：最终重试 `BUILD SUCCESSFUL in 2m 19s`，130 actionable tasks；JVM tests、debug lint、debug/release/androidTest APK、R8 与 `REL-005 verifyReleasePrivacy` 均通过。轮内先后记录了两次修复性重试：sidecar/profile 编译错误与命名测试夹具冲突；最终门禁为绿。
+- Hardware validation: pending；本轮不运行 emulator/真机，真实资料表单、服务 binder、长录制 sidecar flush 和 SAF provider 仍待后续门禁。
+
+### 风险与决策变化
+
+- session schema 从 writer 默认 v1 变为 `ppgcollector_session_v2`，但 v1 decoder/旧 CSV/header 不变；sidecar 是可选声明，后续跨平台 reader 需识别新列合同。
+- metrics sidecar 由单一 writer 追加，controller 的 analysis queue 只在 writer 线程 drain；metrics overflow 不丢 raw，但仍需 M7.2/后续补齐停止与 UI health 语义。
+- manual BP 明确是 reference event，不改变 `LiveMetricSnapshot.bloodPressure` 的 `MODEL_UNAVAILABLE`；输入界面与实际 timestamp token wiring 留在 M7.3。
+- 用户 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 和未跟踪 `app/release/` 未触碰、未暂存。
+
+### 下一轮
+
+完成 M7.2：RAW 展示层取负、PI 复用一次 ratio RED AC/DC、metrics epoch 与 accepted PPG source 时间轴贯通、加入 0.5–12 Hz bounded fixed-lag display candidate，并用本轮规定的同一综合门禁验收。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

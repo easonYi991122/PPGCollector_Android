@@ -13,6 +13,10 @@ class PpgCollectorApplication : Application() {
     val sessionsRoot
         get() = filesDir.toPath().resolve("sessions")
 
+    /** Versioned subject profiles live beside sessions but never inside a capture directory. */
+    val subjectsRoot
+        get() = filesDir.toPath().resolve("subjects")
+
     val bleCoordinator: BleCoordinator by lazy {
         val mainHandler = Handler(Looper.getMainLooper())
         BleCoordinator(
