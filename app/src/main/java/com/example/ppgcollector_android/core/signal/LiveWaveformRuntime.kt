@@ -17,6 +17,10 @@ data class LiveWaveformSnapshot(
     val causalRed: DoubleArray = doubleArrayOf(),
     val causalIr: DoubleArray = doubleArrayOf(),
     val preprocessProfile: String? = null,
+    /** Causal display path: polarity-flipped raw -> 0.5–12 Hz. */
+    val displayCausalRed: DoubleArray = doubleArrayOf(),
+    val displayCausalIr: DoubleArray = doubleArrayOf(),
+    val displayCausalProfile: String? = null,
     val continuousSampleCount: Long = 0,
     val metricWarmupSampleCount: Int = 800,
     val settlingSampleCount: Int = 0,

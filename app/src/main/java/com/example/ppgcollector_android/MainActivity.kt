@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
@@ -77,6 +78,9 @@ import com.example.ppgcollector_android.core.signal.PpgDisplayTransform
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
+import com.example.ppgcollector_android.data.session.CaptureParticipantDraft
+import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
+import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
 import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import com.example.ppgcollector_android.ui.theme.PPGCollector_AndroidTheme
@@ -84,12 +88,13 @@ import java.util.Locale
 
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
 
-private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, WORKBENCH, COMPARE }
+private enum class AppPage { LIVE, SESSIONS, SESSIONS_FLAT, SESSION_DETAIL, WORKBENCH, COMPARE }
 private enum class LiveWaveformDisplayMode { RAW, CAUSAL, FIXED_LAG }
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
     private val sessionsViewModel: SessionsViewModel by viewModels()
+    private var archiveExportMode = false
 
     private val bleCoordinator
         get() = (application as PpgCollectorApplication).bleCoordinator
@@ -115,8 +120,11 @@ class MainActivity : ComponentActivity() {
     ) { destination ->
         if (destination == null) {
             sessionsViewModel.cancelExportPicker()
+            archiveExportMode = false
         } else {
-            sessionsViewModel.exportSelectedTo(destination)
+            if (archiveExportMode) sessionsViewModel.exportArchiveTo(destination)
+            else sessionsViewModel.exportSelectedTo(destination)
+            archiveExportMode = false
         }
     }
 
@@ -128,10 +136,15 @@ class MainActivity : ComponentActivity() {
                 val snapshot by bleCoordinator.snapshotFlow.collectAsStateWithLifecycle()
                 val capture by captureViewModel.serviceState.collectAsStateWithLifecycle()
                 val sessionName by captureViewModel.sessionName.collectAsStateWithLifecycle()
+                val participantDraft by captureViewModel.participantDraft.collectAsStateWithLifecycle()
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
+                val sessionNameIsValid = remember(sessionName) {
+                    captureViewModel.validateSessionName().isValid
+                }
                 val preview by captureViewModel.previewState.collectAsStateWithLifecycle()
                 val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                 var page by rememberSaveable { mutableStateOf(AppPage.LIVE) }
+                var bloodPressureReference by remember { mutableStateOf<CaptureReferenceTimestamp?>(null) }
                 LaunchedEffect(page) {
                     val insets = WindowCompat.getInsetsController(window, window.decorView)
                     if (page == AppPage.WORKBENCH) {
@@ -150,6 +163,7 @@ class MainActivity : ComponentActivity() {
                     page = when (page) {
                         AppPage.WORKBENCH -> AppPage.SESSION_DETAIL
                         AppPage.SESSION_DETAIL, AppPage.COMPARE -> AppPage.SESSIONS
+                        AppPage.SESSIONS_FLAT -> AppPage.SESSIONS
                         AppPage.SESSIONS -> AppPage.LIVE
                         AppPage.LIVE -> AppPage.LIVE
                     }
@@ -164,10 +178,17 @@ class MainActivity : ComponentActivity() {
                             capture = capture,
                             preview = preview,
                             sessionName = sessionName,
+                            participantDraft = participantDraft,
+                            sessionNameIsValid = sessionNameIsValid,
                             captureGate = captureGate,
                             onSessionNameChange = captureViewModel::setSessionName,
+                            onParticipantDraftChange = captureViewModel::setParticipantDraft,
+                            onUseSuggestedName = captureViewModel::useSuggestedSessionName,
                             onStartCapture = ::requestCaptureStart,
                             onStopCapture = captureViewModel::stopRecording,
+                            onOpenBloodPressure = {
+                                bloodPressureReference = captureViewModel.captureReferenceTimestamp()
+                            },
                             onScan = ::requestScan,
                             onStopScan = bleCoordinator::stopScanning,
                             onConnect = bleCoordinator::connect,
@@ -178,9 +199,24 @@ class MainActivity : ComponentActivity() {
                             },
                             modifier = Modifier.padding(innerPadding),
                         )
-                        AppPage.SESSIONS -> SavedSessionsScreen(
+                        AppPage.SESSIONS -> SubjectArchiveScreen(
                             state = sessions,
                             onBack = { page = AppPage.LIVE },
+                            onRefresh = sessionsViewModel::refresh,
+                            onSelect = { item ->
+                                sessionsViewModel.select(item)
+                                page = AppPage.SESSION_DETAIL
+                            },
+                            onToggleSubject = sessionsViewModel::toggleArchiveSubject,
+                            onToggleSession = sessionsViewModel::toggleArchiveSession,
+                            onClearSelection = sessionsViewModel::clearArchiveSelection,
+                            onExport = ::requestArchiveExport,
+                            onOpenFlat = { page = AppPage.SESSIONS_FLAT },
+                            modifier = Modifier.padding(innerPadding),
+                        )
+                        AppPage.SESSIONS_FLAT -> SavedSessionsScreen(
+                            state = sessions,
+                            onBack = { page = AppPage.SESSIONS },
                             onRefresh = sessionsViewModel::refresh,
                             onSelect = { item ->
                                 sessionsViewModel.select(item)
@@ -215,6 +251,13 @@ class MainActivity : ComponentActivity() {
                             state = sessions,
                             onBack = { page = AppPage.SESSIONS },
                             modifier = Modifier.padding(innerPadding),
+                        )
+                    }
+                    bloodPressureReference?.let { reference ->
+                        ManualBloodPressureDialog(
+                            reference = reference,
+                            onDismiss = { bloodPressureReference = null },
+                            onSave = captureViewModel::commitManualBloodPressure,
                         )
                     }
                 }
@@ -257,7 +300,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestSessionExport(item: SessionListItemUi) {
+        archiveExportMode = false
         exportLauncher.launch("${item.baseName}.zip")
+    }
+
+    private fun requestArchiveExport() {
+        archiveExportMode = true
+        exportLauncher.launch("ppgcollector-archive.zip")
     }
 }
 
@@ -267,10 +316,15 @@ private fun BleHome(
     capture: CaptureServiceObservation,
     preview: BlePreviewSnapshot,
     sessionName: String,
+    participantDraft: CaptureParticipantDraft,
+    sessionNameIsValid: Boolean,
     captureGate: CaptureGateUiState,
     onSessionNameChange: (String) -> Unit,
+    onParticipantDraftChange: (CaptureParticipantDraft) -> Unit,
+    onUseSuggestedName: () -> Unit,
     onStartCapture: () -> Unit,
     onStopCapture: () -> Unit,
+    onOpenBloodPressure: () -> Unit,
     onScan: () -> Unit,
     onStopScan: () -> Unit,
     onConnect: (String) -> BleCoordinatorAction,
@@ -481,6 +535,57 @@ private fun BleHome(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "建议名可直接采用，也可自由修改",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(onClick = onUseSuggestedName) { Text("使用建议名") }
+                    }
+                    val nameReady = sessionNameIsValid
+                    Text(
+                        if (nameReady) "被试资料（可先留空，停止前可补齐）" else "名称合法且不重复后可填写被试资料",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    OutlinedTextField(
+                        value = participantDraft.sex,
+                        onValueChange = { onParticipantDraftChange(participantDraft.copy(sex = it)) },
+                        label = { Text("性别") },
+                        enabled = nameReady,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = participantDraft.ageYears,
+                            onValueChange = { onParticipantDraftChange(participantDraft.copy(ageYears = it.filter(Char::isDigit))) },
+                            label = { Text("年龄") },
+                            enabled = nameReady,
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = participantDraft.heightCm,
+                            onValueChange = { onParticipantDraftChange(participantDraft.copy(heightCm = it)) },
+                            label = { Text("身高 cm") },
+                            enabled = nameReady,
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = participantDraft.weightKg,
+                            onValueChange = { onParticipantDraftChange(participantDraft.copy(weightKg = it)) },
+                            label = { Text("体重 kg") },
+                            enabled = nameReady,
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     Button(
                         onClick = onStartCapture,
                         enabled = captureGate.canStart,
@@ -502,6 +607,12 @@ private fun BleHome(
                         },
                     )
                 } else {
+                    FilledTonalButton(
+                        onClick = onOpenBloodPressure,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("血压记录")
+                    }
                     Button(
                         onClick = onStopCapture,
                         modifier = Modifier.fillMaxWidth(),
@@ -826,10 +937,10 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
 
 @androidx.compose.runtime.Composable
 private fun ReplayWaveformPanel(replay: CupRawReplayReport) {
-    val red = PpgDisplayTransform.rawPeakUp(
+    val red = PpgDisplayTransform.rawPeakUpForPlot(
         replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray(),
     )
-    val ir = PpgDisplayTransform.rawPeakUp(
+    val ir = PpgDisplayTransform.rawPeakUpForPlot(
         replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray(),
     )
     var viewport by remember(replay.recentSamples.size) {
@@ -889,8 +1000,15 @@ private fun LiveWaveformAndMetrics(
     displayMode: LiveWaveformDisplayMode,
     onDisplayModeChange: (LiveWaveformDisplayMode) -> Unit,
 ) {
-    val causalAvailable = waveform.causalRed.size == waveform.red.size &&
-        waveform.causalIr.size == waveform.ir.size && waveform.causalRed.isNotEmpty()
+    val displayCausal = if (waveform.displayCausalRed.size == waveform.red.size &&
+        waveform.displayCausalIr.size == waveform.ir.size && waveform.displayCausalRed.isNotEmpty()
+    ) {
+        waveform.displayCausalRed to waveform.displayCausalIr
+    } else {
+        waveform.causalRed to waveform.causalIr
+    }
+    val causalAvailable = displayCausal.first.size == waveform.red.size &&
+        displayCausal.second.size == waveform.ir.size && displayCausal.first.isNotEmpty()
     val fixedLagAvailable = waveform.fixedLagRed.size == waveform.fixedLagIr.size &&
         waveform.fixedLagRed.isNotEmpty()
     val effectiveMode = when (displayMode) {
@@ -926,13 +1044,13 @@ private fun LiveWaveformAndMetrics(
                 onClick = { onDisplayModeChange(LiveWaveformDisplayMode.CAUSAL) },
                 enabled = causalAvailable,
                 modifier = Modifier.weight(1f),
-            ) { Text("CAUSAL 0.6–4 Hz") }
+            ) { Text("CAUSAL 0.5–12 Hz") }
         } else {
             OutlinedButton(
                 onClick = { onDisplayModeChange(LiveWaveformDisplayMode.CAUSAL) },
                 enabled = causalAvailable,
                 modifier = Modifier.weight(1f),
-            ) { Text("CAUSAL 0.6–4 Hz") }
+            ) { Text("CAUSAL 0.5–12 Hz") }
         }
         if (displayMode == LiveWaveformDisplayMode.FIXED_LAG) {
             FilledTonalButton(
@@ -949,12 +1067,12 @@ private fun LiveWaveformAndMetrics(
         }
     }
     val red = when (effectiveMode) {
-        LiveWaveformDisplayMode.CAUSAL -> waveform.causalRed
+        LiveWaveformDisplayMode.CAUSAL -> displayCausal.first
         LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagRed
         LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.red)
     }
     val ir = when (effectiveMode) {
-        LiveWaveformDisplayMode.CAUSAL -> waveform.causalIr
+        LiveWaveformDisplayMode.CAUSAL -> displayCausal.second
         LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagIr
         LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.ir)
     }
@@ -964,7 +1082,7 @@ private fun LiveWaveformAndMetrics(
         0
     }
     val modeDescription = when (effectiveMode) {
-        LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.6–4 Hz"
+        LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.5–12 Hz（取负 raw 后滤波）"
         LiveWaveformDisplayMode.FIXED_LAG -> "fixed-lag 0.5–12 Hz，约 ${waveform.fixedLagLatencySamples / 100.0} s 延迟"
         LiveWaveformDisplayMode.RAW -> "原始数据，显示取负"
     }
@@ -984,14 +1102,14 @@ private fun LiveWaveformAndMetrics(
     )
     Text(
         if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
-            "${waveform.preprocessProfile ?: "ios_baseline_0.1"} · 因果 0.6–4 Hz · gap reset · " +
+            "${waveform.displayCausalProfile ?: "causal-display-0.5-12hz-0.1"} · 因果 0.5–12 Hz · 取负 raw 后滤波 · gap reset · " +
                 if (settlingSamples > 0) "浅色区为滤波 settling" else "滤波状态稳定"
         } else if (effectiveMode == LiveWaveformDisplayMode.FIXED_LAG) {
             "${waveform.fixedLagProfile ?: "fixed-lag-fir-0.5-12hz-0.1"} · 源窗口 " +
                 "${waveform.fixedLagSourceSampleStartIndex ?: "—"}–${waveform.fixedLagSourceSampleEndIndex ?: "—"} · " +
                 "约 ${"%.2f".format(Locale.ROOT, waveform.fixedLagLatencySamples / 100.0)} s 延迟"
         } else {
-            "100 Hz accepted RAW · 仅显示取负，落盘仍为原始 ADC · 不插值、不重算"
+            "100 Hz accepted RAW · 显示取负并去除可视化线性基线趋势，落盘仍为原始 ADC · 不插值、不重算"
         },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,

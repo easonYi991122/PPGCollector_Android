@@ -76,12 +76,12 @@ class OfflinePpgAnalysisTest {
         assertTrue(filtered.red.all(Double::isFinite))
         assertTrue(filtered.ir.all(Double::isFinite))
         assertArrayEquals(
-            ZeroPhasePpgFilter.filter(red.copyOfRange(0, 600)),
+            ZeroPhasePpgFilter.filter(PpgDisplayTransform.rawPeakUp(red.copyOfRange(0, 600))),
             filtered.red.copyOfRange(0, 600),
             0.0,
         )
         assertArrayEquals(
-            ZeroPhasePpgFilter.filter(red.copyOfRange(600, count)),
+            ZeroPhasePpgFilter.filter(PpgDisplayTransform.rawPeakUp(red.copyOfRange(600, count))),
             filtered.red.copyOfRange(600, count),
             0.0,
         )

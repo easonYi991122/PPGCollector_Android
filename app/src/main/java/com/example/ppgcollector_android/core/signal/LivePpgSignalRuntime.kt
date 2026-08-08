@@ -32,9 +32,13 @@ class LivePpgSignalRuntime(
     private val rawIr = DoubleArray(profile.windowSampleCount)
     private val causalRed = DoubleArray(profile.windowSampleCount)
     private val causalIr = DoubleArray(profile.windowSampleCount)
+    private val displayCausalRed = DoubleArray(profile.windowSampleCount)
+    private val displayCausalIr = DoubleArray(profile.windowSampleCount)
     private val timeSeconds = DoubleArray(profile.windowSampleCount)
     private var redPreprocessor = PpgPreprocessor(profile.preprocessingProfile)
     private var irPreprocessor = PpgPreprocessor(profile.preprocessingProfile)
+    private var displayCausalRedFilter = CausalPpgDisplayFilterRuntime()
+    private var displayCausalIrFilter = CausalPpgDisplayFilterRuntime()
     private var fixedLagRuntime = FixedLagPpgFilterRuntime()
     private val fixedLagSamples = ArrayDeque<FixedLagPpgSample>(profile.windowSampleCount)
     private var ringStart = 0
@@ -77,6 +81,8 @@ class LivePpgSignalRuntime(
             for (sample in decoded.frame.samples) {
                 val rawRedValue = sample.red.toDouble()
                 val rawIrValue = sample.ir.toDouble()
+                val displayRawRed = -rawRedValue
+                val displayRawIr = -rawIrValue
                 val red = redPreprocessor.process(rawRedValue).sample
                 val ir = irPreprocessor.process(rawIrValue).sample
                 if (red == null || ir == null) {
@@ -89,12 +95,14 @@ class LivePpgSignalRuntime(
                     ir = rawIrValue,
                     filteredRed = red.bandpassed,
                     filteredIr = ir.bandpassed,
+                    displayFilteredRed = displayCausalRedFilter.process(displayRawRed),
+                    displayFilteredIr = displayCausalIrFilter.process(displayRawIr),
                     time = nextAcceptedSampleIndex.toDouble() / profile.sampleRateHz.toDouble(),
                 )
                 fixedLagRuntime.ingest(
                     sourceSampleIndex = nextAcceptedSampleIndex,
-                    red = rawRedValue,
-                    ir = rawIrValue,
+                    red = displayRawRed,
+                    ir = displayRawIr,
                 ).forEach { filtered ->
                     fixedLagSamples.addLast(filtered)
                     while (fixedLagSamples.size > profile.windowSampleCount) {
@@ -187,6 +195,9 @@ class LivePpgSignalRuntime(
             causalRed = copyRing(causalRed),
             causalIr = copyRing(causalIr),
             preprocessProfile = profile.preprocessingProfile.identifier,
+            displayCausalRed = copyRing(displayCausalRed),
+            displayCausalIr = copyRing(displayCausalIr),
+            displayCausalProfile = displayCausalRedFilter.profile.identifier,
             continuousSampleCount = continuousSampleCount,
             metricWarmupSampleCount = profile.windowSampleCount,
             settlingSampleCount = settlingSamples,
@@ -204,6 +215,8 @@ class LivePpgSignalRuntime(
         ir: Double,
         filteredRed: Double,
         filteredIr: Double,
+        displayFilteredRed: Double,
+        displayFilteredIr: Double,
         time: Double,
     ) {
         val index = (ringStart + ringSize) % profile.windowSampleCount
@@ -211,6 +224,8 @@ class LivePpgSignalRuntime(
         rawIr[index] = ir
         causalRed[index] = filteredRed
         causalIr[index] = filteredIr
+        displayCausalRed[index] = displayFilteredRed
+        displayCausalIr[index] = displayFilteredIr
         timeSeconds[index] = time
         if (ringSize < profile.windowSampleCount) {
             ringSize++
@@ -230,6 +245,8 @@ class LivePpgSignalRuntime(
     private fun invalidateContinuity(nextIndex: Long) {
         redPreprocessor.reset()
         irPreprocessor.reset()
+        displayCausalRedFilter.reset()
+        displayCausalIrFilter.reset()
         fixedLagRuntime.reset(nextIndex)
         fixedLagSamples.clear()
         ringStart = 0

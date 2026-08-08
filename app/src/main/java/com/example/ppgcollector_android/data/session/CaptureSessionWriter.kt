@@ -126,6 +126,7 @@ class CaptureSessionWriter(
     private var lastCheckpointNanos = System.nanoTime()
     private var metricsInitialized = false
     private var bloodPressureInitialized = false
+    private var participantSnapshot: CaptureParticipantSnapshot? = configuration.participant
 
     private companion object {
         const val checkpointIntervalNanos = 1_000_000_000L
@@ -199,6 +200,13 @@ class CaptureSessionWriter(
         snapshot = snapshot.copy(bloodPressureRows = snapshot.bloodPressureRows + 1)
         checkpointIfDue()
         return snapshot
+    }
+
+    /** Called only by the serialized writer owner; publishes a new metadata snapshot. */
+    fun updateParticipant(participant: CaptureParticipantSnapshot?) {
+        checkOpen()
+        participantSnapshot = participant
+        writeMetadata(null, null, false, null)
     }
 
     /**
@@ -440,7 +448,7 @@ class CaptureSessionWriter(
                 ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.subject,
             canonicalSequence = configuration.canonicalSequence
                 ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.sequence,
-            participant = configuration.participant,
+            participant = participantSnapshot,
         )
         val tempPath = metadataPath.resolveSibling(".${metadataPath.fileName}.tmp")
         val bytes = CaptureSessionMetadataCodec.encode(metadata).toByteArray(Charsets.UTF_8)

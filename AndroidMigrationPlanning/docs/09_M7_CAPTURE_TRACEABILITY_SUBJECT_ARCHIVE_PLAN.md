@@ -3,7 +3,7 @@
 日期：2026-08-08  
 规划版本：`M7.0`  
 代码基线：`main` / `970d1f9` 之后的当前工作树  
-状态：**规划已形成；M7.1 数据合同/命名/profile 内核与 M7.2 显示/指标/fixed-lag 候选已实现并通过本地综合门禁，M7.3～M7.5 尚未实现**
+状态：**规划已形成；M7.1～M7.3 已实现并通过本地综合门禁，M7.4～M7.5 尚未完成**
 
 本文是用户 2026-08-08 提出的十项增量需求的实施主计划。它只覆盖新需求及其必需的兼容改造，不替代既有 BLE、wire protocol、`CUPRAW1`、raw-first、检查/恢复和 M6 离线分析证据。若本文与旧文档对“未来应做什么”的描述冲突，以本文为本次 M7 增量的优先规划；旧实现事实仍按其发生时间保留。
 
@@ -320,7 +320,7 @@ Activity 不能直接持有文件句柄。血压弹窗打开时通过 service bi
 
 建议 commit：`feat(M7.2): align live PI metrics and fixed-lag PPG display`
 
-### 第 3 轮：M7.3 录制工作流、身份编辑与参考血压
+### 第 3 轮：M7.3 录制工作流、身份编辑与参考血压（已实现）
 
 覆盖：`M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`，只做功能所需 UI，不做最终视觉重排。
 
@@ -359,7 +359,11 @@ Activity 不能直接持有文件句柄。血压弹窗打开时通过 service bi
 
 唯一综合校验：与 M7.1 相同的单次完整 Gradle 命令。
 
-建议 commit：`feat(M7.3): add guided capture identity and manual BP events`
+实际实现：`CaptureSetupModels.kt`、`ManualBloodPressureDialog.kt`、service binder/controller/writer command 已落地；录制页可以自由命名并使用建议名，canonical subject 资料以 revision + session snapshot 保存；血压事件以 dialog-open source cursor 写入独立 sidecar，重复 token 幂等，录制不中断。与此同时修正显示链路：raw 绘图取负并去可视化线性趋势，causal display/fixed-lag/离线 replay 均先对取负 raw 滤波，0.5–12 Hz causal profile 不改变 raw/metrics 落盘契约。
+
+综合门禁：完整 Gradle gate 通过；真实设备的多次血压、旋转/IME 和滤波观感仍 pending。
+
+实际 commit：`feat(M7.3): add guided capture identity and manual BP events`
 
 ### 第 4 轮：M7.4 被试档案与批量导出
 

@@ -20,6 +20,7 @@ import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
 enum class CaptureRecordingState {
@@ -85,6 +86,8 @@ class CaptureRecordingController(
     private val queue = ArrayBlockingQueue<QueuedChunk>(queueCapacity)
     private val analysisQueue = ArrayBlockingQueue<AnalysisInput>(queueCapacity)
     private val metricQueue = ArrayBlockingQueue<CaptureMetricEpoch>(queueCapacity)
+    private val bloodPressureQueue = ArrayBlockingQueue<ManualBloodPressureEvent>(queueCapacity)
+    private val participantQueue = ArrayBlockingQueue<ParticipantUpdate>(4)
     private var writer: CaptureSessionWriter? = null
     private var activeGeneration: Long? = null
     private var activeStreamProtocolMode: CupStreamProtocolMode? = null
@@ -97,6 +100,9 @@ class CaptureRecordingController(
     private var analysisWorker: Thread? = null
     private var analysisStopRequested = false
     private var signalRuntime = LivePpgSignalRuntime()
+    private var latestAcceptedSourceSampleIndex: Long? = null
+    private var nextReferenceEventIndex = 0L
+    private val committedReferenceTokens = ConcurrentHashMap.newKeySet<String>()
     private val _analysisSnapshot = MutableStateFlow(CaptureAnalysisSnapshot())
     private val _waveformSnapshot = MutableStateFlow(LiveWaveformSnapshot())
 
@@ -105,6 +111,8 @@ class CaptureRecordingController(
         val acceptedSampleStartIndex: Long,
         val measuredAt: Instant,
     )
+
+    private data class ParticipantUpdate(val participant: CaptureParticipantSnapshot?)
 
     @Volatile
     private var snapshotValue = CaptureRecordingSnapshot()
@@ -151,6 +159,11 @@ class CaptureRecordingController(
                 queue.clear()
                 analysisQueue.clear()
                 metricQueue.clear()
+                bloodPressureQueue.clear()
+                participantQueue.clear()
+                committedReferenceTokens.clear()
+                latestAcceptedSourceSampleIndex = null
+                nextReferenceEventIndex = 0L
                 analysisStopRequested = false
                 signalRuntime = LivePpgSignalRuntime()
                 _analysisSnapshot.value = CaptureAnalysisSnapshot(
@@ -213,6 +226,54 @@ class CaptureRecordingController(
             requestStopLocked(reason, error)
             publish(CaptureRecordingState.STOPPING)
         }
+    }
+
+    /** Freezes the latest accepted PPG cursor without touching the writer. */
+    fun captureReferenceTimestamp(
+        dialogOpenUtc: Instant = Instant.now(),
+        dialogOpenHostMonotonicNanoseconds: ULong = System.nanoTime().toULong(),
+    ): CaptureReferenceTimestamp? = synchronized(lock) {
+        val currentWriter = writer ?: return@synchronized null
+        if (snapshotValue.state != CaptureRecordingState.RECORDING) return@synchronized null
+        val sampleIndex = latestAcceptedSourceSampleIndex ?: return@synchronized null
+        val generation = activeGeneration ?: return@synchronized null
+        CaptureReferenceTimestamp(
+            sessionId = currentWriter.configuration.sessionId,
+            connectionGeneration = generation,
+            eventIndex = nextReferenceEventIndex++,
+            sourceSampleIndex = sampleIndex,
+            sourceTimeSeconds = sampleIndex.toDouble() / 100.0,
+            dialogOpenHostMonotonicNanoseconds = dialogOpenHostMonotonicNanoseconds,
+            dialogOpenUtc = dialogOpenUtc,
+        )
+    }
+
+    /** Enqueues a BP event; duplicate event tokens are idempotent. */
+    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean = synchronized(lock) {
+        val currentWriter = writer ?: return@synchronized false
+        if (snapshotValue.state != CaptureRecordingState.RECORDING) return@synchronized false
+        if (event.reference.sessionId != currentWriter.configuration.sessionId ||
+            event.reference.connectionGeneration != activeGeneration
+        ) return@synchronized false
+        require(event.systolicMmHg > 0 && event.diastolicMmHg > 0) {
+            "blood pressure must be positive"
+        }
+        val token = "${event.reference.sessionId}:${event.reference.eventIndex}"
+        if (!committedReferenceTokens.add(token)) return@synchronized true
+        if (!bloodPressureQueue.offer(event)) {
+            committedReferenceTokens.remove(token)
+            return@synchronized false
+        }
+        true
+    }
+
+    /** Coalesces profile edits so the writer owns all metadata mutations. */
+    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean = synchronized(lock) {
+        if (writer == null || snapshotValue.state != CaptureRecordingState.RECORDING) {
+            return@synchronized false
+        }
+        participantQueue.clear()
+        participantQueue.offer(ParticipantUpdate(participant))
     }
 
     fun awaitFinalized(timeout: Long, unit: TimeUnit): CaptureSessionSummary? {
@@ -306,15 +367,21 @@ class CaptureRecordingController(
                             error = "analysis queue overflow; raw recording preserved",
                         )
                     }
-                    drainMetricQueue()
                     synchronized(lock) { publish(snapshotValue.state) }
                 }
+                drainMetricQueue()
+                drainBloodPressureQueue()
+                drainParticipantQueue()
                 synchronized(lock) {
-                    if (stopRequested && queue.isEmpty()) break
+                    if (stopRequested && queue.isEmpty() && bloodPressureQueue.isEmpty() &&
+                        participantQueue.isEmpty() && metricQueue.isEmpty()
+                    ) break
                 }
             }
             finishAnalysis()
             drainMetricQueue()
+            drainBloodPressureQueue()
+            drainParticipantQueue()
             finalizeWriter()
         } catch (error: Throwable) {
             synchronized(lock) {
@@ -338,6 +405,14 @@ class CaptureRecordingController(
                             measuredAt = input.measuredAt,
                             nowNanos = nowNanos,
                         )
+                        val acceptedSamples = input.frames.filter { it.isAccepted }
+                            .sumOf { it.frame.samples.size }
+                        if (acceptedSamples > 0) {
+                            synchronized(lock) {
+                                latestAcceptedSourceSampleIndex =
+                                    input.acceptedSampleStartIndex + acceptedSamples - 1L
+                            }
+                        }
                         signal.waveform?.let { _waveformSnapshot.value = it }
                         val request = signal.metricRequest
                         _analysisSnapshot.value = _analysisSnapshot.value.copy(
@@ -404,6 +479,30 @@ class CaptureRecordingController(
             val epoch = metricQueue.poll() ?: return
             try {
                 writer?.appendMetricEpoch(epoch)
+            } catch (error: Throwable) {
+                synchronized(lock) { requestWriteFailureLocked(error) }
+                return
+            }
+        }
+    }
+
+    private fun drainBloodPressureQueue() {
+        while (true) {
+            val event = bloodPressureQueue.poll() ?: return
+            try {
+                writer?.appendBloodPressure(event)
+            } catch (error: Throwable) {
+                synchronized(lock) { requestWriteFailureLocked(error) }
+                return
+            }
+        }
+    }
+
+    private fun drainParticipantQueue() {
+        while (true) {
+            val participant = participantQueue.poll() ?: return
+            try {
+                writer?.updateParticipant(participant.participant)
             } catch (error: Throwable) {
                 synchronized(lock) { requestWriteFailureLocked(error) }
                 return

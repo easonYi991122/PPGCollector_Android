@@ -121,12 +121,12 @@ internal fun CompleteSignalReplayPanel(
         },
     )
     val red = if (stage == ReplaySignalStage.RAW) {
-        PpgDisplayTransform.rawPeakUp(trace.rawRed)
+        PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
     } else {
         trace.filteredRed
     }
     val ir = if (stage == ReplaySignalStage.RAW) {
-        PpgDisplayTransform.rawPeakUp(trace.rawIr)
+        PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
     } else {
         trace.filteredIr
     }
@@ -856,8 +856,8 @@ private fun signalValues(
     stage: WorkbenchSignalStage,
 ): DoubleArray = when {
     stage == WorkbenchSignalStage.RAW && channel == "RED" ->
-        PpgDisplayTransform.rawPeakUp(trace.rawRed)
-    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
+        PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
+    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
     channel == "RED" -> trace.filteredRed
     else -> trace.filteredIr
 }

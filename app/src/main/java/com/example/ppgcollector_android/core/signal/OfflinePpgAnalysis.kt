@@ -218,12 +218,12 @@ object OfflinePpgAnalyzer {
             if (stop - start < 32) return
             cancellationCheck()
             ZeroPhasePpgFilter.filter(
-                input.red.copyOfRange(start, stop),
+                PpgDisplayTransform.rawPeakUp(input.red.copyOfRange(start, stop)),
                 profile,
             ).copyInto(red, start)
             cancellationCheck()
             ZeroPhasePpgFilter.filter(
-                input.ir.copyOfRange(start, stop),
+                PpgDisplayTransform.rawPeakUp(input.ir.copyOfRange(start, stop)),
                 profile,
             ).copyInto(ir, start)
         }

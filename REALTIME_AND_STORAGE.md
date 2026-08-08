@@ -2,9 +2,9 @@
 
 日期：2026-08-08
 
-代码基线：2026-08-08 M7.2 显示/指标/sidecar/fixed-lag candidate 实现
+代码基线：2026-08-08 M7.3 录制身份/BP 与取负后显示滤波实现（M7.4 archive/export 正在收口）
 
-适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时 RAW/CAUSAL/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/analysis 文件链路。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/analysis 文件链路。
 
 本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。
 
@@ -172,7 +172,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 - `PpgPreprocessor.reset()`：gap、连接 generation 或非法输入后清空 DC/SOS 状态；
 - `PpgWindowNormalizer.normalize()`：按算法需要执行 polarity transform、去均值和标准差归一化。
 
-实时路径不能使用离线 `sosfiltfilt`/zero-phase，因为它依赖未来样本。M7.2 增加 `FixedLagPpgFilterRuntime`：201-tap 对称 windowed-sinc FIR 覆盖 0.5–12 Hz，保留约 1 s 右侧上下文后输出中心样本；它是明确标注 latency 的 display candidate，不宣称与离线 zero-phase 已数值准入。CAUSAL 0.6–4 Hz 仍是回退 profile；离线 zero-phase 仍使用独立版本。
+实时路径不能使用离线 `sosfiltfilt`/zero-phase，因为它依赖未来样本。M7.3 的默认 CAUSAL display profile `causal-display-0.5-12hz-0.1` 对取负后的 raw 依次执行一阶 high-pass/low-pass，保持因果且不再沿用窄 0.6–4 Hz 的显示链路；旧 `causalRed/Ir` 仍保留给指标/兼容回退。`FixedLagPpgFilterRuntime` 也改为接收取负 raw，覆盖 0.5–12 Hz 并保留约 1 s 右侧上下文；离线 replay display filter 同样先取负，均明确为 display-only。
 
 ### 2.6 实时指标
 
@@ -379,7 +379,14 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - [`CaptureSessionExportService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) 的 `exportZip()` 流式打包 raw、CSV、session JSON，支持进度和取消；目标文件使用临时文件后 no-overwrite move。
 - [`CaptureAndroidExport.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) 的 `CaptureSafExportService.export()` 写入用户选择的 SAF Uri；`CaptureFileProviderExportService.createShare()` 在 cache 生成 ZIP 并通过 `content://` 分享，不暴露内部路径。
 
-当前 ZIP 只包含三个主会话文件；`analysis/` 历史不在 `CaptureSessionExportService` 的 sources 列表中。
+当前 legacy 单会话 ZIP 只包含主会话文件和 metadata 声明的可选 sidecar；`analysis/` 历史不在 `CaptureSessionExportService` 的 sources 列表中。M7.4 的 subject-first archive exporter 另行提供 `export_manifest.json` 与多会话目录结构。
+
+### 3.8.1 M7.3 录制身份与手工参考血压
+
+- `SessionNamePolicy` 在 start gate 之前执行自由文件名合法性、大小写不敏感重复和 canonical `PPG-{subject}-{seq}` 解析；建议名从 filesystem 中 raw chunk>0 的历史会话重建，不会被空目录预留消耗。
+- `CaptureServiceViewModel` 将 canonical subject 的最新 `SubjectProfileStore` revision 预填到表单，并在 start intent 中固化 `CaptureParticipantSnapshot`；session metadata 永远保存该次 snapshot，不会因未来 profile revision 改写旧会话。
+- 录制中“血压记录”只请求 service binder 的 `captureReferenceTimestamp()`；controller 使用最新 accepted `sourceSampleIndex`/generation 创建 token。保存命令进入独立 BP 队列，由 `CaptureSessionWriter.appendBloodPressure()` 追加 `{stem}.blood-pressure.csv`；取消不写行、重复 event token 幂等、stop 前 drain，弹窗不会暂停 GATT/raw/analysis。
+- 计算 blood pressure 仍是 `MODEL_UNAVAILABLE`；sidecar 仅表示用户输入的参考真值，`dialog_open_utc` 与 PPG source cursor 是对齐主键，`saved_utc` 仅作审计。
 
 ### 3.9 离线分析结果
 

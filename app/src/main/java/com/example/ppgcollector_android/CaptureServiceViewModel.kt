@@ -16,6 +16,14 @@ import com.example.ppgcollector_android.data.session.CaptureStartContext
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import com.example.ppgcollector_android.data.session.CaptureStartGate
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
+import com.example.ppgcollector_android.data.session.CaptureParticipantDraft
+import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
+import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
+import com.example.ppgcollector_android.data.session.SessionNamePolicy
+import com.example.ppgcollector_android.data.session.CanonicalSessionIdentity
+import com.example.ppgcollector_android.data.session.SubjectProfileStore
+import com.example.ppgcollector_android.data.session.SubjectProfileRevision
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
@@ -184,6 +192,14 @@ class CaptureServiceClient(
         binder?.stop()
     }
 
+    fun captureReferenceTimestamp(): CaptureReferenceTimestamp? = binder?.captureReferenceTimestamp()
+
+    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
+        binder?.commitManualBloodPressure(event) == true
+
+    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
+        binder?.updateParticipantProfile(participant) == true
+
     private fun observeRecording(localBinder: CaptureForegroundService.LocalBinder): Job =
         scope.launch {
             localBinder.recordingFlow().collect { recording ->
@@ -242,15 +258,21 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private val collectorApplication = application as PpgCollectorApplication
     private val serviceClient = CaptureServiceClient(application, viewModelScope)
     private val _sessionName = MutableStateFlow("")
+    private val _participantDraft = MutableStateFlow(CaptureParticipantDraft())
+    private var participantDraftDirty = false
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
     private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
+    val participantDraft: StateFlow<CaptureParticipantDraft> = _participantDraft.asStateFlow()
     val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
     val previewState: StateFlow<BlePreviewSnapshot> = collectorApplication.bleCoordinator.previewFlow
 
     init {
+        _sessionName.value = SessionNamePolicy
+            .suggestedBaseName(collectorApplication.sessionsRoot)
+            .orEmpty()
         viewModelScope.launch {
             combine(
                 _sessionName,
@@ -270,6 +292,21 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     fun setSessionName(value: String) {
         _sessionName.value = value
+        if (!participantDraftDirty) prefillParticipantFor(value)
+    }
+
+    fun useSuggestedSessionName() {
+        setSessionName(SessionNamePolicy.suggestedBaseName(collectorApplication.sessionsRoot).orEmpty())
+    }
+
+    fun setParticipantDraft(value: CaptureParticipantDraft) {
+        participantDraftDirty = true
+        _participantDraft.value = value
+    }
+
+    fun resetParticipantDraftFromSubject() {
+        participantDraftDirty = false
+        prefillParticipantFor(_sessionName.value)
     }
 
     fun onStart() = serviceClient.bind()
@@ -277,6 +314,16 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     fun onStop() = serviceClient.unbind()
 
     fun stopRecording() = serviceClient.stopRecording()
+
+    fun captureReferenceTimestamp(): CaptureReferenceTimestamp? = serviceClient.captureReferenceTimestamp()
+
+    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
+        serviceClient.commitManualBloodPressure(event)
+
+    fun updateParticipantProfile(): Boolean {
+        val participant = participantForSession(_sessionName.value, persistCanonical = true)
+        return serviceClient.updateParticipantProfile(participant)
+    }
 
     fun setNotificationPermissionResult(granted: Boolean) {
         _notificationPermissionFailure.value = CaptureNotificationPermissionPolicy.failureFor(
@@ -295,6 +342,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val deviceName = ble.phase.deviceId?.let { id ->
             ble.discoveredDevices.firstOrNull { it.id == id }?.name
         }
+        val participant = participantForSession(gate.sessionName, persistCanonical = true)
         runCatching {
             androidx.core.content.ContextCompat.startForegroundService(
                 getApplication(),
@@ -302,12 +350,49 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                     getApplication(),
                     sessionName = gate.sessionName,
                     deviceName = deviceName,
+                    participant = participant,
                 ),
             )
         }.onFailure { error ->
             _captureGate.value = gate.copy(failure = mapCaptureServiceStartFailure(error))
         }
     }
+
+    fun validateSessionName(value: String = _sessionName.value) =
+        SessionNamePolicy.validate(value, collectorApplication.sessionsRoot)
+
+    private fun prefillParticipantFor(name: String) {
+        val identity = SessionNamePolicy.parseCanonical(name)
+        val latest = identity?.let { subjectProfileStore().read(it.subject)?.latest }
+        _participantDraft.value = CaptureParticipantDraft.fromSnapshot(
+            latest?.asParticipantSnapshot(identity!!.subject),
+        )
+    }
+
+    private fun participantForSession(
+        name: String,
+        persistCanonical: Boolean,
+    ): CaptureParticipantSnapshot? {
+        val identity = SessionNamePolicy.parseCanonical(name)
+        if (identity == null && _participantDraft.value == CaptureParticipantDraft()) return null
+        val store = subjectProfileStore()
+        if (identity != null && persistCanonical) {
+            val existing = store.read(identity.subject)?.latest
+            val draftSnapshot = _participantDraft.value.toSnapshot(identity, existing?.revisionId)
+            val saved = store.saveRevision(
+                subject = identity.subject,
+                sex = draftSnapshot.sex,
+                ageYears = draftSnapshot.ageYears,
+                heightCm = draftSnapshot.heightCm,
+                weightKg = draftSnapshot.weightKg,
+                additionalFields = draftSnapshot.additionalFields,
+            )
+            return saved.latest?.asParticipantSnapshot(identity.subject)?.copy(sequence = identity.sequence)
+        }
+        return _participantDraft.value.toSnapshot(identity)
+    }
+
+    private fun subjectProfileStore() = SubjectProfileStore(collectorApplication.subjectsRoot)
 
     private fun evaluateGate(
         name: String,

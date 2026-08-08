@@ -2759,6 +2759,32 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 执行 M7.3：名称/建议名表单、subject profile 复用与修订、录制前后资料录入、非阻塞“血压记录”弹窗及 service/controller reference timestamp command；沿用每轮一次综合 Gradle gate。
 
+## 2026-08-08 · M7.3 · Guided capture identity, reference BP and flipped-display filter correction
+
+### 本轮目标
+
+- Requirement: `M7-NAME-001`、`M7-SUB-001`、`M7-BP-001`；同步修正用户提出的 RAW 基线、causal 频带和滤波输入极性问题。
+- Primary source: 用户本轮需求、`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`、既有 session v2/sidecar contracts。
+- Android target: `CaptureSetupModels.kt`、`CaptureServiceViewModel.kt`、`CaptureForegroundService.kt`、`CaptureRecordingController.kt`、`CaptureSessionWriter.kt`、`ManualBloodPressureDialog.kt`、`MainActivity.kt`、`PpgDisplayTransform.kt`、`LivePpgSignalRuntime.kt`、`OfflinePpgAnalysis.kt`。
+- Non-goals: 不改变 CUPRAW1、25 列 CSV 的 raw ADC、既有指标计算输入、computed BP/SpO2 临床能力或 M7.5 最终视觉重排。
+
+### 实现事实
+
+- 自由文件名继续严格限制为 `[A-Za-z0-9_-]`、非空、大小写不敏感重复；启动时由实际 raw chunk 的 filesystem canonical session 重建建议名。录制页提供建议名按钮和性别/年龄/身高/体重资料编辑；canonical subject 保存 profile revision，并把 participant snapshot 固化到 session metadata。
+- service binder 暴露 reference timestamp、manual BP commit 和 participant update。controller 跟踪最新 accepted source sample，BP/profile 命令进入独立有界队列，writer 在同一 owner 线程追加 BP sidecar/metadata checkpoint；session/generation 校验和 event token 保证旧 dialog 无法写入下一 session，重复提交幂等。
+- `rawPeakUpForPlot` 在取负后去除有限窗口的线性 baseline trend；实时 causal display profile 为 `causal-display-0.5-12hz-0.1`（取负 raw 后的一阶 HP/LP causal band-pass），fixed-lag 与 offline replay display filter 同样先取负；落盘 raw/CSV 和既有 metric causal 轨不变。
+
+### 验证
+
+- 综合命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。
+- 首次运行在新 archive exporter 的显式泛型处编译失败；修正后同一完整门禁通过：`BUILD SUCCESSFUL in 1m 25s`，130 actionable tasks，156 JVM tests、debug lint、debug/release/androidTest APK、R8、`REL-005 verifyReleasePrivacy` 均通过。旧 offline polarity 断言已更新为“先取负再滤波”契约。
+- 真机/模拟器未执行：多次 BP、旋转/IME、causal/fixed-lag 观感、真实 CUP/zero-phase 数值准入仍 pending。
+
+### 风险与下一轮
+
+- 当前 BP dialog 对 unusual SBP/DBP 关系提供校验提示；后续 UI 收尾需在 M7.5 完成确认式 warning、IME bring-into-view、录制态紧凑布局和动态字号门禁。
+- M7.4 archive/export 代码已在工作树形成下一轮切片，下一轮补齐档案页/批量 SAF 入口与 archive/export tests，并单独执行综合门禁。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

@@ -15,6 +15,10 @@ import com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace
 import com.example.ppgcollector_android.data.session.CaptureSessionRecoveryService
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
+import com.example.ppgcollector_android.data.session.SubjectArchiveRepository
+import com.example.ppgcollector_android.data.session.SubjectArchiveSnapshot
+import com.example.ppgcollector_android.data.session.CaptureArchiveSelection
+import com.example.ppgcollector_android.data.session.CaptureArchiveExportService
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -73,7 +77,7 @@ data class SessionDetailUi(
     val error: String? = null,
 )
 
-enum class SessionActionKind { EXPORT, RECOVER }
+enum class SessionActionKind { EXPORT, ARCHIVE_EXPORT, RECOVER }
 
 data class SessionActionUi(
     val kind: SessionActionKind? = null,
@@ -98,6 +102,9 @@ data class SessionsUiState(
     val analysisTasks: Map<Path, SessionAnalysisTaskUi> = emptyMap(),
     val error: String? = null,
     val action: SessionActionUi = SessionActionUi(),
+    val archive: SubjectArchiveSnapshot = SubjectArchiveSnapshot(),
+    val archiveSelectedDirectories: Set<Path> = emptySet(),
+    val archiveSelectedSubjects: Set<String> = emptySet(),
 )
 
 enum class SessionAnalysisTaskStatus { RUNNING, COMPLETED, CANCELLED, FAILED }
@@ -165,17 +172,18 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null)
-            val result = withContext(Dispatchers.IO) {
-                runCatchingCancellable {
-                    val sessions = CaptureSessionRepository.listSessions(app.sessionsRoot)
-                    val items = sessions.map(SessionListItemMapper::map)
-                    val artifacts = sessions.associate { session ->
-                        session.directory to CaptureSessionOfflineAnalysisService.listArtifacts(session)
+                val result = withContext(Dispatchers.IO) {
+                    runCatchingCancellable {
+                        val sessions = CaptureSessionRepository.listSessions(app.sessionsRoot)
+                        val items = sessions.map(SessionListItemMapper::map)
+                        val artifacts = sessions.associate { session ->
+                            session.directory to CaptureSessionOfflineAnalysisService.listArtifacts(session)
+                        }
+                        val archive = SubjectArchiveRepository.rebuild(app.sessionsRoot, app.subjectsRoot)
+                        Triple(items, artifacts, archive)
                     }
-                    items to artifacts
                 }
-            }
-            result.onSuccess { (items, artifacts) ->
+            result.onSuccess { (items, artifacts, archive) ->
                 _state.update { current ->
                     val mergedArtifacts = artifacts.mapValues { (directory, diskArtifacts) ->
                         (diskArtifacts + current.artifactsBySession[directory].orEmpty())
@@ -186,6 +194,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                         isLoading = false,
                         sessions = items,
                         artifactsBySession = mergedArtifacts,
+                        archive = archive,
                     )
                 }
             }.onFailure { error ->
@@ -193,6 +202,69 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                     isLoading = false,
                     error = error.message ?: error::class.simpleName,
                 )
+            }
+        }
+    }
+
+    fun toggleArchiveSession(directory: Path) {
+        _state.update { state ->
+            val next = state.archiveSelectedDirectories.toMutableSet()
+            if (!next.add(directory)) next.remove(directory)
+            state.copy(archiveSelectedDirectories = next)
+        }
+    }
+
+    fun toggleArchiveSubject(subject: String) {
+        _state.update { state ->
+            val next = state.archiveSelectedSubjects.toMutableSet()
+            if (!next.add(subject)) next.remove(subject)
+            state.copy(archiveSelectedSubjects = next)
+        }
+    }
+
+    fun clearArchiveSelection() {
+        _state.update { it.copy(archiveSelectedDirectories = emptySet(), archiveSelectedSubjects = emptySet()) }
+    }
+
+    fun exportArchiveTo(destination: Uri) {
+        val snapshot = _state.value
+        val selection = CaptureArchiveSelection(
+            sessionDirectories = snapshot.archiveSelectedDirectories,
+            subjectIds = snapshot.archiveSelectedSubjects,
+        )
+        if (selection.isEmpty) return
+        actionJob?.cancel()
+        actionJob = viewModelScope.launch {
+            setAction(SessionActionUi(kind = SessionActionKind.ARCHIVE_EXPORT, isRunning = true))
+            try {
+                withContext(Dispatchers.IO) {
+                    val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val staging = app.cacheDir.toPath().resolve("archive-export-${System.nanoTime()}.zip")
+                    try {
+                        CaptureArchiveExportService.export(
+                            sessionsRoot = app.sessionsRoot,
+                            subjectsRoot = app.subjectsRoot,
+                            selection = selection,
+                            destination = staging,
+                            onProgress = { progress -> publishExportProgress(progress) },
+                            cancellation = CaptureExportCancellation {
+                                if (job?.isActive == false) throw CaptureSessionExportException.Cancelled
+                            },
+                        )
+                        app.contentResolver.openOutputStream(destination, "w")?.use { output ->
+                            Files.newInputStream(staging).use { input -> input.copyTo(output, 64 * 1024) }
+                        } ?: throw CaptureSessionExportException.CannotExport("cannot open SAF destination")
+                    } finally {
+                        Files.deleteIfExists(staging)
+                    }
+                }
+                setAction(SessionActionUi(kind = SessionActionKind.ARCHIVE_EXPORT, message = "批量导出完成"))
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (_: CaptureSessionExportException.Cancelled) {
+                setAction(SessionActionUi(kind = SessionActionKind.ARCHIVE_EXPORT, message = "导出已取消"))
+            } catch (error: Exception) {
+                setAction(SessionActionUi(kind = SessionActionKind.ARCHIVE_EXPORT, error = error.message))
             }
         }
     }
