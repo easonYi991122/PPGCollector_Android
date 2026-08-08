@@ -3,7 +3,7 @@
 日期：2026-08-08  
 规划版本：`M7.0`  
 代码基线：`main` / `970d1f9` 之后的当前工作树  
-状态：**规划已形成；M7.1～M7.3 已实现并通过本地综合门禁，M7.4～M7.5 尚未完成**
+状态：**规划已形成；M7.1～M7.4 已实现并通过本地综合门禁，M7.5 尚未完成**
 
 本文是用户 2026-08-08 提出的十项增量需求的实施主计划。它只覆盖新需求及其必需的兼容改造，不替代既有 BLE、wire protocol、`CUPRAW1`、raw-first、检查/恢复和 M6 离线分析证据。若本文与旧文档对“未来应做什么”的描述冲突，以本文为本次 M7 增量的优先规划；旧实现事实仍按其发生时间保留。
 
@@ -365,7 +365,7 @@ Activity 不能直接持有文件句柄。血压弹窗打开时通过 service bi
 
 实际 commit：`feat(M7.3): add guided capture identity and manual BP events`
 
-### 第 4 轮：M7.4 被试档案与批量导出
+### 第 4 轮：M7.4 被试档案与批量导出（已实现）
 
 覆盖：`M7-ARC-001`、`M7-EXP-001`。
 
@@ -411,7 +411,11 @@ subject_profiles/<subject>.profile.json
 
 唯一综合校验：与 M7.1 相同的单次完整 Gradle 命令。
 
-建议 commit：`feat(M7.4): add subject archives and multi-session export`
+实际实现：`SubjectArchiveRepository` 从 filesystem metadata/profile 重建 subject-first 分组，按 seq 数值排序并保留未归档会话；`CaptureArchiveExportService` 预计算 SHA-256 后以 64 KiB buffer 流式写 manifest、subject/unclassified 文件和 profile sidecar，选择 subject/session 自动去重并对 entry collision 加后缀。`SubjectArchiveScreen` 默认替换平铺入口，仍可切换旧逐文件详情；批量 SAF launcher 通过临时 staging 保证 partial destination 不冒充成功。
+
+综合门禁：完整 Gradle gate 通过；真实 SAF 大批量、取消/进度、档案动态字号和设备运行仍 pending。
+
+实际 commit：`feat(M7.4): add subject archives and multi-session export`
 
 ### 第 5 轮：M7.5 录制页 UI 收敛与整体验收
 

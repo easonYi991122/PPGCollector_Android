@@ -2,9 +2,9 @@
 
 日期：2026-08-08
 
-代码基线：2026-08-08 M7.3 录制身份/BP 与取负后显示滤波实现（M7.4 archive/export 正在收口）
+代码基线：2026-08-08 M7.4 录制身份/BP、subject archive 与多会话导出实现
 
-适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/analysis 文件链路。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/subject archive/analysis 文件链路。
 
 本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。
 
@@ -388,6 +388,13 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - 录制中“血压记录”只请求 service binder 的 `captureReferenceTimestamp()`；controller 使用最新 accepted `sourceSampleIndex`/generation 创建 token。保存命令进入独立 BP 队列，由 `CaptureSessionWriter.appendBloodPressure()` 追加 `{stem}.blood-pressure.csv`；取消不写行、重复 event token 幂等、stop 前 drain，弹窗不会暂停 GATT/raw/analysis。
 - 计算 blood pressure 仍是 `MODEL_UNAVAILABLE`；sidecar 仅表示用户输入的参考真值，`dialog_open_utc` 与 PPG source cursor 是对齐主键，`saved_utc` 仅作审计。
 
+### 3.8.2 M7.4 subject archive 与批量导出
+
+- `SubjectArchiveRepository.rebuild()` 不引入不可恢复数据库：从 metadata 的 canonical subject/seq（或严格名称 parser）和独立 profile store 重建 subject groups；seq 用数值排序，缺口保留，profile 缺失只标记不丢 session；非 canonical、损坏 metadata 和 legacy 文件在 unclassified 区单独呈现。
+- summary 的 HR 只读取 valid `metrics.csv`，无 sidecar 时回退最新离线 artifact；没有证据显示不可用，不扫描大样本 CSV 猜测。BP summary 只统计 structural sidecar rows。
+- `CaptureArchiveExportService` 对 subject/session selection 求并集并按 directory 去重，使用 64 KiB stream 计算 size/SHA-256 后输出 `export_manifest.json`、`subjects/<subject>/<stem>/...`、`unclassified/<stem>/...`、`subject_profiles/<subject>.profile.json`。缺失/跳过、entry collision、取消和临时 destination 清理均有显式结果；旧 `CaptureSessionExportService` 单会话 ZIP adapter 保留兼容。
+- Compose 默认进入 `SubjectArchiveScreen`，可展开 subject→seq、勾选 subject 或任意 session、切回逐文件详情；CreateDocument/SAF 批量导出先写 staging，再复制到用户目标，partial archive 不报告为成功。
+
 ### 3.9 离线分析结果
 
 [`CaptureSessionOfflineAnalysis.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) 的 `CaptureSessionOfflineAnalysisService.analyzeAndSave()` 只从 raw replay 构造 accepted signal，并把结果写为不可覆盖的独立 JSON：
@@ -436,6 +443,8 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 | [`CaptureSessionRecoveryService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRecoveryService.kt) | `assess()`, `recover()` | safe-prefix 非覆盖恢复与 provenance |
 | [`CaptureSessionRepository.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) | `listSessions()`, `incompleteSessions()`, `expectedFiles()` | 文件系统会话目录索引 |
 | [`CaptureSessionExportService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionExportService.kt) | `exportZip()` | 流式 ZIP 导出 |
+| [`SubjectArchiveModels.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/SubjectArchiveModels.kt) | `SubjectArchiveRepository.rebuild()`, `selectedSessions()` | 从 metadata/profile filesystem 重建 subject/seq/unclassified archive 与 summary |
+| [`CaptureArchiveExportService.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureArchiveExportService.kt) | `export()` | manifest、size/SHA、64 KiB streaming multi-session ZIP、collision/missing/cancel handling |
 | [`CaptureAndroidExport.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureAndroidExport.kt) | `CaptureSafExportService.export()`, `CaptureFileProviderExportService.createShare()` | SAF 与 `content://` 平台适配 |
 | [`CaptureSessionOfflineAnalysis.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionOfflineAnalysis.kt) | `analyzeAndSave()`, `loadSignalTrace()`, `listArtifacts()` | raw 驱动的不可变版本化分析结果 |
 

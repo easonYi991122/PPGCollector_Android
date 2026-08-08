@@ -287,6 +287,9 @@ internal fun SavedSessionDetailScreen(
                         "帧" to (item.frameCount?.toString() ?: "—"),
                         "raw chunks" to (item.rawChunkCount?.toString() ?: "—"),
                         "文件大小" to formatBytes(item.totalBytes),
+                        "被试" to (item.participant?.subjectId ?: "未归档"),
+                        "seq" to (item.participant?.sequence?.toString() ?: "—"),
+                        "参考血压" to "${item.bloodPressureCount} 组",
                         "停止原因" to (item.stopReason ?: "—"),
                         "设备" to (item.deviceName ?: "—"),
                         "开始" to formatInstant(item.startedUtc),
@@ -308,6 +311,33 @@ internal fun SavedSessionDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+        item.participant?.let { participant ->
+            item {
+                SectionCard("被试资料快照", Modifier.padding(horizontal = 16.dp)) {
+                    LabeledValue("subject", participant.subjectId ?: "—")
+                    LabeledValue("profile revision", participant.profileRevisionId ?: "—")
+                    LabeledValue("性别", participant.sex ?: "—")
+                    LabeledValue("年龄", participant.ageYears?.toString() ?: "—")
+                    LabeledValue("身高 / 体重", "${participant.heightCm ?: "—"} cm / ${participant.weightKg ?: "—"} kg")
+                    LabeledValue("资料状态", if (participant.profileComplete) "完整" else "待补齐")
+                    Text(
+                        "该资料是录制时的不可变 snapshot；后续 subject profile revision 不会改写本会话。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (item.bloodPressureCount > 0) {
+            item {
+                SectionCard("参考血压", Modifier.padding(horizontal = 16.dp)) {
+                    Text(
+                        "本会话保存了 ${item.bloodPressureCount} 组手工参考血压；详情波形以 sidecar 的 dialog-open source cursor 对齐。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
         item {

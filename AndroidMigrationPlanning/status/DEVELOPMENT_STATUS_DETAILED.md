@@ -2785,6 +2785,33 @@ Run the integrated release gate, then use an emulator/device when available to v
 - 当前 BP dialog 对 unusual SBP/DBP 关系提供校验提示；后续 UI 收尾需在 M7.5 完成确认式 warning、IME bring-into-view、录制态紧凑布局和动态字号门禁。
 - M7.4 archive/export 代码已在工作树形成下一轮切片，下一轮补齐档案页/批量 SAF 入口与 archive/export tests，并单独执行综合门禁。
 
+## 2026-08-08 · M7.4 · Subject archive and multi-session export
+
+### 本轮目标
+
+- Requirement: `M7-ARC-001`、`M7-EXP-001`。
+- Primary source: 用户 M7.4 轮次规划、`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`、M7.1 session/profile/sidecar contracts。
+- Android target: `SubjectArchiveModels.kt`、`CaptureArchiveExportService.kt`、`SubjectArchiveScreen.kt`、`SessionsViewModel.kt`、`MainActivity.kt`、session detail/workbench participant/BP presentation。
+- Non-goals: 不删除或迁移旧会话，不把非 canonical 名称猜测合并到 subject，不把离线 artifact/metrics 缺失猜测成 HR/BP，不做 M7.5 最终紧凑 UI。
+
+### 实现事实
+
+- `SubjectArchiveRepository.rebuild()` 只从 sessions filesystem metadata + `SubjectProfileStore` 重建 archive；canonical metadata/name 进入 subject，seq 按数值排序并保留缺口；profile 缺失仍显示 subject；非 canonical/损坏 metadata 进入 unclassified。
+- subject summary 包含录制数、最大 seq、首末时间、完整/异常数、BP 组数和 HR。HR 优先读取 valid `metrics.csv`，没有证据时回退最新离线 artifact，不扫描大 CSV 推断；BP 组数来自 sidecar structural scan。
+- `CaptureArchiveExportService` 支持 subject/session union selection 和目录去重，先以 64 KiB stream 计算 size/SHA-256，再写 `export_manifest.json`、`subjects/<subject>/<stem>/...`、`unclassified/<stem>/...`、`subject_profiles/...`；缺失/跳过原因写入 manifest，entry collision 使用安全后缀，取消/错误清理临时目标。
+- Saved Sessions 默认显示 `SubjectArchiveScreen`，可切换既有平铺详情；批量 CreateDocument/SAF 使用 staging，participant snapshot、profile revision 和参考 BP 数量在详情中可追溯。
+
+### 验证
+
+- 综合命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。
+- 结果：`BUILD SUCCESSFUL in 4m`，130 actionable tasks；新增 archive repository/export tests 与既有 156 JVM tests、debug lint、debug/release/androidTest APK、R8、`REL-005 verifyReleasePrivacy` 均通过。
+- 真机/模拟器未执行：SAF 大批量 ZIP、取消/进度、档案页动态字号/无障碍、真实 legacy/corrupt 文件运行仍 pending。
+
+### 风险与下一轮
+
+- 当前 archive exporter 为独立多会话规则；legacy 单会话 adapter 继续保留以避免旧调用方破坏。后续若要求统一格式，可增加 adapter delegation 测试，但不能改变 v1/v2 可导出性。
+- 下一轮执行 M7.5：录制态紧凑布局、折叠/操作栏、IME bring-into-view、动态字号/TalkBack、档案页多选进度和全链路一次验收。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

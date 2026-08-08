@@ -1,9 +1,11 @@
 # PPGCollector Android Development Status
 
 更新时间：2026-08-08
-当前迁移版本：`M7.3`（录制身份/手工参考血压与显示滤波链路已实现）
-当前规划阶段：M7 五轮增量规划；M7.4～M7.5 尚未完成
-状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.3 已落地，M7.4 档案/批量导出与 M7.5 最终 UI 仍待后续轮次。
+当前迁移版本：`M7.4`（subject 档案与多会话导出已实现）
+当前规划阶段：M7 五轮增量规划；M7.5 尚未完成
+状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.4 已落地，M7.5 最终 UI 仍待后续轮次。
+
+本轮增量：M7.4 新增 filesystem 重建的 subject-first archive，canonical seq 数值排序、资料缺失标记、HR evidence precedence、BP 组摘要和 unclassified/legacy 保留；新增多会话流式 ZIP exporter，写入 manifest、entry size/SHA-256、subject profile、missing/skipped 原因，subject/session 多选去重并防止路径碰撞。Saved Sessions 默认进入档案页，仍可切回逐文件详情，SAF 批量导出经 staging 后再写用户目标。
 
 本轮增量：M7.3 新增自由命名建议/重复校验后的资料表单、canonical subject profile revision 快照、启动 intent participant snapshot，以及录制中不暂停 writer 的多组手工参考血压入口。血压弹窗冻结 dialog-open 的 session/generation/source sample/time/monotonic/UTC，writer 通过有界队列追加 `{stem}.blood-pressure.csv`，资料编辑通过 writer-owned metadata checkpoint 更新；算法 BP 仍保持 unavailable。
 
@@ -97,6 +99,7 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 | `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 manifest、sidecar inspection/recovery/export 兼容 | JVM/build/privacy 综合门禁通过；尚未执行真机/Android runtime 资料表单验收 | M7.2：完成显示/指标/固定时延滤波 wiring |
 | `M7.2` | M7 第 2 轮 | RAW 显示层反相、PI 同源计算、1 Hz epoch/source timestamp sidecar wiring、0.5–12 Hz fixed-lag display candidate | JVM/build/privacy 综合门禁通过；candidate 与真实 CUP/zero-phase 的相关、峰时、PI 偏差及真机 UX 尚待准入 | M7.3：命名/资料表单与非阻塞参考血压弹窗 |
 | `M7.3` | M7 第 3 轮 | 自由命名/建议名/重复校验、participant snapshot/profile revision、录制中手工参考 BP、取负 raw 后的 0.5–12 Hz causal/fixed-lag/离线显示链路 | JVM/build/privacy 综合门禁通过（含编译 Android instrumentation）；真实多次 BP、IME/旋转和滤波观感仍待真机 | M7.4：subject archive 与多会话导出 |
+| `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP、subject/session selection 与 SAF staging | JVM/build/privacy 综合门禁通过；真实 SAF 大批量/取消进度、档案页动态字号和真机运行仍待验收 | M7.5：紧凑录制 UI、IME/可访问性与整体验收 |
 
 ## 当前 Android 工程事实
 

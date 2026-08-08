@@ -112,6 +112,7 @@ data class CaptureSessionSignalTrace(
     val breakIndices: IntArray,
     val replay: CupRawReplayReport,
     val preprocessProfile: String,
+    val bloodPressureEvents: List<ManualBloodPressureEvent> = emptyList(),
 )
 
 object CaptureSessionOfflineAnalysisService {
@@ -234,6 +235,9 @@ object CaptureSessionOfflineAnalysisService {
         )
         cancellationCheck()
         val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.input, cancellationCheck)
+        val bloodPressure = files.bloodPressure?.let { path ->
+            runCatching { CaptureBloodPressureSeries.read(path) }.getOrDefault(emptyList())
+        }.orEmpty()
         return CaptureSessionSignalTrace(
             timeSeconds = loaded.input.timeSeconds,
             rawRed = loaded.input.red,
@@ -243,6 +247,7 @@ object CaptureSessionOfflineAnalysisService {
             breakIndices = loaded.input.breakIndices,
             replay = loaded.replay,
             preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
+            bloodPressureEvents = bloodPressure,
         )
     }
 

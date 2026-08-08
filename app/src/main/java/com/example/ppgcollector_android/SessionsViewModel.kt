@@ -13,12 +13,14 @@ import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisProgr
 import com.example.ppgcollector_android.data.session.CaptureSessionOfflineAnalysisService
 import com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace
 import com.example.ppgcollector_android.data.session.CaptureSessionRecoveryService
-import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import com.example.ppgcollector_android.data.session.SubjectArchiveRepository
 import com.example.ppgcollector_android.data.session.SubjectArchiveSnapshot
 import com.example.ppgcollector_android.data.session.CaptureArchiveSelection
 import com.example.ppgcollector_android.data.session.CaptureArchiveExportService
+import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
+import com.example.ppgcollector_android.data.session.CaptureBloodPressureSeries
+import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -64,6 +66,8 @@ data class SessionListItemUi(
     val rawChunkCount: Long?,
     val totalBytes: Long,
     val findings: List<String>,
+    val participant: CaptureParticipantSnapshot? = null,
+    val bloodPressureCount: Int = 0,
 )
 
 data class SessionDetailUi(
@@ -153,6 +157,11 @@ object SessionListItemMapper {
             rawChunkCount = metadata?.rawChunkCount,
             totalBytes = session.totalBytes,
             findings = findings,
+            participant = metadata?.participant,
+            bloodPressureCount = runCatching {
+                CaptureSessionRepository.expectedFiles(session.directory).bloodPressure
+                    ?.let(CaptureBloodPressureSeries::scan)?.completeDataRowCount?.toInt() ?: 0
+            }.getOrDefault(0),
         )
     }
 }

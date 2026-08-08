@@ -45,6 +45,33 @@ object CaptureBloodPressureSeries {
         event.diastolicMmHg.toString(),
     ).joinToString(",", transform = ::escapeSessionCsvField) + "\n"
 
+    fun read(path: Path): List<ManualBloodPressureEvent> {
+        if (!java.nio.file.Files.isRegularFile(path)) return emptyList()
+        val lines = java.nio.file.Files.readAllLines(path)
+        require(lines.firstOrNull() == header.trimEnd('\n')) { "unexpected blood-pressure header" }
+        return lines.drop(1).filter { it.isNotBlank() }.map { line ->
+            val fields = parseSessionCsvFields(line.removeSuffix("\r"))
+            require(fields.size == columns.size) { "expected ${columns.size} blood-pressure fields" }
+            require(fields[0] == schemaVersion) { "unsupported blood-pressure schema" }
+            ManualBloodPressureEvent(
+                reference = CaptureReferenceTimestamp(
+                    sessionId = fields[1],
+                    // v1 sidecar predates a persisted generation column; the
+                    // session id and source cursor remain the stable join key.
+                    connectionGeneration = 0L,
+                    eventIndex = fields[2].toLong(),
+                    sourceSampleIndex = fields[3].toLong(),
+                    sourceTimeSeconds = fields[4].toDouble(),
+                    dialogOpenHostMonotonicNanoseconds = fields[5].toULong(),
+                    dialogOpenUtc = Instant.parse(fields[6]),
+                ),
+                savedUtc = Instant.parse(fields[7]),
+                systolicMmHg = fields[8].toInt(),
+                diastolicMmHg = fields[9].toInt(),
+            )
+        }
+    }
+
     fun scan(path: Path): CaptureSidecarScanReport =
         scanSessionSidecar(path, header) { fields, previous ->
             if (fields.size != columns.size) return@scanSessionSidecar "expected ${columns.size} fields"

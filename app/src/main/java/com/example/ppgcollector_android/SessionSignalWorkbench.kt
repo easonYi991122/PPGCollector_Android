@@ -104,6 +104,13 @@ internal fun CompleteSignalReplayPanel(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    if (trace.bloodPressureEvents.isNotEmpty()) {
+        Text(
+            "参考血压：${trace.bloodPressureEvents.size} 组 · marker 使用 dialog-open PPG source time",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+    }
     ChoiceRow(
         values = ReplaySignalStage.entries,
         selected = stage,
