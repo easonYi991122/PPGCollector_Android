@@ -25,7 +25,7 @@ object CaptureMetricEpochFactory {
         CaptureMetricEpoch(
             sessionId = sessionId,
             connectionGeneration = result.request.generation,
-            metricEpoch = result.request.requestSequence,
+            metricEpoch = result.request.metricEpoch,
             sourceSampleIndex = result.request.windowEndSampleIndex,
             sourceTimeSeconds = result.request.windowEndTimeSeconds,
             measuredUtc = result.request.measuredAt,
@@ -88,11 +88,13 @@ object CaptureMetricSeries {
     private fun validateRow(fields: List<String>, previous: List<String>?): String? {
         if (fields.size != columns.size) return "expected ${columns.size} fields, got ${fields.size}"
         if (fields[0] != schemaVersion) return "unsupported schema_version: ${fields[0]}"
+        if (fields[1].isBlank()) return "session_id is blank"
         val epoch = fields[3].toLongOrNull() ?: return "invalid metric_epoch"
         val source = fields[4].toLongOrNull() ?: return "invalid source_sample_index"
         val time = fields[5].toDoubleOrNull() ?: return "invalid source_time_s"
         if (!time.isFinite()) return "non-finite source_time_s"
         if (previous != null) {
+            if (fields[1] != previous[1]) return "session_id changed within sidecar"
             val previousEpoch = previous[3].toLongOrNull()
             val previousSource = previous[4].toLongOrNull()
             if (previousEpoch != null && epoch <= previousEpoch) return "metric_epoch is not increasing"

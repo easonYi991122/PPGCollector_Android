@@ -83,3 +83,10 @@ Schema/algorithm/profile version impact:
 ```
 
 任何风险通过改变文件格式、算法或后台语义来缓解时，都必须先写 ADR，再更新[需求矩阵](02_REQUIREMENTS_AND_PARITY_MATRIX.md)和[总方案](01_ANDROID_MIGRATION_MASTER_PLAN.md)。
+
+## M7.1–M7.2 风险注记（2026-08-08）
+
+- `session_v2`/sidecar 已采用可选文件与兼容 reader；跨平台工具需要新增 metrics/BP parser，旧 v1 文件不迁移。
+- fixed-lag 当前是 FIR candidate，不是已通过 zero-phase 相关/NRMSE/峰时/PI 门槛的正式 profile；真实 CUP 长记录和真机 CPU/heap/jank/断流行为仍待执行。
+- metrics queue overflow 保留 raw-first 前缀但可能缺少指标 epoch；后续需在 M7.3 录制 UI/FGS health 中明确提示和停止策略。
+- manual BP 仅 reference event，SpO2/BP 计算继续 unavailable；命名/资料/档案与批量导出尚未实现，按 `docs/09` 的后续轮次推进。

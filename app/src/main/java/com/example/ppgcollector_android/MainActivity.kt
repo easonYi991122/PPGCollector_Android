@@ -73,6 +73,7 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformScaleMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
+import com.example.ppgcollector_android.core.signal.PpgDisplayTransform
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.data.session.CaptureNotificationPermissionPolicy
@@ -84,7 +85,7 @@ import java.util.Locale
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
 
 private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, WORKBENCH, COMPARE }
-private enum class LiveWaveformDisplayMode { RAW, CAUSAL }
+private enum class LiveWaveformDisplayMode { RAW, CAUSAL, FIXED_LAG }
 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
@@ -277,9 +278,7 @@ private fun BleHome(
     onOpenSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var waveformDisplayMode by rememberSaveable {
-        mutableStateOf(LiveWaveformDisplayMode.CAUSAL)
-    }
+    var waveformDisplayMode by rememberSaveable { mutableStateOf(LiveWaveformDisplayMode.FIXED_LAG) }
     val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
         capture.recording.state == CaptureRecordingState.STOPPING
     val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
@@ -827,8 +826,12 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
 
 @androidx.compose.runtime.Composable
 private fun ReplayWaveformPanel(replay: CupRawReplayReport) {
-    val red = replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray()
-    val ir = replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray()
+    val red = PpgDisplayTransform.rawPeakUp(
+        replay.recentSamples.map { it.sample.red.toDouble() }.toDoubleArray(),
+    )
+    val ir = PpgDisplayTransform.rawPeakUp(
+        replay.recentSamples.map { it.sample.ir.toDouble() }.toDoubleArray(),
+    )
     var viewport by remember(replay.recentSamples.size) {
         mutableStateOf(ReplayWaveformViewport())
     }
@@ -888,10 +891,20 @@ private fun LiveWaveformAndMetrics(
 ) {
     val causalAvailable = waveform.causalRed.size == waveform.red.size &&
         waveform.causalIr.size == waveform.ir.size && waveform.causalRed.isNotEmpty()
-    val effectiveMode = if (displayMode == LiveWaveformDisplayMode.CAUSAL && causalAvailable) {
-        LiveWaveformDisplayMode.CAUSAL
-    } else {
-        LiveWaveformDisplayMode.RAW
+    val fixedLagAvailable = waveform.fixedLagRed.size == waveform.fixedLagIr.size &&
+        waveform.fixedLagRed.isNotEmpty()
+    val effectiveMode = when (displayMode) {
+        LiveWaveformDisplayMode.FIXED_LAG -> when {
+            fixedLagAvailable -> LiveWaveformDisplayMode.FIXED_LAG
+            causalAvailable -> LiveWaveformDisplayMode.CAUSAL
+            else -> LiveWaveformDisplayMode.RAW
+        }
+        LiveWaveformDisplayMode.CAUSAL -> if (causalAvailable) {
+            LiveWaveformDisplayMode.CAUSAL
+        } else {
+            LiveWaveformDisplayMode.RAW
+        }
+        LiveWaveformDisplayMode.RAW -> LiveWaveformDisplayMode.RAW
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -901,12 +914,12 @@ private fun LiveWaveformAndMetrics(
             FilledTonalButton(
                 onClick = { onDisplayModeChange(LiveWaveformDisplayMode.RAW) },
                 modifier = Modifier.weight(1f),
-            ) { Text("RAW") }
+            ) { Text("RAW（峰向上）") }
         } else {
             OutlinedButton(
                 onClick = { onDisplayModeChange(LiveWaveformDisplayMode.RAW) },
                 modifier = Modifier.weight(1f),
-            ) { Text("RAW") }
+            ) { Text("RAW（峰向上）") }
         }
         if (displayMode == LiveWaveformDisplayMode.CAUSAL) {
             FilledTonalButton(
@@ -921,18 +934,39 @@ private fun LiveWaveformAndMetrics(
                 modifier = Modifier.weight(1f),
             ) { Text("CAUSAL 0.6–4 Hz") }
         }
+        if (displayMode == LiveWaveformDisplayMode.FIXED_LAG) {
+            FilledTonalButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.FIXED_LAG) },
+                enabled = fixedLagAvailable,
+                modifier = Modifier.weight(1f),
+            ) { Text("FIXED-LAG 0.5–12 Hz") }
+        } else {
+            OutlinedButton(
+                onClick = { onDisplayModeChange(LiveWaveformDisplayMode.FIXED_LAG) },
+                enabled = fixedLagAvailable,
+                modifier = Modifier.weight(1f),
+            ) { Text("FIXED-LAG 0.5–12 Hz") }
+        }
     }
-    val red = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) waveform.causalRed else waveform.red
-    val ir = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) waveform.causalIr else waveform.ir
+    val red = when (effectiveMode) {
+        LiveWaveformDisplayMode.CAUSAL -> waveform.causalRed
+        LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagRed
+        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.red)
+    }
+    val ir = when (effectiveMode) {
+        LiveWaveformDisplayMode.CAUSAL -> waveform.causalIr
+        LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagIr
+        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.ir)
+    }
     val settlingSamples = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
         waveform.settlingSampleCount
     } else {
         0
     }
-    val modeDescription = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
-        "因果滤波 0.6–4 Hz"
-    } else {
-        "原始数据"
+    val modeDescription = when (effectiveMode) {
+        LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.6–4 Hz"
+        LiveWaveformDisplayMode.FIXED_LAG -> "fixed-lag 0.5–12 Hz，约 ${waveform.fixedLagLatencySamples / 100.0} s 延迟"
+        LiveWaveformDisplayMode.RAW -> "原始数据，显示取负"
     }
     WaveformPanel(
         "RED",
@@ -952,8 +986,12 @@ private fun LiveWaveformAndMetrics(
         if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
             "${waveform.preprocessProfile ?: "ios_baseline_0.1"} · 因果 0.6–4 Hz · gap reset · " +
                 if (settlingSamples > 0) "浅色区为滤波 settling" else "滤波状态稳定"
+        } else if (effectiveMode == LiveWaveformDisplayMode.FIXED_LAG) {
+            "${waveform.fixedLagProfile ?: "fixed-lag-fir-0.5-12hz-0.1"} · 源窗口 " +
+                "${waveform.fixedLagSourceSampleStartIndex ?: "—"}–${waveform.fixedLagSourceSampleEndIndex ?: "—"} · " +
+                "约 ${"%.2f".format(Locale.ROOT, waveform.fixedLagLatencySamples / 100.0)} s 延迟"
         } else {
-            "100 Hz accepted RAW · 不插值、不重算"
+            "100 Hz accepted RAW · 仅显示取负，落盘仍为原始 ADC · 不插值、不重算"
         },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1128,6 +1166,12 @@ private fun LiveMetricsPanel(metrics: LiveMetricSnapshot?) {
             metrics.ratioOfRatios,
             "",
         ) { "%.3f".format(Locale.ROOT, it) }
+        MetricValue(
+            Modifier.weight(1f),
+            "PI（RED AC/DC）",
+            metrics.perfusionIndex,
+            "%",
+        ) { "%.2f".format(Locale.ROOT, it) }
     }
     Row(
         modifier = Modifier.fillMaxWidth(),

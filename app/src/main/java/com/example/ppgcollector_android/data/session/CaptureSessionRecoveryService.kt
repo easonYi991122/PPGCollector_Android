@@ -162,23 +162,25 @@ object CaptureSessionRecoveryService {
         var committed = false
         try {
             Files.createDirectory(staging)
-            val destinationFiles = SessionFileSet(
-                raw = staging.resolve("$requestedBaseName.cupraw"),
-                csv = staging.resolve("$requestedBaseName.csv"),
-                metadata = staging.resolve("$requestedBaseName.session.json"),
-                metrics = sourceFiles.metrics?.let { staging.resolve("$requestedBaseName.metrics.csv") },
-                bloodPressure = sourceFiles.bloodPressure?.let {
-                    staging.resolve("$requestedBaseName.blood-pressure.csv")
-                },
-            )
-            copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw)
-            copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv)
             val metricsScan = sourceFiles.metrics?.let { path ->
                 if (!Files.isRegularFile(path)) null else CaptureMetricSeries.scan(path)
             }
             val bloodPressureScan = sourceFiles.bloodPressure?.let { path ->
                 if (!Files.isRegularFile(path)) null else CaptureBloodPressureSeries.scan(path)
             }
+            val destinationFiles = SessionFileSet(
+                raw = staging.resolve("$requestedBaseName.cupraw"),
+                csv = staging.resolve("$requestedBaseName.csv"),
+                metadata = staging.resolve("$requestedBaseName.session.json"),
+                metrics = sourceFiles.metrics?.takeIf { metricsScan != null }?.let {
+                    staging.resolve("$requestedBaseName.metrics.csv")
+                },
+                bloodPressure = sourceFiles.bloodPressure?.takeIf { bloodPressureScan != null }?.let {
+                    staging.resolve("$requestedBaseName.blood-pressure.csv")
+                },
+            )
+            copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw)
+            copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv)
             if (destinationFiles.metrics != null && metricsScan != null) {
                 copyPrefix(sourceFiles.metrics!!, metricsScan.validByteCount, destinationFiles.metrics)
             }
@@ -230,7 +232,6 @@ object CaptureSessionRecoveryService {
             )
             val recoveredMetadata = buildRecoveredMetadata(
                 source = sourceMetadata ?: session.metadata,
-                sourceFiles = sourceFiles,
                 session = session,
                 recoverySessionId = recoverySessionId,
                 baseName = requestedBaseName,
@@ -238,6 +239,8 @@ object CaptureSessionRecoveryService {
                 recovery = recoveryMetadata,
                 replay = replay,
                 csv = csvScan,
+                metrics = metricsScan,
+                bloodPressure = bloodPressureScan,
             )
             writeMetadataAtomically(destinationFiles.metadata, recoveredMetadata)
             moveStaging(staging, destination)
@@ -270,7 +273,6 @@ object CaptureSessionRecoveryService {
 
     private fun buildRecoveredMetadata(
         source: CaptureSessionMetadata?,
-        sourceFiles: SessionFileSet,
         session: StoredCaptureSession,
         recoverySessionId: String,
         baseName: String,
@@ -278,6 +280,8 @@ object CaptureSessionRecoveryService {
         recovery: CaptureSessionRecoveryMetadata,
         replay: CupRawReplayReport,
         csv: CaptureCsvScanReport,
+        metrics: CaptureSidecarScanReport?,
+        bloodPressure: CaptureSidecarScanReport?,
     ) = CaptureSessionMetadata(
         schemaVersion = CaptureSessionWriterPolicy.sessionSchemaVersion,
         sessionId = recoverySessionId,
@@ -311,15 +315,17 @@ object CaptureSessionRecoveryService {
         discardedBytes = replay.discardedBytes.toLong(),
         writer = CaptureSessionWriterMetadata(
             lastFlushUtc = source?.writer?.lastFlushUtc,
-            rawBytes = replay.validRawBytes,
-            csvRows = csv.completeDataRowCount,
-            error = "Recovered copy; source session was preserved unchanged.",
-        ),
+                rawBytes = replay.validRawBytes,
+                csvRows = csv.completeDataRowCount,
+                error = "Recovered copy; source session was preserved unchanged.",
+                metricsRows = metrics?.completeDataRowCount ?: 0L,
+                bloodPressureRows = bloodPressure?.completeDataRowCount ?: 0L,
+            ),
                 files = CaptureSessionFilesMetadata(
                     raw = "$baseName.cupraw",
                     samples = "$baseName.csv",
-                    metrics = sourceFiles.metrics?.let { "$baseName.metrics.csv" },
-                    bloodPressure = sourceFiles.bloodPressure?.let { "$baseName.blood-pressure.csv" },
+                    metrics = metrics?.let { "$baseName.metrics.csv" },
+                    bloodPressure = bloodPressure?.let { "$baseName.blood-pressure.csv" },
                 ),
         recovery = recovery,
         canonicalSubjectId = source?.canonicalSubjectId,

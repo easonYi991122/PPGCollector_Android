@@ -2720,6 +2720,45 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 完成 M7.2：RAW 展示层取负、PI 复用一次 ratio RED AC/DC、metrics epoch 与 accepted PPG source 时间轴贯通、加入 0.5–12 Hz bounded fixed-lag display candidate，并用本轮规定的同一综合门禁验收。
 
+## 2026-08-08 · M7.2 · Display polarity, aligned PI epochs and fixed-lag candidate
+
+### 本轮目标
+
+在 M7.1 sidecar 合同上完成显示层 RAW 反相、RED AC/DC 派生 PI、统一 1 Hz accepted-PPG epoch/source timeline，以及可明确标注延迟的 0.5–12 Hz 实时滤波候选；不改变 raw/CUPRAW1/25 列落盘语义。
+
+### 需求/参考/Android 目标
+
+- Requirement: `M7-DSP-001`、`M7-MET-001`、`M7-MET-002`、`M7-DSP-002`。
+- Primary source: 用户 2026-08-08 需求、`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`、既有 `LivePpgSignalRuntime`、`RatioOfRatiosEstimator`、M6 offline zero-phase implementation。
+- Tests/golden: `PpgDisplayTransformTest`、`LiveMetricPerfusionIndexTest`、`LivePpgSignalRuntimeTest`、`FixedLagPpgFilterRuntimeTest` 及既有 live/session regression。
+- Android target: `LiveMetricModels/Runtime`、`LivePpgSignalRuntime`、`CaptureRecordingController` metrics queue、`MainActivity`/`SessionSignalWorkbench` RAW presentation。
+- Non-goals: 不把 fixed-lag 候选称为无延迟 zero-phase，不改变 causal 旧 profile，不将 PI/BP/SpO2 宣称为临床校准结果，不实现 M7.3+ 表单/档案 UI。
+
+### 实现事实
+
+- `PpgDisplayTransform.rawPeakUp` 对 finite raw sample 返回 `-x`，输入数组不变；Live RAW、recent replay、完整 signal replay 和 workbench RAW stage 统一调用，CSV/raw/ratio 输入保持原始 ADC。UI 文案写明“仅显示取负，落盘仍为原始 ADC”。
+- `LiveMetricSnapshot` 增加 `perfusionIndex`；`LiveMetricAnalyzer` 每个请求只调用一次 `RatioOfRatiosEstimator.estimate`，PI 直接复用 `redAcDcPercent`，算法标识 `ppg-pi-red-acdc-0.1`，与 HR/SQI/R 共享 measured/source index/time 和 provisional 语义。BP 仍 `MODEL_UNAVAILABLE`。
+- `LiveMetricAnalysisRequest.metricEpoch` 在连续 generation 内从 1 计数，gap/discontinuity 清零；`CaptureMetricEpochFactory` 使用该 epoch。controller analysis result 进入有界 metric queue，由 writer 单线程追加一整行 `metrics.csv`，finish 前 drain，避免异步回填旧 25 列 CSV。
+- 新 `FixedLagPpgFilterRuntime` 使用 201-tap 对称 windowed-sinc FIR（0.5–12 Hz，100 Hz，约 100 sample/1 s 右侧上下文），输出带 source cursor；Live runtime 用 bounded deque 保存 800 点，gap 清空 buffer/latency state，UI 明确展示 profile、源区间和延迟。CAUSAL 0.6–4 Hz 仍可切换回退。
+- 修正 recovery sidecar safe-prefix metadata 的实际行数/文件声明，避免恢复 metrics/BP 后 inspection 与 writer counters 不一致；sidecar validator 同时拒绝 session ID 改变和 source cursor 回退。
+
+### 验证
+
+- 综合命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。
+- 结果：`BUILD SUCCESSFUL in 3m 59s`，130 actionable tasks；JVM tests、debug lint、debug/release/androidTest APK、R8 与 `REL-005 verifyReleasePrivacy` 均通过。
+- Hardware/numerical admission: pending。尚未用真实 CUP 长记录对 fixed-lag 与完整 0.5–12 Hz zero-phase 做 correlation/NRMSE/峰时/PI 偏差准入，也未运行 emulator/真机；本轮 candidate 不能称为生产滤波或临床算法。
+
+### 风险与决策变化
+
+- 规划建议的“固定 SOS”本轮实现为可解释、对称、显式延迟的 FIR candidate，以满足 bounded realtime 与相位接近目标；profile 名称带 `fixed-lag-fir`，避免冒充已校准 SOS。若真实数据比较不达标，保留 CAUSAL 回退并记录报告。
+- fixed-lag 仅改变显示轨，HR/SQI/R/PI 仍来自现有 causal 800/100 runtime；因此两者的视觉时间轴需要 UI 继续显示源 cursor/延迟，不能把 displayed-at 当作 metric source time。
+- `metricEpoch` 与 `requestSequence` 分离：前者按 generation 重置用于 sidecar 可读时序，后者保持 runtime stale-result 判定所需的全局请求身份。
+- 用户 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 与未跟踪 `app/release/` 继续未触碰、未暂存。
+
+### 下一轮
+
+执行 M7.3：名称/建议名表单、subject profile 复用与修订、录制前后资料录入、非阻塞“血压记录”弹窗及 service/controller reference timestamp command；沿用每轮一次综合 Gradle gate。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

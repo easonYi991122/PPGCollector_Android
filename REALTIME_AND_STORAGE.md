@@ -1,10 +1,10 @@
 # PPGCollector Android 实时数据处理与数据存储实现指南
 
-日期：2026-08-05
+日期：2026-08-08
 
-代码基线：2026-08-05 M1/M2 多设备 wire-profile 兼容实现
+代码基线：2026-08-08 M7.2 显示/指标/sidecar/fixed-lag candidate 实现
 
-适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时 RAW/CAUSAL 波形、HR/SQI/R 指标、`CUPRAW1`/CSV/session/analysis 文件链路。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时 RAW/CAUSAL/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/analysis 文件链路。
 
 本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。
 
@@ -13,7 +13,7 @@
 当前实现可以概括为两条并行链路：
 
 1. **实时预览链路**：BLE notification → 有界 preview queue → 流式组帧 → sequence gate → 单一因果信号 runtime → 5 Hz 波形快照与每 100 samples 指标快照 → `StateFlow` → Compose。
-2. **可靠录制链路**：同一 notification → 有界 recording queue → 先写 `CUPRAW1` → 再以 production decoder/sequence gate 派生 CSV → 每秒 checkpoint raw/CSV/session metadata → 停止后统一 finalization。
+2. **可靠录制链路**：同一 notification → 有界 recording queue → 先写 `CUPRAW1` → 再以 production decoder/sequence gate 派生 CSV，同时把 analysis epoch 送入独立有界 metrics queue → writer 追加 metrics sidecar → 每秒 checkpoint raw/CSV/sidecar/session metadata → 停止前 drain 并统一 finalization。
 
 ```mermaid
 flowchart LR
@@ -25,8 +25,8 @@ flowchart LR
     P1 --> P2["Stream decoder"]
     P2 --> P3["Sequence gate"]
     P3 --> P4["LivePpgSignalRuntime"]
-    P4 --> P5["5 Hz RAW/CAUSAL waveform"]
-    P4 --> P6["800/100 HR · SQI · R"]
+    P4 --> P5["5 Hz RAW/CAUSAL/fixed-lag waveform"]
+    P4 --> P6["800/100 HR · SQI · R · PI"]
     P5 --> UI["StateFlow / Compose"]
     P6 --> UI
 
@@ -36,6 +36,7 @@ flowchart LR
     R3 --> R4["25-column CSV"]
     R3 --> R5["Analysis queue 256"]
     R5 --> R6["录制期 waveform/metrics StateFlow"]
+    R5 --> R8["1 Hz metrics.csv epoch rows"]
     R2 --> R7["1 s raw/CSV/session checkpoint"]
 ```
 
@@ -156,8 +157,9 @@ production preview 与 recording analysis 各自持有一个 [`LivePpgSignalRunt
 
 - `red` / `ir`：原始 UInt32 转 Double 的 800 点尾窗；
 - `causalRed` / `causalIr`：实时因果滤波后的同一尾窗；
+- `fixedLagRed` / `fixedLagIr`：0.5–12 Hz bounded symmetric FIR candidate，输出源索引比最新样本约落后 100 点；
 - source sample 起止索引、generation、publication sequence、时间戳；
-- `preprocessProfile`、连续样本数、800 点 warm-up 和起始约 2 s settling 提示信息。
+- `preprocessProfile`、连续样本数、800 点 warm-up、起始约 2 s settling，以及 fixed-lag profile/source range/latency。
 
 production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMetricWindowScheduler` 维护第二套状态；这两个类保留作纯 Kotlin 兼容/测试 seam。
 
@@ -170,7 +172,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 - `PpgPreprocessor.reset()`：gap、连接 generation 或非法输入后清空 DC/SOS 状态；
 - `PpgWindowNormalizer.normalize()`：按算法需要执行 polarity transform、去均值和标准差归一化。
 
-实时路径不能使用离线 `sosfiltfilt`/zero-phase，因为它依赖未来样本。离线 zero-phase 只存在于 session analysis 路径，使用独立 profile/version。
+实时路径不能使用离线 `sosfiltfilt`/zero-phase，因为它依赖未来样本。M7.2 增加 `FixedLagPpgFilterRuntime`：201-tap 对称 windowed-sinc FIR 覆盖 0.5–12 Hz，保留约 1 s 右侧上下文后输出中心样本；它是明确标注 latency 的 display candidate，不宣称与离线 zero-phase 已数值准入。CAUSAL 0.6–4 Hz 仍是回退 profile；离线 zero-phase 仍使用独立版本。
 
 ### 2.6 实时指标
 
@@ -181,6 +183,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 | Heart rate | causal IR + time；`HeartRateEstimator.estimate()` / `acceptedBpm()` | peak/spectral/置信度门控；版本 `ppg-ios-hr-0.1` |
 | SQI | causal IR → `PpgWindowNormalizer.normalize()` → `TemplateMatchSqi.compute()` | template-match；当前仍 provisional，版本 `ppg-ios-sqi-0.1` |
 | Ratio of ratios | raw RED/IR + causal RED/IR；`RatioOfRatiosEstimator.estimate()` | 边缘 trim、AC RMS/DC mean；仅诊断、provisional，版本 `ppg-ios-rr-0.1` |
+| PI（RED AC/DC） | 同一次 `RatioOfRatiosEstimator.estimate()` 的 `redAcDcPercent` | 与 HR/SQI/R 共享 generation/epoch/source cursor；provisional，版本 `ppg-pi-red-acdc-0.1` |
 | SpO2 | 无 | `CALIBRATION_UNAVAILABLE`，不得由 R 直接换算 |
 | Blood pressure | 无 | `MODEL_UNAVAILABLE` |
 
@@ -191,7 +194,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 - [`RatioOfRatiosEstimator.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/RatioOfRatiosEstimator.kt)
 - [`LiveMetricModels.kt`](app/src/main/java/com/example/ppgcollector_android/core/signal/LiveMetricModels.kt)
 
-每个 `MetricResult` 都携带 `value/isValid/isProvisional/unavailableReason/measuredAt/sourceSampleIndex/sourceTimeSeconds/algorithmVersion/calibrationId`，UI 不应在 stale、gap、warm-up 或计算失败后继续展示旧数值。
+每个 `MetricResult` 都携带 `value/isValid/isProvisional/unavailableReason/measuredAt/sourceSampleIndex/sourceTimeSeconds/algorithmVersion/calibrationId`。`LiveMetricAnalysisRequest.metricEpoch` 在 generation 内从 1 起每 100 accepted samples 增加；gap 后清零，metrics sidecar 每个 epoch 写一行，HR/SQI/R/PI 的 source index/time 必须一致。UI 不应在 stale、gap、warm-up 或计算失败后继续展示旧数值。
 
 ### 2.7 线程、队列和失败策略
 
@@ -201,6 +204,7 @@ production owner 不再使用旧的 `LiveWaveformSnapshotScheduler` 或 `LiveMet
 | `ppg-ble-preview` | `BlePreviewRuntime.offer()` / `process()` | 256 chunks | decode、sequence、waveform、metric analyze | 只报告 `droppedChunkCount`；recording sink 独立 |
 | `ppg-capture-writer` | `CaptureRecordingController.onRawChunk()` / `workerLoop()` | 256 chunks | raw-first、decode、CSV、checkpoint | queue 满则 `RESOURCE_PRESSURE`，停止为 incomplete |
 | `ppg-capture-analysis` | `analysisLoop()` | 256 decoded inputs | 录制期 waveform/metric | overflow 只使 analysis FAILED；已写 raw 不受影响 |
+| metrics writer drain | `CaptureRecordingController.drainMetricQueue()` | 256 epochs | 单一 writer 追加一整行 metrics sidecar | sidecar 写失败升级 write error；raw 已确认前缀保留 |
 
 connection generation 变化或连接退出 subscribed/receiving 时，`BleCoordinator.publish()` 调用 `BlePreviewRuntime.reset(generation, streamProtocolMode)`，清空旧 queue、decoder、sequence 和 signal runtime，防止晚到 callback 或旧 wire mode 污染新连接。
 
@@ -225,16 +229,18 @@ connection generation 变化或连接退出 subscribed/receiving 时，`BleCoord
 └── <baseName>/
     ├── <baseName>.cupraw
     ├── <baseName>.csv
+    ├── <baseName>.metrics.csv          # 可选，1 Hz HR/SQI/R/PI epoch
+    ├── <baseName>.blood-pressure.csv   # 可选，手工 reference BP 事件
     ├── <baseName>.session.json
     └── analysis/
         └── <UTC>_<analysisProfile>_<analysisId>.json
 ```
 
-目录名要求 `[A-Za-z0-9_-]+`、1～80 字符；同名目录不覆盖。内部 app-specific storage 是会话真源，不需要共享存储 runtime permission，但卸载 app 会删除这些文件。
+目录名要求 `SessionNamePolicy` 的 1～64 ASCII `[A-Za-z0-9_-]`、保留名拒绝和大小写不敏感 duplicate；同名目录不覆盖。内部 app-specific storage 是会话真源，不需要共享存储 runtime permission，但卸载 app 会删除这些文件。`<app filesDir>/subjects/` 独立保存 atomic subject profile revisions。
 
 开始录制前和 writer 创建时都会检查可用空间；当前静态最低门槛为 20 MiB。该值只是拒绝明显低空间的保护，不是 2 小时录制容量承诺，项目尚未实现按预计时长/notification bitrate 的动态预算。
 
-[`CaptureSessionRepository.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) 直接扫描文件系统列出会话；没有数据库真源。`expectedFiles()` 根据目录名确定三个主文件。
+[`CaptureSessionRepository.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionRepository.kt) 直接扫描文件系统列出会话；没有数据库真源。`expectedFiles()` 先读取 metadata/file manifest 决定可选 sidecar，旧 v1 会话仍只要求三个主文件；inspection/recovery/export 同样按清单处理。
 
 ### 3.2 `CUPRAW1` 原始文件
 
@@ -307,12 +313,11 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - auxiliary、duplicate、out-of-order 不产生行；gap 不补空行；
 - 同一 decoded frame 的行共用 `host_frame_time_ns` 和 `frame_sequence`；
 - v2 只扩大 `frame_sequence` 的合法范围到 UInt32，25 列顺序、header、时间和指标语义不变；parser 按行内 `schema_version` 验证范围；
-- 指标是 raw notification 被确认时传入 writer 的 point-in-time snapshot，已写行永不回填；
-- 当前 production `CaptureRecordingController.workerLoop()` 没有把异步 `analysisLoop()` 的最新结果传给 `appendRawThenDerive()`，因此录制 CSV 的 HR/SQI/R/SpO2 字段目前按默认 unavailable snapshot 写入。这是当前实现事实，不能把录制期 UI 已显示的指标误认为已经写入 CSV。
+- 25 列 CSV 仍只写 raw notification 被确认时传入的 point-in-time snapshot，已写行永不回填；当前 controller 不把异步结果回填旧行，因此这些 legacy cells 仍可能是 unavailable；完整 1 Hz HR/SQI/R/PI 以同一 epoch 行写入 `<stem>.metrics.csv`。
 
 ### 3.5 Session metadata JSON
 
-[`CaptureSessionMetadata.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) 定义 `CaptureSessionMetadata` 与 `CaptureSessionMetadataCodec`。JSON 为 UTF-8、snake_case，当前 schema 为 `ppgcollector_session_v1`，主要字段分组如下：
+[`CaptureSessionMetadata.kt`](app/src/main/java/com/example/ppgcollector_android/data/session/CaptureSessionMetadata.kt) 定义 `CaptureSessionMetadata` 与 `CaptureSessionMetadataCodec`。JSON 为 UTF-8、snake_case，当前 writer schema 为 `ppgcollector_session_v2`；reader 仍兼容 v1，主要字段分组如下：
 
 | 分组 | 字段 |
 |---|---|
@@ -320,7 +325,8 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 | Version/profile | `soft_version`, `alg_version`, `preprocess_profile`, `protocol_profile`, `transport_profile` |
 | Sampling/device | `sample_rate_hz`, `samples_per_frame`, `device.{name,identifier,service_uuid,notify_characteristic_uuid,firmware_version,calibration_id}` |
 | State/counts | `complete`, `stop_reason`, `frame_count`, `sample_count`, `raw_chunk_count`, `missing_frames`, `duplicate_frames`, `out_of_order_frames`, `invalid_frames`, `discarded_bytes` |
-| Writer/files | `writer.{last_flush_utc,raw_bytes,csv_rows,error}`, `files.{raw,samples}` |
+| Writer/files | `writer.{last_flush_utc,raw_bytes,csv_rows,metrics_rows,blood_pressure_rows,error}`, `files.{raw,samples,metrics,blood_pressure}`；sidecar 文件按需声明 |
+| Participant/identity | `canonical_subject_id`, `canonical_sequence`, `participant.{profile_revision_id,profile_complete,sex,age_years,height_cm,weight_kg,additional_fields}` |
 | Recovery provenance | 可选 `recovery`：strategy、恢复时间/版本、源目录/session ID、三个 SHA-256、源/复制字节数及 CSV session ID 保留标记 |
 
 `CaptureSessionWriter.writeMetadata()` 使用同目录临时文件、`force(true)` 和 atomic move（平台不支持时退化为 replace move）。

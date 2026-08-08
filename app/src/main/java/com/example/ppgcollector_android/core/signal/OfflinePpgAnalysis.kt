@@ -201,6 +201,7 @@ object OfflinePpgAnalyzer {
     fun filterFullSignal(
         input: OfflinePpgInput,
         cancellationCheck: () -> Unit = {},
+        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.iosBaseline01,
     ): OfflineFilteredSignal {
         val count = input.timeSeconds.size
         val red = DoubleArray(count) { Double.NaN }
@@ -216,9 +217,15 @@ object OfflinePpgAnalyzer {
         fun filterRun(start: Int, stop: Int) {
             if (stop - start < 32) return
             cancellationCheck()
-            ZeroPhasePpgFilter.filter(input.red.copyOfRange(start, stop)).copyInto(red, start)
+            ZeroPhasePpgFilter.filter(
+                input.red.copyOfRange(start, stop),
+                profile,
+            ).copyInto(red, start)
             cancellationCheck()
-            ZeroPhasePpgFilter.filter(input.ir.copyOfRange(start, stop)).copyInto(ir, start)
+            ZeroPhasePpgFilter.filter(
+                input.ir.copyOfRange(start, stop),
+                profile,
+            ).copyInto(ir, start)
         }
 
         var runStart = -1
@@ -871,14 +878,16 @@ object OfflinePpgAnalyzer {
 
 /** Fixed SOS forward/backward filtering with SciPy-compatible odd padding. */
 internal object ZeroPhasePpgFilter {
-    private val sections = PpgPreprocessingProfile.iosBaseline01.sections
-
-    fun filter(values: DoubleArray): DoubleArray {
+    fun filter(
+        values: DoubleArray,
+        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.iosBaseline01,
+    ): DoubleArray {
         if (values.size < 32) return DoubleArray(values.size)
+        val sections = profile.sections
         val edge = min(values.size - 1, max(12, 3 * sections.size))
         val extended = oddExtension(values, edge)
-        val forward = filterOneDirection(extended)
-        val backward = filterOneDirection(forward.reversedArray()).reversedArray()
+        val forward = filterOneDirection(extended, sections)
+        val backward = filterOneDirection(forward.reversedArray(), sections).reversedArray()
         return backward.copyOfRange(edge, edge + values.size)
     }
 
@@ -895,7 +904,10 @@ internal object ZeroPhasePpgFilter {
         return result
     }
 
-    private fun filterOneDirection(values: DoubleArray): DoubleArray {
+    private fun filterOneDirection(
+        values: DoubleArray,
+        sections: List<PpgSecondOrderSection>,
+    ): DoubleArray {
         if (values.isEmpty()) return values
         var scale = 1.0
         val states = sections.map { section ->

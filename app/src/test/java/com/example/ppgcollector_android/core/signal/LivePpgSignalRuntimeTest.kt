@@ -36,6 +36,7 @@ class LivePpgSignalRuntimeTest {
         val request = latest!!.metricRequest
         assertNotNull(waveform)
         assertNotNull(request)
+        assertEquals(1L, request!!.metricEpoch)
         assertEquals(800, waveform!!.red.size)
         assertEquals(800, waveform.causalRed.size)
         assertEquals(0L, waveform.sourceSampleStartIndex)

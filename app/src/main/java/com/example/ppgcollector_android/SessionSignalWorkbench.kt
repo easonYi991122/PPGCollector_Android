@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
+import com.example.ppgcollector_android.core.signal.PpgDisplayTransform
 import com.example.ppgcollector_android.core.signal.OfflineDisplaySpectrum
 import com.example.ppgcollector_android.core.signal.OfflinePulseWindow
 import com.example.ppgcollector_android.core.signal.OfflineSignalSegment
@@ -119,8 +120,16 @@ internal fun CompleteSignalReplayPanel(
             viewport = viewport.copyViewport().apply { showWindow(0, 800, total) }
         },
     )
-    val red = if (stage == ReplaySignalStage.RAW) trace.rawRed else trace.filteredRed
-    val ir = if (stage == ReplaySignalStage.RAW) trace.rawIr else trace.filteredIr
+    val red = if (stage == ReplaySignalStage.RAW) {
+        PpgDisplayTransform.rawPeakUp(trace.rawRed)
+    } else {
+        trace.filteredRed
+    }
+    val ir = if (stage == ReplaySignalStage.RAW) {
+        PpgDisplayTransform.rawPeakUp(trace.rawIr)
+    } else {
+        trace.filteredIr
+    }
     val prefix = if (stage == ReplaySignalStage.RAW) "RAW" else "ZERO-PHASE"
     CompleteSignalChart(
         series = listOf(CompleteSignalSeries("$prefix RED", Color(0xFFD74747), red)),
@@ -389,7 +398,7 @@ internal fun FullscreenSessionWorkbenchScreen(
                                 ) artifact.report.peaks.map { it.sampleIndex }.toIntArray() else intArrayOf(),
                                 showStableSegments = showSegments,
                                 highlightedWindow = selectedWindowIndex?.let(artifact.report.windows::getOrNull),
-                                invert = invert,
+                                invert = invert && signalStage != WorkbenchSignalStage.RAW,
                                 modifier = gesture.weight(1f),
                             )
                             Text(
@@ -846,8 +855,9 @@ private fun signalValues(
     channel: String,
     stage: WorkbenchSignalStage,
 ): DoubleArray = when {
-    stage == WorkbenchSignalStage.RAW && channel == "RED" -> trace.rawRed
-    stage == WorkbenchSignalStage.RAW -> trace.rawIr
+    stage == WorkbenchSignalStage.RAW && channel == "RED" ->
+        PpgDisplayTransform.rawPeakUp(trace.rawRed)
+    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
     channel == "RED" -> trace.filteredRed
     else -> trace.filteredIr
 }

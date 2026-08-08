@@ -342,3 +342,10 @@ data class LiveUiState(
 - 所有导出 URI 只授予临时读权限；FileProvider path 只暴露可导出 staging，不开放整个 `filesDir`。
 - 导入/恢复对 raw length、JSON depth/size、CSV 行长、文件总量设上限，防止恶意文件造成内存/磁盘耗尽。
 - 如产品需要设备备份或 at-rest encryption，Phase 0 决定；启用加密会影响跨平台工具、恢复、SAF 和性能，必须作为独立数据格式方案。
+
+## 13. M7.1–M7.2 数据合同增量
+
+- session v1 的 raw/samples/metadata 读取保持兼容；writer v2 可按需声明 `<stem>.metrics.csv` 与 `<stem>.blood-pressure.csv`，25 列样本 CSV 不扩列。
+- metrics sidecar 一行表示一个 accepted-PPG 1 Hz epoch，HR/SQI/R/PI 共用 `connection_generation`、`metric_epoch`、`source_sample_index/time`；BP sidecar 使用 dialog-open reference token，不能写入计算 BP 字段。
+- canonical filename、subject profile revision 和 participant snapshot 是 traceability metadata，不改变 raw ownership；`subjectsRoot` 与 sessions root 分离。
+- fixed-lag 采用 bounded symmetric FIR candidate，显式记录 latency/source cursor；CAUSAL profile 与旧 session replay 保留回退。

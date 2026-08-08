@@ -105,7 +105,8 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟与 release shrink/lint/privacy/API/FGS 门禁已实现；2026-08-03 已由 Android Studio 生成并校验 fresh unsigned release APK。API/厂商/真机/正式 identity/签名/隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 版本化 raw replay、完整信号/全程 zero-phase、独立 Sessions/compare/横屏工作台均已实现；Live 现由统一 bounded runtime 同步发布 RAW/CAUSAL 0.6–4 Hz 与既有指标窗口。`D-014`、runtime/真机 UI/性能门禁待执行 |
 | `M7.0` | M7 规划 | RAW 显示、PI/统一时序、手工参考血压、命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与 UI 收敛 | 五轮规划已形成；M7.1 已实现，后续轮次见 `docs/09` |
-| `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 file manifest 与兼容 inspection/recovery/export | JVM/build/privacy 综合门禁通过；真机与资料表单 UI 仍待执行；当前进行 M7.2 |
+| `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 file manifest 与兼容 inspection/recovery/export | JVM/build/privacy 综合门禁通过；真机与资料表单 UI 仍待执行 |
+| `M7.2` | M7 第 2 轮 | RAW display transform、PI/HR/SQI/R 统一 source epoch、metrics queue、0.5–12 Hz fixed-lag display candidate | JVM/build/privacy 综合门禁通过；fixed-lag 数值准入、真机与 UI 交互仍 pending；下一轮 M7.3 |
 
 ## 6. 不可破坏的核心契约
 

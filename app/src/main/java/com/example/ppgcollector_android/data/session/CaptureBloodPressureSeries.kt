@@ -49,6 +49,7 @@ object CaptureBloodPressureSeries {
         scanSessionSidecar(path, header) { fields, previous ->
             if (fields.size != columns.size) return@scanSessionSidecar "expected ${columns.size} fields"
             if (fields[0] != schemaVersion) return@scanSessionSidecar "unsupported schema_version"
+            if (fields[1].isBlank()) return@scanSessionSidecar "session_id is blank"
             val event = fields[2].toLongOrNull() ?: return@scanSessionSidecar "invalid event_index"
             fields[3].toLongOrNull() ?: return@scanSessionSidecar "invalid source_sample_index"
             fields[4].toDoubleOrNull()?.takeIf(Double::isFinite)
@@ -66,7 +67,12 @@ object CaptureBloodPressureSeries {
             if (previous != null && event <= (previous[2].toLongOrNull() ?: -1L)) {
                 return@scanSessionSidecar "event_index is not increasing"
             }
+            if (previous != null && fields[1] != previous[1]) {
+                return@scanSessionSidecar "session_id changed within sidecar"
+            }
+            if (previous != null && fields[3].toLongOrNull()!! < previous[3].toLongOrNull()!!) {
+                return@scanSessionSidecar "source_sample_index is not monotonic"
+            }
             null
         }
 }
-

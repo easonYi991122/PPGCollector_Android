@@ -184,3 +184,14 @@ Parity rule: exact frame/sample/stats; random chunking invariant
 ```
 
 这样源快照、需求 ID、Android 目标和验收始终可追溯。
+
+## M7.1–M7.2 Android 增量索引（2026-08-08）
+
+| 需求 | Android target | 关键合同/证据 |
+|---|---|---|
+| `M7-NAME-001` / `M7-SUB-001` | `data/session/SessionNamePolicy.kt`, `SubjectProfile.kt`, `CaptureSessionMetadata.kt` | `SessionNamePolicyTest`, `SubjectProfileTest`, metadata v1/v2 compatibility |
+| `M7-MET-001/002` / `M7-BP-001` | `CaptureMetricSeries.kt`, `CaptureBloodPressureSeries.kt`, `CaptureRecordingController.kt`, `CaptureSessionWriter.kt` | sidecar schema/scan tests; one epoch row per analysis result; BP token contract |
+| `M7-DSP-001` | `core/signal/PpgDisplayTransform.kt`, `MainActivity.kt`, `SessionSignalWorkbench.kt` | `PpgDisplayTransformTest`; raw storage path not transformed |
+| `M7-DSP-002` | `core/signal/FixedLagPpgFilterRuntime.kt`, `LivePpgSignalRuntime.kt` | `FixedLagPpgFilterRuntimeTest`; 100 sample explicit latency; numerical/device admission pending |
+
+M7.3–M7.5 UI/archive targets are intentionally not indexed as implemented until their rounds land.

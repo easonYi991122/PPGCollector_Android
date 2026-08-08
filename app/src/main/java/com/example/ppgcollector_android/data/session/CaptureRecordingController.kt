@@ -84,6 +84,7 @@ class CaptureRecordingController(
     private val lock = Any()
     private val queue = ArrayBlockingQueue<QueuedChunk>(queueCapacity)
     private val analysisQueue = ArrayBlockingQueue<AnalysisInput>(queueCapacity)
+    private val metricQueue = ArrayBlockingQueue<CaptureMetricEpoch>(queueCapacity)
     private var writer: CaptureSessionWriter? = null
     private var activeGeneration: Long? = null
     private var activeStreamProtocolMode: CupStreamProtocolMode? = null
@@ -149,6 +150,7 @@ class CaptureRecordingController(
                 stopRequested = false
                 queue.clear()
                 analysisQueue.clear()
+                metricQueue.clear()
                 analysisStopRequested = false
                 signalRuntime = LivePpgSignalRuntime()
                 _analysisSnapshot.value = CaptureAnalysisSnapshot(
@@ -304,6 +306,7 @@ class CaptureRecordingController(
                             error = "analysis queue overflow; raw recording preserved",
                         )
                     }
+                    drainMetricQueue()
                     synchronized(lock) { publish(snapshotValue.state) }
                 }
                 synchronized(lock) {
@@ -311,6 +314,7 @@ class CaptureRecordingController(
                 }
             }
             finishAnalysis()
+            drainMetricQueue()
             finalizeWriter()
         } catch (error: Throwable) {
             synchronized(lock) {
@@ -352,6 +356,14 @@ class CaptureRecordingController(
                                 lastResult = result,
                                 error = null,
                             )
+                            val sessionId = synchronized(lock) { writer?.configuration?.sessionId }
+                            if (sessionId != null &&
+                                !metricQueue.offer(CaptureMetricEpochFactory.fromAnalysis(sessionId, result))
+                            ) {
+                                _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                                    error = "metrics queue overflow; raw recording preserved",
+                                )
+                            }
                         }
                     } catch (error: Throwable) {
                         _analysisSnapshot.value = _analysisSnapshot.value.copy(
@@ -385,6 +397,18 @@ class CaptureRecordingController(
         }
         analysisWorker?.join(5_000)
         analysisWorker = null
+    }
+
+    private fun drainMetricQueue() {
+        while (true) {
+            val epoch = metricQueue.poll() ?: return
+            try {
+                writer?.appendMetricEpoch(epoch)
+            } catch (error: Throwable) {
+                synchronized(lock) { requestWriteFailureLocked(error) }
+                return
+            }
+        }
     }
 
     private fun finalizeWriter() {

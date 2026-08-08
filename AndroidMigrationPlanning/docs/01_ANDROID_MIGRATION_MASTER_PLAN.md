@@ -200,3 +200,7 @@ V1 只有同时满足以下条件才算移植完成：
 ## 10. 开工前硬性确认
 
 下列问题未确认前可以做 Phase 1，但不能冻结发布行为：真实设备 GATT/固件版本、`minSdk` 和目标机型、Android 录制是否允许后台继续、包名/签名/分发渠道、保留/导出/加密政策、soft/alg version 的正式命名、SpO2/BP 的产品表述。完整清单见[决策与风险登记](06_OPEN_DECISIONS_AND_RISK_REGISTER.md)。
+
+### M7.1–M7.2 实现增量（2026-08-08）
+
+M7.1/M7.2 已在不改变 Phase 1–6 原始契约的前提下增加 session v2 可选 metrics/BP sidecar、subject snapshot、RAW display transform、PI 和 fixed-lag display candidate。完整实施顺序、后续档案/批量导出/UI 范围与单轮校验规则以 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准；真机与 fixed-lag 数值准入仍未关闭。

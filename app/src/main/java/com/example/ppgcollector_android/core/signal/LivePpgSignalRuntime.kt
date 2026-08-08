@@ -35,12 +35,15 @@ class LivePpgSignalRuntime(
     private val timeSeconds = DoubleArray(profile.windowSampleCount)
     private var redPreprocessor = PpgPreprocessor(profile.preprocessingProfile)
     private var irPreprocessor = PpgPreprocessor(profile.preprocessingProfile)
+    private var fixedLagRuntime = FixedLagPpgFilterRuntime()
+    private val fixedLagSamples = ArrayDeque<FixedLagPpgSample>(profile.windowSampleCount)
     private var ringStart = 0
     private var ringSize = 0
     private var nextAcceptedSampleIndex = 0L
     private var acceptedSampleCount = 0L
     private var continuousSampleCount = 0L
     private var nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()
+    private var metricEpoch = 0L
     private var publicationSequence = 0L
     private var nextPublishNanos: Long? = null
     private val refreshIntervalNanos = 1_000_000_000L / refreshRateHz.toLong()
@@ -88,6 +91,16 @@ class LivePpgSignalRuntime(
                     filteredIr = ir.bandpassed,
                     time = nextAcceptedSampleIndex.toDouble() / profile.sampleRateHz.toDouble(),
                 )
+                fixedLagRuntime.ingest(
+                    sourceSampleIndex = nextAcceptedSampleIndex,
+                    red = rawRedValue,
+                    ir = rawIrValue,
+                ).forEach { filtered ->
+                    fixedLagSamples.addLast(filtered)
+                    while (fixedLagSamples.size > profile.windowSampleCount) {
+                        fixedLagSamples.removeFirst()
+                    }
+                }
                 nextAcceptedSampleIndex++
                 acceptedSampleCount++
                 continuousSampleCount++
@@ -128,6 +141,7 @@ class LivePpgSignalRuntime(
     private fun metricRequest(measuredAt: Instant): LiveMetricAnalysisRequest? {
         if (ringSize != profile.windowSampleCount) return null
         requestSequence++
+        metricEpoch++
         val windowEndSampleIndex = nextAcceptedSampleIndex - 1L
         return LiveMetricAnalysisRequest(
             generation = generation,
@@ -140,6 +154,7 @@ class LivePpgSignalRuntime(
             bandpassedRed = copyRing(causalRed).asList(),
             bandpassedIr = copyRing(causalIr).asList(),
             timeSeconds = copyRing(timeSeconds).asList(),
+            metricEpoch = metricEpoch,
         )
     }
 
@@ -175,6 +190,12 @@ class LivePpgSignalRuntime(
             continuousSampleCount = continuousSampleCount,
             metricWarmupSampleCount = profile.windowSampleCount,
             settlingSampleCount = settlingSamples,
+            fixedLagRed = fixedLagSamples.map { it.red }.toDoubleArray(),
+            fixedLagIr = fixedLagSamples.map { it.ir }.toDoubleArray(),
+            fixedLagSourceSampleStartIndex = fixedLagSamples.firstOrNull()?.sourceSampleIndex,
+            fixedLagSourceSampleEndIndex = fixedLagSamples.lastOrNull()?.sourceSampleIndex,
+            fixedLagLatencySamples = fixedLagRuntime.latencySamples,
+            fixedLagProfile = fixedLagRuntime.profile.identifier,
         )
     }
 
@@ -209,12 +230,16 @@ class LivePpgSignalRuntime(
     private fun invalidateContinuity(nextIndex: Long) {
         redPreprocessor.reset()
         irPreprocessor.reset()
+        fixedLagRuntime.reset(nextIndex)
+        fixedLagSamples.clear()
         ringStart = 0
         ringSize = 0
         nextAcceptedSampleIndex = nextIndex
         continuousSampleCount = 0L
         nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()
+        metricEpoch = 0L
         nextPublishNanos = null
         generation++
     }
+
 }

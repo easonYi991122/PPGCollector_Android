@@ -79,6 +79,10 @@ data class LiveMetricSnapshot(
     val ratioOfRatios: MetricResult<Double>,
     val signalQuality: MetricResult<Double>,
     val bloodPressure: MetricResult<BloodPressureReading>,
+    val perfusionIndex: MetricResult<Double> = MetricResult.unavailable(
+        MetricUnavailableReason.CALIBRATION_UNAVAILABLE,
+        algorithmVersion = "ppg-pi-red-acdc-0.1",
+    ),
 ) {
     companion object {
         fun unavailable(
@@ -96,6 +100,7 @@ data class LiveMetricSnapshot(
                     ratioOfRatios = MetricResult.unavailable(MetricUnavailableReason.CALIBRATION_UNAVAILABLE),
                     signalQuality = MetricResult.unavailable(MetricUnavailableReason.REFERENCE_PARITY_PENDING),
                     bloodPressure = MetricResult.unavailable(MetricUnavailableReason.MODEL_UNAVAILABLE),
+                    perfusionIndex = MetricResult.unavailable(MetricUnavailableReason.CALIBRATION_UNAVAILABLE),
                 )
             }
         }
@@ -115,6 +120,10 @@ data class LiveMetricSnapshot(
                 algorithmVersion = "ppg-ios-sqi-0.1",
             ),
             bloodPressure = MetricResult.unavailable(MetricUnavailableReason.MODEL_UNAVAILABLE),
+            perfusionIndex = MetricResult.unavailable(
+                MetricUnavailableReason.INSUFFICIENT_DATA,
+                algorithmVersion = "ppg-pi-red-acdc-0.1",
+            ),
         )
 
         fun runtime(
@@ -124,12 +133,17 @@ data class LiveMetricSnapshot(
                 MetricUnavailableReason.CALIBRATION_UNAVAILABLE,
                 algorithmVersion = "ppg-ios-rr-0.1",
             ),
+            perfusionIndex: MetricResult<Double> = MetricResult.unavailable(
+                MetricUnavailableReason.CALIBRATION_UNAVAILABLE,
+                algorithmVersion = "ppg-pi-red-acdc-0.1",
+            ),
         ) = LiveMetricSnapshot(
             heartRateBpm = heartRateBpm,
             oxygenSaturationPercent = MetricResult.unavailable(MetricUnavailableReason.CALIBRATION_UNAVAILABLE),
             ratioOfRatios = ratioOfRatios,
             signalQuality = signalQuality,
             bloodPressure = MetricResult.unavailable(MetricUnavailableReason.MODEL_UNAVAILABLE),
+            perfusionIndex = perfusionIndex,
         )
 
         private fun allUnavailable(reason: MetricUnavailableReason) = LiveMetricSnapshot(
@@ -138,6 +152,7 @@ data class LiveMetricSnapshot(
             ratioOfRatios = MetricResult.unavailable(reason),
             signalQuality = MetricResult.unavailable(reason),
             bloodPressure = MetricResult.unavailable(reason),
+            perfusionIndex = MetricResult.unavailable(reason),
         )
     }
 }

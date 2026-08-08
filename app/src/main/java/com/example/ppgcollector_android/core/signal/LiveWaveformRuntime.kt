@@ -20,6 +20,12 @@ data class LiveWaveformSnapshot(
     val continuousSampleCount: Long = 0,
     val metricWarmupSampleCount: Int = 800,
     val settlingSampleCount: Int = 0,
+    val fixedLagRed: DoubleArray = doubleArrayOf(),
+    val fixedLagIr: DoubleArray = doubleArrayOf(),
+    val fixedLagSourceSampleStartIndex: Long? = null,
+    val fixedLagSourceSampleEndIndex: Long? = null,
+    val fixedLagLatencySamples: Int = 0,
+    val fixedLagProfile: String? = null,
 )
 
 data class WaveformVerticalRange(

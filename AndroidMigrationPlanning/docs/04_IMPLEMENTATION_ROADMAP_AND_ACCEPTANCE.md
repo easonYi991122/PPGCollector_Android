@@ -240,3 +240,7 @@ EPIC-J Offline analysis/workbench (V1.1)
 ```
 
 每个 issue 至少写：需求 ID、源索引链接、输入/输出契约、错误路径、测试类型、完成证据、是否影响 schema/algorithm/profile version。
+
+## M7.1–M7.2 进度注记（2026-08-08）
+
+M7.1 数据合同/命名/profile 内核与 M7.2 RAW display、PI、epoch/source sidecar wiring、fixed-lag candidate 已实现；两轮均执行同一综合 Gradle gate 并通过。M7.3 录制身份/参考血压、M7.4 archive/batch export、M7.5 UI/IME 收尾仍为下一阶段，不把本地 build 通过当作真机或数值准入。

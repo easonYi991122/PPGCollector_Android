@@ -1,6 +1,6 @@
 # 实时因果滤波波形分析与开发规划
 
-> **适用性提示（2026-08-08）**：本文是 M6 已实现的 0.6～4 Hz causal 历史基线和未执行真机门禁记录。M7 对 0.5～12 Hz、fixed-lag、PI/统一指标时间轴的未来开发以 [`09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准；本文的既有实现事实与测试证据仍保留。
+> **适用性提示（2026-08-08）**：本文保留 M6/M7.2 已实现的 0.6～4 Hz causal 历史基线；M7.2 另增加 `fixed-lag-fir-0.5-12hz-0.1` display candidate、PI 与统一 source epoch。fixed-lag 尚未完成真实 CUP/zero-phase 数值准入和真机门禁；后续产品交互仍以 [`09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准。
 
 日期：2026-08-02
 

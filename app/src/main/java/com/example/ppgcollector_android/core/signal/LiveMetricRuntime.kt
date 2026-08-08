@@ -41,6 +41,8 @@ data class LiveMetricAnalysisRequest(
     val bandpassedRed: List<Double> = emptyList(),
     val bandpassedIr: List<Double>,
     val timeSeconds: List<Double>,
+    /** 1 Hz epoch number within one continuous connection generation. */
+    val metricEpoch: Long = requestSequence,
 )
 
 data class LiveMetricAnalysisResult(
@@ -63,6 +65,7 @@ class LiveMetricWindowScheduler(
     private var nextAcceptedSampleIndex = 0L
     private var continuousSampleCount = 0
     private var nextAnalysisContinuousSampleCount = profile.windowSampleCount
+    private var metricEpoch = 0L
     var generation: Long = 0
         private set
     var requestSequence: Long = 0
@@ -120,6 +123,7 @@ class LiveMetricWindowScheduler(
         ) return null
 
         requestSequence++
+        metricEpoch++
         val windowEndSampleIndex = nextAcceptedSampleIndex - 1
         return LiveMetricAnalysisRequest(
             generation = generation,
@@ -132,6 +136,7 @@ class LiveMetricWindowScheduler(
             bandpassedRed = bandpassedRed.toList(),
             bandpassedIr = bandpassedIr.toList(),
             timeSeconds = timeSeconds.toList(),
+            metricEpoch = metricEpoch,
         )
     }
 
@@ -148,6 +153,7 @@ class LiveMetricWindowScheduler(
         timeSeconds.clear()
         continuousSampleCount = 0
         nextAnalysisContinuousSampleCount = profile.windowSampleCount
+        metricEpoch = 0L
         generation++
     }
 
@@ -226,6 +232,7 @@ object LiveMetricAnalyzer {
             redRaw = request.rawRed,
             irRaw = request.rawIr,
         )
+        val ratioUnavailableReason = ratioReason(ratio.unavailableReason)
         val ratioMetric = ratio.value?.takeIf { it.isFinite() }?.let {
             MetricResult.valid(
                 value = it,
@@ -236,8 +243,25 @@ object LiveMetricAnalyzer {
                 isProvisional = true,
             )
         } ?: MetricResult.unavailable<Double>(
-            reason = MetricUnavailableReason.COMPUTATION_FAILED,
+            reason = ratioUnavailableReason,
             algorithmVersion = ratio.algorithmVersion,
+            measuredAt = request.measuredAt,
+            sourceSampleIndex = request.windowEndSampleIndex,
+            sourceTimeSeconds = request.windowEndTimeSeconds,
+        )
+
+        val perfusionIndexMetric = ratio.redAcDcPercent?.takeIf { it.isFinite() }?.let {
+            MetricResult.valid(
+                value = it,
+                measuredAt = request.measuredAt,
+                algorithmVersion = "ppg-pi-red-acdc-0.1",
+                sourceSampleIndex = request.windowEndSampleIndex,
+                sourceTimeSeconds = request.windowEndTimeSeconds,
+                isProvisional = true,
+            )
+        } ?: MetricResult.unavailable<Double>(
+            reason = ratioUnavailableReason,
+            algorithmVersion = "ppg-pi-red-acdc-0.1",
             measuredAt = request.measuredAt,
             sourceSampleIndex = request.windowEndSampleIndex,
             sourceTimeSeconds = request.windowEndTimeSeconds,
@@ -245,7 +269,12 @@ object LiveMetricAnalyzer {
 
         return LiveMetricAnalysisResult(
             request = request,
-            snapshot = LiveMetricSnapshot.runtime(heartRateMetric, signalQualityMetric, ratioMetric),
+            snapshot = LiveMetricSnapshot.runtime(
+                heartRateBpm = heartRateMetric,
+                signalQuality = signalQualityMetric,
+                ratioOfRatios = ratioMetric,
+                perfusionIndex = perfusionIndexMetric,
+            ),
             provisionalSignalQuality = provisionalSignalQuality,
         )
     }
@@ -254,5 +283,15 @@ object LiveMetricAnalyzer {
         HeartRateUnavailableReason.INSUFFICIENT_SAMPLES,
         HeartRateUnavailableReason.INSUFFICIENT_WORK_WINDOW -> MetricUnavailableReason.INSUFFICIENT_DATA
         else -> MetricUnavailableReason.COMPUTATION_FAILED
+    }
+
+    private fun ratioReason(reason: RatioOfRatiosUnavailableReason?) = when (reason) {
+        RatioOfRatiosUnavailableReason.INSUFFICIENT_SAMPLES -> MetricUnavailableReason.INSUFFICIENT_DATA
+        RatioOfRatiosUnavailableReason.INPUT_LENGTH_MISMATCH,
+        RatioOfRatiosUnavailableReason.NON_FINITE_INPUT,
+        RatioOfRatiosUnavailableReason.INSUFFICIENT_DC,
+        RatioOfRatiosUnavailableReason.INSUFFICIENT_AC,
+        RatioOfRatiosUnavailableReason.NON_FINITE_RESULT,
+        null -> MetricUnavailableReason.COMPUTATION_FAILED
     }
 }

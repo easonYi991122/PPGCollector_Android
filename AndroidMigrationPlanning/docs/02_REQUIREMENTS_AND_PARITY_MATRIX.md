@@ -82,3 +82,10 @@
 3. **平台差异**：例如 Android 权限/前台服务。记录原因，并用平台特定验收替换 iOS 生命周期断言。
 4. **有意产品变更**：必须有产品确认、schema/algorithm version 评估和对两个平台兼容性的说明。
 5. **来源歧义**：用真实设备/固件抓取或新的 golden fixture 解决，不能靠猜测。
+
+## 7. M7.1–M7.2 对等增量
+
+- `M7-DSP-001`：RAW 反相仅发生在 `PpgDisplayTransform` 与 RAW replay/workbench presentation；`CUPRAW1`、25 列 CSV `red/ir` 和计算输入仍为原始 ADC。
+- `M7-MET-001/002`：PI 直接复用同一次 ratio estimate 的 RED AC/DC；HR/SQI/R/PI 由 accepted PPG 的 800/100 epoch 共享 generation、metric epoch 和 source cursor，并写入可选 `metrics.csv`。
+- `M7-DSP-002`：`fixed-lag-fir-0.5-12hz-0.1` 是约 1 s 延迟的显示候选，仍需真实 CUP/zero-phase 相关、NRMSE、峰时和 PI 偏差门禁；不能标称生产 zero-phase。
+- `M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`、`M7-ARC-001`、`M7-EXP-001` 的 UI/档案交互仍按 M7.3–M7.4 排期，M7.1 仅交付底层合同。
