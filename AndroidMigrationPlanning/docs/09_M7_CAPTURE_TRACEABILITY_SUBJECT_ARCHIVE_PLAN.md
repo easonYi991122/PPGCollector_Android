@@ -3,7 +3,7 @@
 日期：2026-08-08  
 规划版本：`M7.0`  
 代码基线：`main` / `970d1f9` 之后的当前工作树  
-状态：**规划已形成；M7.1～M7.4 已实现并通过本地综合门禁，M7.5 尚未完成**
+状态：**规划已形成；M7.1～M7.5 已实现并通过本地综合门禁，真机与设备门禁仍 pending**
 
 本文是用户 2026-08-08 提出的十项增量需求的实施主计划。它只覆盖新需求及其必需的兼容改造，不替代既有 BLE、wire protocol、`CUPRAW1`、raw-first、检查/恢复和 M6 离线分析证据。若本文与旧文档对“未来应做什么”的描述冲突，以本文为本次 M7 增量的优先规划；旧实现事实仍按其发生时间保留。
 
@@ -411,13 +411,13 @@ subject_profiles/<subject>.profile.json
 
 唯一综合校验：与 M7.1 相同的单次完整 Gradle 命令。
 
-实际实现：`SubjectArchiveRepository` 从 filesystem metadata/profile 重建 subject-first 分组，按 seq 数值排序并保留未归档会话；`CaptureArchiveExportService` 预计算 SHA-256 后以 64 KiB buffer 流式写 manifest、subject/unclassified 文件和 profile sidecar，选择 subject/session 自动去重并对 entry collision 加后缀。`SubjectArchiveScreen` 默认替换平铺入口，仍可切换旧逐文件详情；批量 SAF launcher 通过临时 staging 保证 partial destination 不冒充成功。
+实际实现：`SubjectArchiveRepository` 从 filesystem metadata/profile 重建 subject-first 分组，按 seq 数值排序并保留未归档会话；`CaptureArchiveExportService` 预计算 SHA-256 后以 64 KiB buffer 流式写 manifest、subject/unclassified 文件和 profile sidecar，选择 subject/session 自动去重并对 entry collision 加后缀。`SubjectArchiveScreen` 默认进入 Saved Sessions 的档案视图，仍可切换逐文件详情；批量 SAF launcher 通过临时 staging 保证 partial destination 不冒充成功。M7.5 进一步把“已保存会话”设为外层页面，补齐逐文件/档案两种选择模式的导出、删除、全选、取消工具栏。
 
 综合门禁：完整 Gradle gate 通过；真实 SAF 大批量、取消/进度、档案动态字号和设备运行仍 pending。
 
 实际 commit：`feat(M7.4): add subject archives and multi-session export`
 
-### 第 5 轮：M7.5 录制页 UI 收敛与整体验收
+### 第 5 轮：M7.5 录制页 UI 收敛与整体验收（已实现）
 
 覆盖：`M7-UI-001`，并对 M7.1～M7.4 做一次集成收尾。按用户要求，视觉与布局优化放在全部功能之后。
 
@@ -455,6 +455,10 @@ subject_profiles/<subject>.profile.json
 ```
 
 真机延期门禁：IME 遮挡、5 Hz fixed-lag 观感、1 秒延迟、旋转/后台/锁屏、TalkBack、动态字号、真实多次 BP 录入、SAF 大批量 ZIP、真实 2 小时 CPU/heap/功耗。
+
+实际实现：`SessionNamePolicy.suggestedBaseNameOrExample()` 为无历史输入提供 `PPG-subject-seq` 示例；canonical parser 采用大小写不敏感匹配，写入器将 `ppg-subject-1` 归一化为 `PPG-subject-1` 后再创建目录、stem 和 metadata。Saved Sessions 外层页默认进入被试档案视图，逐文件是同级视图；两种视图都支持进入选择模式后的导出、删除、全选、取消，subject selection 删除只作用于 session directories。`BleHome` 录制态默认折叠扫描/诊断，保留紧凑连接/断开、RED/IR、指标、reference BP 和停止入口，并加入 `imePadding()` 与示例命名提示。
+
+综合门禁：首次运行发现 lower-case writer normalization regression，修复参数遮蔽后按同一轮规则重试；LazyColumn 与固定录制操作卡收尾后的最终 gate `BUILD SUCCESSFUL in 4m 25s`、130 actionable tasks、160 JVM tests、lint/debug/release/androidTest/R8/privacy 通过。真机/模拟器的 IME、TalkBack、动态字号、SAF 批量/取消、真实 BP 和 2 小时长稳继续 pending。
 
 建议 commit：`feat(M7.5): compact capture UI and complete M7 integration`
 

@@ -185,7 +185,7 @@ Parity rule: exact frame/sample/stats; random chunking invariant
 
 这样源快照、需求 ID、Android 目标和验收始终可追溯。
 
-## M7.1–M7.4 Android 增量索引（2026-08-08）
+## M7.1–M7.5 Android 增量索引（2026-08-08）
 
 | 需求 | Android target | 关键合同/证据 |
 |---|---|---|
@@ -195,5 +195,6 @@ Parity rule: exact frame/sample/stats; random chunking invariant
 | `M7-DSP-002` | `core/signal/FixedLagPpgFilterRuntime.kt`, `LivePpgSignalRuntime.kt` | `FixedLagPpgFilterRuntimeTest`; 100 sample explicit latency; numerical/device admission pending |
 | `M7.3` `M7-NAME-001` / `M7-SUB-001` / `M7-BP-001` | `CaptureSetupModels.kt`, `CaptureServiceViewModel.kt`, `CaptureForegroundService.kt`, `CaptureRecordingController.kt`, `CaptureSessionWriter.kt`, `ManualBloodPressureDialog.kt` | service/controller BP token seam; participant snapshot/profile revision; full Gradle gate; real BP/IME/rotation pending |
 | `M7.4` `M7-ARC-001` / `M7-EXP-001` | `SubjectArchiveModels.kt`, `CaptureArchiveExportService.kt`, `SubjectArchiveScreen.kt`, `SessionsViewModel.kt`, `MainActivity.kt` | subject-first numeric seq grouping, unclassified retention, manifest/hash/streaming ZIP; archive selection/SAF runtime pending |
+| `M7.5` `M7-UI-001` plus naming/archive integration | `SessionNamePolicy.kt`, `CaptureSessionWriter.kt`, `SubjectArchiveScreen.kt`, `SessionsScreens.kt`, `SessionsViewModel.kt`, `MainActivity.kt` | example suggestion fallback, case-insensitive canonical prefix normalization, Saved Sessions archive/file sibling views, selection toolbar/delete/export, compact recording device block and `imePadding`; emulator/real-device accessibility and SAF runtime pending |
 
-M7.5 remains unimplemented and is intentionally not indexed as complete; it owns final compact capture UI/IME/accessibility closure.
+M7.5 code is implemented and indexed above; real-device IME/rotation, TalkBack/dynamic font, SAF batch progress/cancellation and long-capture gates remain pending.

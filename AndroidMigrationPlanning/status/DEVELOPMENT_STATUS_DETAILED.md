@@ -2812,6 +2812,38 @@ Run the integrated release gate, then use an emulator/device when available to v
 - 当前 archive exporter 为独立多会话规则；legacy 单会话 adapter 继续保留以避免旧调用方破坏。后续若要求统一格式，可增加 adapter delegation 测试，但不能改变 v1/v2 可导出性。
 - 下一轮执行 M7.5：录制态紧凑布局、折叠/操作栏、IME bring-into-view、动态字号/TalkBack、档案页多选进度和全链路一次验收。
 
+## 2026-08-08 · M7.5 · Saved Sessions hierarchy and compact capture UI
+
+### 本轮目标
+
+- Requirement: `M7-UI-001`，并完成 M7.3/M7.4 命名与会话页集成收尾。
+- Primary source: 用户本轮命名/已保存会话修正、`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md` 第 5 轮，以及 `00_AGENT_MIGRATION_BRIEF.md` 的 M7 UI/存储边界。
+- Android target: `SessionNamePolicy.kt`、`CaptureServiceViewModel.kt`、`CaptureSetupModels.kt`、`CaptureSessionWriter.kt`、`SubjectArchiveScreen.kt`、`SessionsScreens.kt`、`SessionsViewModel.kt`、`MainActivity.kt`。
+- Tests: `SessionNamePolicyTest`、`SubjectArchiveRepositoryTest`；唯一综合 Gradle gate。
+- Non-goals: 不改变 CUPRAW1、25 列 raw ADC、metrics/BP sidecar schema、算法 BP/SpO2 语义，不宣称真机/可访问性/SAF 运行验收。
+
+### 实现事实
+
+- `SessionNamePolicy` 增加 `PPG-subject-seq` 明确示例回退；建议名、Capture ViewModel 初始化和“使用建议名”按钮均不会在无历史时产生空字符串。canonical parser 采用大小写不敏感匹配，`normalizeCanonical()` 固定 `PPG-` 前缀；写入器显式使用归一化配置，确保 `ppg-subject-1` 的目录、stem、metadata 和 archive identity 统一为 `PPG-subject-1`。duplicate 规则继续按 `Locale.ROOT` 大小写不敏感执行。
+- Saved Sessions 外层页现在统一显示“已保存会话”，默认 `SubjectArchiveScreen` 为被试档案视图，`SavedSessionsScreen` 为逐文件视图；两者都提供返回、刷新/切换视图、选择。`SessionsUiState.sessionSelectionMode` 进入选择模式后显示导出、删除、全选、取消；档案视图可选择 subject，ViewModel 将 subject selection 展开为会话目录，删除只允许 sessions root 的直接子目录并保留 subject profile。
+- 录制态 Live 页默认隐藏附近设备扫描列表和额外诊断，仅保留紧凑连接/断开、RED/IR、实时指标、reference BP 与停止入口；可展开设备/诊断。根容器加入 `imePadding()`，命名字段展示示例与合法字符提示。既有 StateFlow/FGS/writer 所有权未改变。
+
+### 验证
+
+- 首次综合 gate 因新增 lower-case archive 回归失败；修复 writer 构造参数遮蔽后按同一轮规则重试。
+- 最终命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。
+- 结果：LazyColumn 与固定录制操作卡收尾后的最终 gate `BUILD SUCCESSFUL in 4m 25s`，130 actionable tasks；160 JVM tests、lint、debug/release/androidTest APK、R8 与 `REL-005 verifyReleasePrivacy` 通过。
+- Hardware validation: pending；未运行真机/模拟器，IME 遮挡、TalkBack、动态字号、SAF 批量删除/导出进度、真实多次 BP 和 2 小时录制待后续门禁。
+
+### 风险与决策变化
+
+- 示例 `PPG-subject-seq` 是自由名语法上的可输入示例，不自动伪造 subject/seq；用户采用它时仍可作为非 canonical 会话，档案页会保留在 unclassified。真实 seq 建议只由 raw chunk>0 的 canonical session 推进。
+- 删除功能属于用户明确要求的会话级破坏操作，ViewModel 通过 archive 重建的精确目录和 parent check 限制范围；profile 不随会话删除。确认式二次提示、回收站和可访问性文案仍是后续真机/UI 门禁关注项。
+
+### 下一轮
+
+- 进入 emulator/真机运行门禁：IME/旋转/后台、TalkBack/dynamic font、真实 BP、多选 SAF 大批量/取消进度、2 小时 CPU/heap/功耗；若发现布局问题只在 UI 层修正，不改变 raw/CSV/sidecar 契约。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

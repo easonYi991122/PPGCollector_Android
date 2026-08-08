@@ -102,18 +102,23 @@ object CaptureSessionWriterPolicy {
 
 /** Synchronous raw-first writer; lifecycle/service code can safely wrap it later. */
 class CaptureSessionWriter(
-    val configuration: CaptureSessionConfiguration,
+    configuration: CaptureSessionConfiguration,
     sessionsRoot: Path,
     capacityProvider: CaptureStorageCapacityProvider = CaptureStorageCapacityProvider {
         runCatching { Files.getFileStore(it).usableSpace }.getOrNull()
     },
 ) : AutoCloseable {
-    val directory: Path = sessionsRoot.resolve(configuration.baseName)
-    val rawPath: Path = directory.resolve("${configuration.baseName}.cupraw")
-    val csvPath: Path = directory.resolve("${configuration.baseName}.csv")
-    val metadataPath: Path = directory.resolve("${configuration.baseName}.session.json")
-    val metricsPath: Path = directory.resolve("${configuration.baseName}.metrics.csv")
-    val bloodPressurePath: Path = directory.resolve("${configuration.baseName}.blood-pressure.csv")
+    /** Persist canonical sessions with one stable prefix, even for legacy callers. */
+    val configuration: CaptureSessionConfiguration = configuration.copy(
+        baseName = SessionNamePolicy.normalizeCanonical(configuration.baseName)
+            ?: configuration.baseName,
+    )
+    val directory: Path = sessionsRoot.resolve(this.configuration.baseName)
+    val rawPath: Path = directory.resolve("${this.configuration.baseName}.cupraw")
+    val csvPath: Path = directory.resolve("${this.configuration.baseName}.csv")
+    val metadataPath: Path = directory.resolve("${this.configuration.baseName}.session.json")
+    val metricsPath: Path = directory.resolve("${this.configuration.baseName}.metrics.csv")
+    val bloodPressurePath: Path = directory.resolve("${this.configuration.baseName}.blood-pressure.csv")
 
     private val rawWriter: CupRawWriter
     private var closed = false
@@ -126,14 +131,14 @@ class CaptureSessionWriter(
     private var lastCheckpointNanos = System.nanoTime()
     private var metricsInitialized = false
     private var bloodPressureInitialized = false
-    private var participantSnapshot: CaptureParticipantSnapshot? = configuration.participant
+    private var participantSnapshot: CaptureParticipantSnapshot? = this.configuration.participant
 
     private companion object {
         const val checkpointIntervalNanos = 1_000_000_000L
     }
 
     init {
-        if (!CaptureSessionWriterPolicy.isValidBaseName(configuration.baseName)) {
+        if (!CaptureSessionWriterPolicy.isValidBaseName(this.configuration.baseName)) {
             throw CaptureSessionWriterException.CannotCreate("invalid session name")
         }
         Files.createDirectories(sessionsRoot)
@@ -145,7 +150,7 @@ class CaptureSessionWriter(
         try {
             Files.createDirectory(directory)
         } catch (error: java.nio.file.FileAlreadyExistsException) {
-            throw CaptureSessionWriterException.SessionAlreadyExists(configuration.baseName)
+            throw CaptureSessionWriterException.SessionAlreadyExists(this.configuration.baseName)
         } catch (error: Exception) {
             throw CaptureSessionWriterException.CannotCreate("cannot create session directory", error)
         }
@@ -178,7 +183,7 @@ class CaptureSessionWriter(
     /** Appends one complete 1 Hz epoch. This method is called by the writer owner. */
     fun appendMetricEpoch(epoch: CaptureMetricEpoch): CaptureWriterSnapshot {
         checkOpen()
-        require(epoch.sessionId == configuration.sessionId) { "metric session id mismatch" }
+        require(epoch.sessionId == this.configuration.sessionId) { "metric session id mismatch" }
         ensureMetricsFile()
         appendBytes(metricsPath, CaptureMetricSeries.format(epoch).toByteArray(Charsets.UTF_8))
         snapshot = snapshot.copy(metricsRows = snapshot.metricsRows + 1)
@@ -189,7 +194,7 @@ class CaptureSessionWriter(
     /** Appends one manually entered reference BP event without touching raw/CSV. */
     fun appendBloodPressure(event: ManualBloodPressureEvent): CaptureWriterSnapshot {
         checkOpen()
-        require(event.reference.sessionId == configuration.sessionId) {
+        require(event.reference.sessionId == this.configuration.sessionId) {
             "blood pressure session id mismatch"
         }
         ensureBloodPressureFile()
@@ -269,7 +274,7 @@ class CaptureSessionWriter(
                             } else {
                                 CaptureSessionWriterPolicy.sampleSchemaVersion
                             },
-                            configuration.sessionId,
+                            this.configuration.sessionId,
                             nextSampleIndex,
                             hostMonotonicNanoseconds,
                             decoded.frame.sequenceNumber,
@@ -279,10 +284,10 @@ class CaptureSessionWriter(
                             metrics.heartRateBpm.toCsvCell(),
                             metrics.oxygenSaturationPercent.toCsvCell(),
                             metrics.signalQuality.toCsvCell(),
-                            configuration.softVersion,
-                            configuration.algorithmVersion,
-                            configuration.preprocessProfile,
-                            observedProtocolProfile ?: configuration.protocolProfile,
+                            this.configuration.softVersion,
+                            this.configuration.algorithmVersion,
+                            this.configuration.preprocessProfile,
+                            observedProtocolProfile ?: this.configuration.protocolProfile,
                             metrics.ratioOfRatios.toCsvCell(),
                         ),
                         firstStreamSampleIndex,
@@ -321,8 +326,8 @@ class CaptureSessionWriter(
         )
         writeMetadata(ended, reason, complete, error)
         return CaptureSessionSummary(
-            configuration.sessionId, configuration.baseName, directory,
-            configuration.startedUtc, ended, reason, complete, snapshot,
+            this.configuration.sessionId, this.configuration.baseName, directory,
+            this.configuration.startedUtc, ended, reason, complete, snapshot,
         ).also { finalSummary = it }
     }
 
@@ -406,19 +411,19 @@ class CaptureSessionWriter(
     ) {
         val metadata = CaptureSessionMetadata(
             schemaVersion = CaptureSessionWriterPolicy.sessionSchemaVersion,
-            sessionId = configuration.sessionId,
-            baseName = configuration.baseName,
-            startedUtc = configuration.startedUtc,
+            sessionId = this.configuration.sessionId,
+            baseName = this.configuration.baseName,
+            startedUtc = this.configuration.startedUtc,
             endedUtc = endedUtc,
-            softVersion = configuration.softVersion,
-            algVersion = configuration.algorithmVersion,
-            preprocessProfile = configuration.preprocessProfile,
-            protocolProfile = observedProtocolProfile ?: configuration.protocolProfile,
-            transportProfile = configuration.transportProfile,
+            softVersion = this.configuration.softVersion,
+            algVersion = this.configuration.algorithmVersion,
+            preprocessProfile = this.configuration.preprocessProfile,
+            protocolProfile = observedProtocolProfile ?: this.configuration.protocolProfile,
+            transportProfile = this.configuration.transportProfile,
             sampleRateHz = CupBatchProtocolV1.sampleRateHz,
             samplesPerFrame = observedSamplesPerFrame ?: CupBatchProtocolV1.samplesPerFrame,
-            device = CaptureSessionDeviceMetadata(configuration.device.name, configuration.device.identifier,
-                configuration.device.serviceUuid, configuration.device.notifyCharacteristicUuid, null, null),
+            device = CaptureSessionDeviceMetadata(this.configuration.device.name, this.configuration.device.identifier,
+                this.configuration.device.serviceUuid, this.configuration.device.notifyCharacteristicUuid, null, null),
             complete = complete,
             stopReason = reason,
             frameCount = snapshot.acceptedFrames,
@@ -444,10 +449,10 @@ class CaptureSessionWriter(
                 bloodPressure = bloodPressurePath.fileName.toString().takeIf { bloodPressureInitialized },
             ),
             recovery = null,
-            canonicalSubjectId = configuration.canonicalSubjectId
-                ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.subject,
-            canonicalSequence = configuration.canonicalSequence
-                ?: SessionNamePolicy.parseCanonical(configuration.baseName)?.sequence,
+            canonicalSubjectId = this.configuration.canonicalSubjectId
+                ?: SessionNamePolicy.parseCanonical(this.configuration.baseName)?.subject,
+            canonicalSequence = this.configuration.canonicalSequence
+                ?: SessionNamePolicy.parseCanonical(this.configuration.baseName)?.sequence,
             participant = participantSnapshot,
         )
         val tempPath = metadataPath.resolveSibling(".${metadataPath.fileName}.tmp")

@@ -2,11 +2,11 @@
 
 日期：2026-08-08
 
-代码基线：2026-08-08 M7.4 录制身份/BP、subject archive 与多会话导出实现
+代码基线：2026-08-08 M7.5 命名归一化、Saved Sessions 双视图/选择工具栏与录制态 UI 收敛实现
 
-适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/subject archive/analysis 文件链路。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/subject archive/analysis 文件链路，以及 M7.5 的命名归一化、Saved Sessions 档案/逐文件视图和录制态紧凑 UI。
 
-本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。
+本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。真机 IME/TalkBack/SAF/长稳仍不是本地构建证据的一部分。
 
 ## 1. 总体结论
 
@@ -394,6 +394,12 @@ CSV schema、formatter 和 parser 位于 [`CaptureCsv.kt`](app/src/main/java/com
 - summary 的 HR 只读取 valid `metrics.csv`，无 sidecar 时回退最新离线 artifact；没有证据显示不可用，不扫描大样本 CSV 猜测。BP summary 只统计 structural sidecar rows。
 - `CaptureArchiveExportService` 对 subject/session selection 求并集并按 directory 去重，使用 64 KiB stream 计算 size/SHA-256 后输出 `export_manifest.json`、`subjects/<subject>/<stem>/...`、`unclassified/<stem>/...`、`subject_profiles/<subject>.profile.json`。缺失/跳过、entry collision、取消和临时 destination 清理均有显式结果；旧 `CaptureSessionExportService` 单会话 ZIP adapter 保留兼容。
 - Compose 默认进入 `SubjectArchiveScreen`，可展开 subject→seq、勾选 subject 或任意 session、切回逐文件详情；CreateDocument/SAF 批量导出先写 staging，再复制到用户目标，partial archive 不报告为成功。
+
+### 3.8.3 M7.5 Saved Sessions 视图与录制态 UI
+
+- Saved Sessions 是会话页面的外层容器；默认进入 subject-first `SubjectArchiveScreen`，同级 `SavedSessionsScreen` 提供逐文件视图。两个视图的顶栏都保留返回、刷新、切换视图和选择入口，避免把档案误命名成独立的历史文件页。
+- `SessionsUiState.sessionSelectionMode` 是选择模式单一状态。档案视图可选择 subject 或单个 session，逐文件视图选择 session；进入模式后显示导出、删除、全选、取消。导出继续使用 `CaptureArchiveExportService` 的 manifest/hash/staging 规则；删除只接受 archive 重建出的 sessions root 直接子目录，不删除 subject profile。
+- `BleHome` 在 recording/stopping 时默认隐藏扫描列表，连接状态卡保留 fresh 状态与断开按钮，设备/诊断可展开；RED、IR、HR/SQI/R/PI、血压记录和停止并保存仍在主滚动页面。根容器使用 `imePadding()`，命名输入显示 `PPG-subject-seq` 示例。Activity/FGS/writer ownership 不因折叠或弹窗变化。
 
 ### 3.9 离线分析结果
 

@@ -32,8 +32,13 @@ data class SessionNameValidation(
 
 object SessionNamePolicy {
     const val maximumLength = 64
+    /** Example shown before the first real canonical session exists. */
+    const val exampleSuggestedName = "PPG-subject-seq"
     private val allowed = Regex("[A-Za-z0-9_-]{1,$maximumLength}")
-    private val canonical = Regex("PPG-([A-Za-z0-9_][A-Za-z0-9_-]*)-([1-9][0-9]*)")
+    private val canonical = Regex(
+        "PPG-([A-Za-z0-9_][A-Za-z0-9_-]*)-([1-9][0-9]*)",
+        RegexOption.IGNORE_CASE,
+    )
     private val reserved = buildSet {
         addAll(listOf("CON", "PRN", "AUX", "NUL"))
         (1..9).forEach {
@@ -80,6 +85,14 @@ object SessionNamePolicy {
         return CanonicalSessionIdentity(match.groupValues[1], sequence)
     }
 
+    /** Canonicalizes the prefix while preserving the user-supplied subject spelling. */
+    fun normalizeCanonical(name: String): String? =
+        parseCanonical(name)?.let { identity -> "PPG-${identity.subject}-${identity.sequence}" }
+
+    /** Returns the next real suggestion, or an explicit example for a new install. */
+    fun suggestedBaseNameOrExample(sessionsRoot: Path): String =
+        suggestedBaseName(sessionsRoot) ?: exampleSuggestedName
+
     /**
      * Rebuilds the next suggestion from actual sessions. Empty reservations do
      * not advance a sequence, so a failed start cannot consume a subject ID.
@@ -98,9 +111,10 @@ object SessionNamePolicy {
                 .thenBy { it.second.sequence },
         ) ?: return null
         val subject = last.second.subject
+        val subjectKey = subject.lowercase(Locale.ROOT)
         val next = candidates
             .asSequence()
-            .filter { it.second.subject == subject }
+            .filter { it.second.subject.lowercase(Locale.ROOT) == subjectKey }
             .maxOfOrNull { it.second.sequence }
             ?.plus(1L)
             ?: 1L
@@ -114,7 +128,7 @@ object SessionNamePolicy {
                 .asSequence()
                 .filter { (it.metadata?.rawChunkCount ?: 0L) > 0L }
                 .mapNotNull { parseCanonical(it.baseName) }
-                .filter { it.subject == subject }
+                .filter { it.subject.lowercase(Locale.ROOT) == subject.lowercase(Locale.ROOT) }
                 .maxOfOrNull { it.sequence } ?: 0L
         } else {
             0L
@@ -122,4 +136,3 @@ object SessionNamePolicy {
         return "PPG-$subject-${max + 1L}"
     }
 }
-

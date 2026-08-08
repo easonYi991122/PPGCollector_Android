@@ -83,9 +83,17 @@
 4. **有意产品变更**：必须有产品确认、schema/algorithm version 评估和对两个平台兼容性的说明。
 5. **来源歧义**：用真实设备/固件抓取或新的 golden fixture 解决，不能靠猜测。
 
-## 7. M7.1–M7.2 对等增量
+## 7. M7.1–M7.5 对等增量
 
 - `M7-DSP-001`：RAW 反相仅发生在 `PpgDisplayTransform` 与 RAW replay/workbench presentation；`CUPRAW1`、25 列 CSV `red/ir` 和计算输入仍为原始 ADC。
 - `M7-MET-001/002`：PI 直接复用同一次 ratio estimate 的 RED AC/DC；HR/SQI/R/PI 由 accepted PPG 的 800/100 epoch 共享 generation、metric epoch 和 source cursor，并写入可选 `metrics.csv`。
 - `M7-DSP-002`：`fixed-lag-fir-0.5-12hz-0.1` 是约 1 s 延迟的显示候选，仍需真实 CUP/zero-phase 相关、NRMSE、峰时和 PI 偏差门禁；不能标称生产 zero-phase。
-- `M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`、`M7-ARC-001`、`M7-EXP-001` 的 UI/档案交互仍按 M7.3–M7.4 排期，M7.1 仅交付底层合同。
+- `M7-BP-001`、`M7-NAME-001`、`M7-SUB-001`、`M7-ARC-001`、`M7-EXP-001` 的底层合同、录制交互和档案/批量导出已在 M7.1～M7.4 实现；M7.5 补齐 Saved Sessions 外层双视图、选择工具栏、命名归一化和录制态 UI 收敛。真实设备/IME/无障碍/SAF 仍是 pending evidence。
+
+### M7.5 验收补充
+
+| 需求 | 本地代码证据 | 未关闭的运行门禁 |
+|---|---|---|
+| 示例建议名与 canonical 大小写归一化 | `SessionNamePolicyTest`、`SubjectArchiveRepositoryTest`、writer path/metadata wiring | 真实跨平台文件系统与历史目录迁移策略 |
+| Saved Sessions 档案/逐文件同级视图与选择工具栏 | `SubjectArchiveScreen`、`SavedSessionsScreen`、`SessionsViewModel` selection/delete/export callbacks | 动态字号、TalkBack、SAF 大批量/取消进度 |
+| 录制态紧凑 UI/IME 避让 | `BleHome` compact device block、`imePadding`、M7.5 Gradle gate | 真机键盘、旋转、后台、2 小时录制与 OEM 布局 |

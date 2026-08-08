@@ -19,6 +19,11 @@ class SessionNamePolicyTest {
             CanonicalSessionIdentity("subject_01", 12),
             SessionNamePolicy.parseCanonical("PPG-subject_01-12"),
         )
+        assertEquals(
+            CanonicalSessionIdentity("subject", 1),
+            SessionNamePolicy.parseCanonical("ppg-subject-1"),
+        )
+        assertEquals("PPG-subject-1", SessionNamePolicy.normalizeCanonical("ppg-subject-1"))
         assertNull(SessionNamePolicy.parseCanonical("PPG-subject-0"))
     }
 
@@ -60,6 +65,23 @@ class SessionNamePolicyTest {
             )
             first.finish(CaptureStopReason.USER)
             assertEquals("PPG-A-2", SessionNamePolicy.suggestedBaseName(root))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun emptyHistoryProvidesAnExplicitExampleSuggestion() {
+        val root = Files.createTempDirectory("name-policy-example")
+        try {
+            assertEquals(
+                SessionNamePolicy.exampleSuggestedName,
+                SessionNamePolicy.suggestedBaseNameOrExample(root),
+            )
+            assertEquals(
+                SessionNamePolicy.exampleSuggestedName,
+                CaptureSetupPolicy.suggestion(root),
+            )
         } finally {
             root.toFile().deleteRecursively()
         }

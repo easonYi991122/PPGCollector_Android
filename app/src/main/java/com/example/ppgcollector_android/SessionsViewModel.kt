@@ -81,7 +81,7 @@ data class SessionDetailUi(
     val error: String? = null,
 )
 
-enum class SessionActionKind { EXPORT, ARCHIVE_EXPORT, RECOVER }
+enum class SessionActionKind { EXPORT, ARCHIVE_EXPORT, DELETE, RECOVER }
 
 data class SessionActionUi(
     val kind: SessionActionKind? = null,
@@ -109,6 +109,7 @@ data class SessionsUiState(
     val archive: SubjectArchiveSnapshot = SubjectArchiveSnapshot(),
     val archiveSelectedDirectories: Set<Path> = emptySet(),
     val archiveSelectedSubjects: Set<String> = emptySet(),
+    val sessionSelectionMode: Boolean = false,
 )
 
 enum class SessionAnalysisTaskStatus { RUNNING, COMPLETED, CANCELLED, FAILED }
@@ -233,6 +234,83 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
 
     fun clearArchiveSelection() {
         _state.update { it.copy(archiveSelectedDirectories = emptySet(), archiveSelectedSubjects = emptySet()) }
+    }
+
+    fun beginSessionSelection() {
+        _state.update { it.copy(sessionSelectionMode = true) }
+    }
+
+    fun cancelSessionSelection() {
+        _state.update {
+            it.copy(
+                sessionSelectionMode = false,
+                archiveSelectedDirectories = emptySet(),
+                archiveSelectedSubjects = emptySet(),
+            )
+        }
+    }
+
+    fun selectAllArchive() {
+        _state.update { state ->
+            state.copy(
+                sessionSelectionMode = true,
+                archiveSelectedSubjects = state.archive.groups.mapTo(linkedSetOf()) { it.summary.subject },
+                archiveSelectedDirectories = state.archive.unclassified.mapTo(linkedSetOf()) { it.directory },
+            )
+        }
+    }
+
+    fun selectAllSessions() {
+        _state.update { state ->
+            state.copy(
+                sessionSelectionMode = true,
+                archiveSelectedSubjects = emptySet(),
+                archiveSelectedDirectories = state.sessions.mapTo(linkedSetOf()) { it.directory },
+            )
+        }
+    }
+
+    fun deleteSelectedSessions() {
+        val snapshot = _state.value
+        val selection = CaptureArchiveSelection(
+            sessionDirectories = snapshot.archiveSelectedDirectories,
+            subjectIds = snapshot.archiveSelectedSubjects,
+        )
+        val directories = SubjectArchiveRepository.selectedSessions(snapshot.archive, selection)
+            .map { it.directory }
+            .distinct()
+        if (directories.isEmpty()) return
+        actionJob?.cancel()
+        actionJob = viewModelScope.launch {
+            setAction(SessionActionUi(kind = SessionActionKind.DELETE, isRunning = true))
+            try {
+                val deleted = withContext(Dispatchers.IO) {
+                    directories.count { directory ->
+                        // Keep an explicit parent check so a stale archive item cannot delete
+                        // outside the app's sessions directory.
+                        require(directory.parent == app.sessionsRoot) { "invalid session directory" }
+                        if (!Files.isDirectory(directory)) return@count false
+                        check(directory.toFile().deleteRecursively()) {
+                            "cannot delete ${directory.fileName}"
+                        }
+                        true
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        sessionSelectionMode = false,
+                        archiveSelectedDirectories = emptySet(),
+                        archiveSelectedSubjects = emptySet(),
+                    )
+                }
+                setAction(SessionActionUi(kind = SessionActionKind.DELETE, message = "已删除 $deleted 个会话"))
+                refresh()
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (error: Exception) {
+                setAction(SessionActionUi(kind = SessionActionKind.DELETE, error = error.message))
+            }
+        }
     }
 
     fun exportArchiveTo(destination: Uri) {

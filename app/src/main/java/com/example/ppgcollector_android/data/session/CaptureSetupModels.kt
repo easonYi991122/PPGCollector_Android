@@ -74,5 +74,5 @@ object CaptureSetupPolicy {
         SessionNamePolicy.validate(name, sessionsRoot)
 
     fun suggestion(sessionsRoot: java.nio.file.Path): String =
-        SessionNamePolicy.suggestedBaseName(sessionsRoot).orEmpty()
+        SessionNamePolicy.suggestedBaseNameOrExample(sessionsRoot)
 }

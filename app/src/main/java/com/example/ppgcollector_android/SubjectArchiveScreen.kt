@@ -43,37 +43,53 @@ internal fun SubjectArchiveScreen(
     onSelect: (SessionListItemUi) -> Unit,
     onToggleSubject: (String) -> Unit,
     onToggleSession: (java.nio.file.Path) -> Unit,
-    onClearSelection: () -> Unit,
     onExport: () -> Unit,
+    onDelete: () -> Unit,
+    onBeginSelection: () -> Unit,
+    onSelectAll: () -> Unit,
+    onCancelSelection: () -> Unit,
     onOpenFlat: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val selectedCount = state.archiveSelectedDirectories.size + state.archiveSelectedSubjects.size
+    val selectionMode = state.sessionSelectionMode
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("被试档案", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("按 subject 组织 canonical 会话；非标准名称保留在未归档区", style = MaterialTheme.typography.bodySmall)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("已保存会话", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (selectionMode) "已选择 $selectedCount 项"
+                            else "被试档案视图 · canonical subject 与未归档会话",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(onClick = onBack) { Text("返回") }
                 }
-                OutlinedButton(onClick = onBack) { Text("返回") }
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
-                OutlinedButton(onClick = onOpenFlat) { Text("逐文件视图") }
-                if (selectedCount > 0) OutlinedButton(onClick = onClearSelection) { Text("清除选择") }
-                Button(onClick = onExport, enabled = selectedCount > 0 && !state.action.isRunning) {
-                    Text("导出 ($selectedCount)")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (selectionMode) {
+                        Button(onClick = onExport, enabled = selectedCount > 0 && !state.action.isRunning) {
+                            Text("导出")
+                        }
+                        OutlinedButton(onClick = onDelete, enabled = selectedCount > 0 && !state.action.isRunning) {
+                            Text("删除")
+                        }
+                        OutlinedButton(onClick = onSelectAll, enabled = !state.isLoading) { Text("全选") }
+                        OutlinedButton(onClick = onCancelSelection) { Text("取消") }
+                    } else {
+                        OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
+                        OutlinedButton(onClick = onOpenFlat) { Text("逐文件视图") }
+                        OutlinedButton(onClick = onBeginSelection) { Text("选择") }
+                    }
                 }
             }
         }
@@ -81,12 +97,12 @@ internal fun SubjectArchiveScreen(
             item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Text("正在流式生成 ZIP…")
+                    Text(if (state.action.kind == SessionActionKind.DELETE) "正在删除所选会话…" else "正在流式生成 ZIP…")
                 }
             }
         }
         state.action.message?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.tertiary) } }
-        state.action.error?.let { error -> item { Text("导出失败：$error", color = MaterialTheme.colorScheme.error) } }
+        state.action.error?.let { error -> item { Text("操作失败：$error", color = MaterialTheme.colorScheme.error) } }
         state.error?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error) } }
         if (state.isLoading && state.archive.groups.isEmpty() && state.archive.unclassified.isEmpty()) {
             item { CircularProgressIndicator() }
@@ -98,6 +114,7 @@ internal fun SubjectArchiveScreen(
             SubjectArchiveCard(
                 group = group,
                 state = state,
+                selectionMode = selectionMode,
                 onToggleSubject = onToggleSubject,
                 onToggleSession = onToggleSession,
                 onSelect = onSelect,
@@ -106,7 +123,7 @@ internal fun SubjectArchiveScreen(
         if (state.archive.unclassified.isNotEmpty()) {
             item { Text("未归档 / legacy（${state.archive.unclassified.size}）", style = MaterialTheme.typography.titleMedium) }
             items(state.archive.unclassified, key = { it.directory.toString() }) { session ->
-                ArchiveSessionRow(session, state, onToggleSession, onSelect)
+                ArchiveSessionRow(session, state, selectionMode, onToggleSession, onSelect)
             }
         }
         item { Spacer(Modifier.padding(bottom = 8.dp)) }
@@ -117,6 +134,7 @@ internal fun SubjectArchiveScreen(
 private fun SubjectArchiveCard(
     group: SubjectArchiveGroup,
     state: SessionsUiState,
+    selectionMode: Boolean,
     onToggleSubject: (String) -> Unit,
     onToggleSession: (java.nio.file.Path) -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
@@ -125,10 +143,12 @@ private fun SubjectArchiveCard(
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = group.summary.subject in state.archiveSelectedSubjects,
-                    onCheckedChange = { onToggleSubject(group.summary.subject) },
-                )
+                if (selectionMode) {
+                    Checkbox(
+                        checked = group.summary.subject in state.archiveSelectedSubjects,
+                        onCheckedChange = { onToggleSubject(group.summary.subject) },
+                    )
+                }
                 Column(Modifier.weight(1f)) {
                     Text(group.summary.subject, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
@@ -148,7 +168,7 @@ private fun SubjectArchiveCard(
             }
             if (expanded) {
                 group.sessions.forEach { entry ->
-                    ArchiveSessionRow(entry.session, state, onToggleSession, onSelect, "seq ${entry.identity.sequence}")
+                    ArchiveSessionRow(entry.session, state, selectionMode, onToggleSession, onSelect, "seq ${entry.identity.sequence}")
                 }
             }
         }
@@ -159,6 +179,7 @@ private fun SubjectArchiveCard(
 private fun ArchiveSessionRow(
     session: StoredCaptureSession,
     state: SessionsUiState,
+    selectionMode: Boolean,
     onToggleSession: (java.nio.file.Path) -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
     prefix: String? = null,
@@ -167,10 +188,12 @@ private fun ArchiveSessionRow(
         modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(
-            checked = session.directory in state.archiveSelectedDirectories,
-            onCheckedChange = { onToggleSession(session.directory) },
-        )
+        if (selectionMode) {
+            Checkbox(
+                checked = session.directory in state.archiveSelectedDirectories,
+                onCheckedChange = { onToggleSession(session.directory) },
+            )
+        }
         Column(Modifier.weight(1f)) {
             Text(prefix?.let { "$it · ${session.baseName}" } ?: session.baseName)
             Text(

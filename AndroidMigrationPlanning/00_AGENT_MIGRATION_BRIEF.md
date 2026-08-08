@@ -2,7 +2,7 @@
 
 版本：1.2（agent 执行基线）
 日期：2026-08-08
-当前迭代：`M7.0`（采集追溯、被试档案与 UI 增量规划；M7.1～M7.5 尚未实现）
+当前迭代：`M7.5`（M7 采集追溯、被试档案与最终 UI 收敛已实现；真机门禁仍待执行）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -22,7 +22,7 @@
 
 证据优先级固定为：真实产品需求与真实 CUP 固件/GATT 抓包 > 当前 iOS Swift 源码、Swift 测试和 golden fixtures > Python/C++ 交叉参考 > 规划建议。reference_sources 是只读快照；不要直接修改它，也不要把被 EXCLUSIONS.md 排除的旧 BLE/NUS、旧协议、旧 CSV、IMU 或隔壁项目作为 Android V1 依据。资料冲突时先记录 ADR/决策，不要悄悄猜测。
 
-当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值；当前 app 只有默认 Hello Android Compose 壳和示例测试，尚未实现 BLE、CUP 协议、信号处理、会话存储、前台服务或正式页面。不要把 app versionName=1.0 当作迁移完成版本。
+当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值。M1～M7.5 已有 BLE、CUP 协议、信号处理、raw-first 会话、前台服务、实时/会话页面、subject archive 与 UI 代码及 JVM/build/privacy 证据；真机、模拟器、API/厂商矩阵、正式 identity/signing 和可访问性门禁仍开放。不要把 app versionName=1.0 当作迁移完成版本。
 
 必须保持或显式验证的核心契约：
 - CUP transport profile 当前包含 NUS `6E400001/3/2` 与 FFF0/FFF1/FFF2 两组 service/notify/control UUID；连接后按设备身份和实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
@@ -104,9 +104,12 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M4` | Phase 4 | V1 Compose 实时、录制、历史、详情、重放 | 页面、Swift 对等保序极值双轨折线、有效帧 freshness/录制 gate、连接/断开状态、分组卡片 UI、Sessions/replay 与 instrumentation seam 已实现；真机波形/录制、runtime/SAF provider/可访问性仍待验收 |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化；形成 V1.0 | JVM 长稳模拟与 release shrink/lint/privacy/API/FGS 门禁已实现；2026-08-03 已由 Android Studio 生成并校验 fresh unsigned release APK。API/厂商/真机/正式 identity/签名/隐私仍开放 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期、对比工作台 | 版本化 raw replay、完整信号/全程 zero-phase、独立 Sessions/compare/横屏工作台均已实现；Live 现由统一 bounded runtime 同步发布 RAW/CAUSAL 0.6–4 Hz 与既有指标窗口。`D-014`、runtime/真机 UI/性能门禁待执行 |
-| `M7.0` | M7 规划 | RAW 显示、PI/统一时序、手工参考血压、命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与 UI 收敛 | 五轮规划已形成；M7.1 已实现，后续轮次见 `docs/09` |
-| `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 file manifest 与兼容 inspection/recovery/export | JVM/build/privacy 综合门禁通过；真机与资料表单 UI 仍待执行 |
-| `M7.2` | M7 第 2 轮 | RAW display transform、PI/HR/SQI/R 统一 source epoch、metrics queue、0.5–12 Hz fixed-lag display candidate | JVM/build/privacy 综合门禁通过；fixed-lag 数值准入、真机与 UI 交互仍 pending；下一轮 M7.3 |
+| `M7.0` | M7 规划 | RAW 显示、PI/统一时序、手工参考血压、命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与 UI 收敛 | 五轮规划与旧文档治理已形成；实现事实以 M7.1～M7.5 行为和 `docs/09` 为准 |
+| `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 file manifest 与兼容 inspection/recovery/export | JVM/build/privacy 综合门禁通过；真机门禁延期 |
+| `M7.2` | M7 第 2 轮 | RAW display transform、PI/HR/SQI/R 统一 source epoch、metrics queue、0.5–12 Hz fixed-lag display candidate | JVM/build/privacy 综合门禁通过；fixed-lag 数值准入与真机门禁延期 |
+| `M7.3` | M7 第 3 轮 | 自由命名/建议名、participant snapshot/profile revision、录制中多组 reference BP、取负 raw 后的 causal/fixed-lag/离线显示 | JVM/build/privacy 综合门禁通过；真实 BP、IME/旋转与观感门禁延期 |
+| `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP | JVM/build/privacy 综合门禁通过；真实 SAF、动态字号与设备门禁延期 |
+| `M7.5` | M7 第 5 轮 | 示例建议名、canonical 前缀归一化、已保存会话双视图/多选导出删除、录制态紧凑设备区、IME 避让与 UI 收尾 | 本地综合门禁通过；真机 IME/TalkBack/动态字号/SAF/长录制门禁延期 |
 
 ## 6. 不可破坏的核心契约
 
@@ -137,6 +140,8 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 - 录制开始前 gate：连接、fresh stream、合法且不重名的 ASCII 名称、存储预检、未有活动会话。
 - 单一 writer、单一 GATT owner、单一幂等 finalizer；first stop reason wins。录制期间由 `connectedDevice` FGS 持有，Activity 重建只重新观察/绑定。
 - Compose 通过 StateFlow 和 lifecycle-aware collection 消费不可变快照；波形默认 8 秒、5 Hz、RED/IR 独立动态 Y，Canvas 绘制前做 min/max bucket。
+- 会话命名在 ASCII 合法性和大小写不敏感重名检查后，canonical `PPG-{subject}-{seq}` 前缀统一归一化；无历史时的建议按钮使用明确的 `PPG-subject-seq` 示例，真实 session 才推进 seq。
+- Saved Sessions 是外层页面，默认被试档案视图与逐文件视图为同级子视图；进入选择模式后只显示导出、删除、全选、取消，subject 选择删除其会话而不删除 profile。
 - BLE/API/服务/文件分享为平台重写，不要把 SwiftUI 层级逐行搬到 Kotlin；core protocol/signal 不依赖 Android SDK。
 
 ## 7. 每轮工作流程

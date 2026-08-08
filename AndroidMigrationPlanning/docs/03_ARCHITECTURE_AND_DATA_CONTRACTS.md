@@ -343,9 +343,12 @@ data class LiveUiState(
 - 导入/恢复对 raw length、JSON depth/size、CSV 行长、文件总量设上限，防止恶意文件造成内存/磁盘耗尽。
 - 如产品需要设备备份或 at-rest encryption，Phase 0 决定；启用加密会影响跨平台工具、恢复、SAF 和性能，必须作为独立数据格式方案。
 
-## 13. M7.1–M7.2 数据合同增量
+## 13. M7.1–M7.5 数据合同增量
 
 - session v1 的 raw/samples/metadata 读取保持兼容；writer v2 可按需声明 `<stem>.metrics.csv` 与 `<stem>.blood-pressure.csv`，25 列样本 CSV 不扩列。
 - metrics sidecar 一行表示一个 accepted-PPG 1 Hz epoch，HR/SQI/R/PI 共用 `connection_generation`、`metric_epoch`、`source_sample_index/time`；BP sidecar 使用 dialog-open reference token，不能写入计算 BP 字段。
 - canonical filename、subject profile revision 和 participant snapshot 是 traceability metadata，不改变 raw ownership；`subjectsRoot` 与 sessions root 分离。
 - fixed-lag 采用 bounded symmetric FIR candidate，显式记录 latency/source cursor；CAUSAL profile 与旧 session replay 保留回退。
+- canonical parser 对 `PPG-` 前缀采用大小写不敏感识别；写入边界将可解析的 `ppg-subject-1` 归一化成 `PPG-subject-1`，重复检查仍按 `Locale.ROOT` lowercase 处理。无实际历史 session 时建议值为示例 `PPG-subject-seq`，不推进 seq。
+- Saved Sessions 的 archive/file view、选择模式和删除不改变数据合同：subject selection 先由 immutable filesystem snapshot 展开成精确 session directories，删除只作用于 sessions root 直接子目录，profile 与 raw/CSV sidecar schema 不受影响。
+- 录制 UI 折叠、`imePadding` 或 BP dialog 不能改变 FGS、GATT、writer 和 raw-first owner；Activity 仍只观察 StateFlow。

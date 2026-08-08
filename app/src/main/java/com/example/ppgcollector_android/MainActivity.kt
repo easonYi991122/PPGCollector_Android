@@ -20,13 +20,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -163,7 +162,10 @@ class MainActivity : ComponentActivity() {
                     page = when (page) {
                         AppPage.WORKBENCH -> AppPage.SESSION_DETAIL
                         AppPage.SESSION_DETAIL, AppPage.COMPARE -> AppPage.SESSIONS
-                        AppPage.SESSIONS_FLAT -> AppPage.SESSIONS
+                        AppPage.SESSIONS_FLAT -> {
+                            sessionsViewModel.cancelSessionSelection()
+                            AppPage.SESSIONS
+                        }
                         AppPage.SESSIONS -> AppPage.LIVE
                         AppPage.LIVE -> AppPage.LIVE
                     }
@@ -201,7 +203,10 @@ class MainActivity : ComponentActivity() {
                         )
                         AppPage.SESSIONS -> SubjectArchiveScreen(
                             state = sessions,
-                            onBack = { page = AppPage.LIVE },
+                            onBack = {
+                                sessionsViewModel.cancelSessionSelection()
+                                page = AppPage.LIVE
+                            },
                             onRefresh = sessionsViewModel::refresh,
                             onSelect = { item ->
                                 sessionsViewModel.select(item)
@@ -209,19 +214,32 @@ class MainActivity : ComponentActivity() {
                             },
                             onToggleSubject = sessionsViewModel::toggleArchiveSubject,
                             onToggleSession = sessionsViewModel::toggleArchiveSession,
-                            onClearSelection = sessionsViewModel::clearArchiveSelection,
                             onExport = ::requestArchiveExport,
+                            onDelete = sessionsViewModel::deleteSelectedSessions,
+                            onBeginSelection = sessionsViewModel::beginSessionSelection,
+                            onSelectAll = sessionsViewModel::selectAllArchive,
+                            onCancelSelection = sessionsViewModel::cancelSessionSelection,
                             onOpenFlat = { page = AppPage.SESSIONS_FLAT },
                             modifier = Modifier.padding(innerPadding),
                         )
                         AppPage.SESSIONS_FLAT -> SavedSessionsScreen(
                             state = sessions,
-                            onBack = { page = AppPage.SESSIONS },
+                            onBack = {
+                                sessionsViewModel.cancelSessionSelection()
+                                page = AppPage.SESSIONS
+                            },
                             onRefresh = sessionsViewModel::refresh,
                             onSelect = { item ->
                                 sessionsViewModel.select(item)
                                 page = AppPage.SESSION_DETAIL
                             },
+                            onToggleSelection = sessionsViewModel::toggleArchiveSession,
+                            onBeginSelection = sessionsViewModel::beginSessionSelection,
+                            onSelectAll = sessionsViewModel::selectAllSessions,
+                            onCancelSelection = sessionsViewModel::cancelSessionSelection,
+                            onExportSelection = ::requestArchiveExport,
+                            onDeleteSelected = sessionsViewModel::deleteSelectedSessions,
+                            onOpenArchive = { page = AppPage.SESSIONS },
                             onCancelAnalysis = sessionsViewModel::cancelAnalysis,
                             onOpenCompare = { page = AppPage.COMPARE },
                             modifier = Modifier.padding(innerPadding),
@@ -333,8 +351,12 @@ private fun BleHome(
     modifier: Modifier = Modifier,
 ) {
     var waveformDisplayMode by rememberSaveable { mutableStateOf(LiveWaveformDisplayMode.FIXED_LAG) }
+    var recordingDetailsExpanded by rememberSaveable { mutableStateOf(false) }
     val recordingActive = capture.recording.state == CaptureRecordingState.RECORDING ||
         capture.recording.state == CaptureRecordingState.STOPPING
+    LaunchedEffect(recordingActive) {
+        if (!recordingActive) recordingDetailsExpanded = false
+    }
     val waveform = if (recordingActive && capture.waveform.red.isNotEmpty()) {
         capture.waveform
     } else {
@@ -346,14 +368,16 @@ private fun BleHome(
         preview.lastAnalysis?.snapshot
     }
 
-    Column(
+    LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .imePadding()
             .padding(horizontal = 16.dp, vertical = 18.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(
+        item {
+            Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -373,9 +397,11 @@ private fun BleHome(
             OutlinedButton(onClick = onOpenSessions) {
                 Text("已保存会话")
             }
+            }
         }
 
-        Card(
+        item {
+            Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
@@ -413,7 +439,21 @@ private fun BleHome(
                             )
                         }
                     }
-                    FreshnessPill(snapshot.freshness)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FreshnessPill(snapshot.freshness)
+                        if (recordingActive && snapshot.phase.isReadyToDisconnect) {
+                            Button(
+                                onClick = onDisconnect,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                            ) { Text("断开") }
+                        }
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text(
@@ -421,17 +461,25 @@ private fun BleHome(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (recordingActive) {
+                    TextButton(onClick = { recordingDetailsExpanded = !recordingDetailsExpanded }) {
+                        Text(if (recordingDetailsExpanded) "收起设备/诊断" else "展开设备/诊断")
+                    }
+                }
+            }
             }
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        if (!recordingActive || recordingDetailsExpanded) {
+            item {
+                Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -471,13 +519,44 @@ private fun BleHome(
                         onDisconnect = onDisconnect,
                     )
                 }
-                snapshot.lastError?.let {
-                    Text("蓝牙：$it", color = MaterialTheme.colorScheme.error)
+                    snapshot.lastError?.let {
+                        Text("蓝牙：$it", color = MaterialTheme.colorScheme.error)
+                    }
+                }
                 }
             }
         }
 
-        Card(
+        if (recordingActive) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FilledTonalButton(
+                            onClick = onOpenBloodPressure,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("血压记录") }
+                        Button(
+                            onClick = onStopCapture,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) { Text("停止并保存") }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
@@ -500,9 +579,11 @@ private fun BleHome(
                     onDisplayModeChange = { waveformDisplayMode = it },
                 )
             }
+            }
         }
 
-        Card(
+        item {
+            Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
@@ -531,7 +612,8 @@ private fun BleHome(
                         value = sessionName,
                         onValueChange = onSessionNameChange,
                         label = { Text("录制名称") },
-                        supportingText = { Text("仅支持字母、数字、下划线和短横线") },
+                        placeholder = { Text("PPG-subject-seq") },
+                        supportingText = { Text("仅支持字母、数字、下划线和短横线；示例名需替换 seq") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -607,24 +689,14 @@ private fun BleHome(
                         },
                     )
                 } else {
-                    FilledTonalButton(
-                        onClick = onOpenBloodPressure,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("血压记录")
-                    }
-                    Button(
-                        onClick = onStopCapture,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                    ) {
-                        Text("停止并保存")
-                    }
+                    Text(
+                        "录制操作已固定在页面上方；打开血压弹窗不会暂停数据流。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 capture.error?.let { Text("服务：$it", color = MaterialTheme.colorScheme.error) }
+            }
             }
         }
 

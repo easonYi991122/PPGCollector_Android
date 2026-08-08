@@ -37,6 +37,21 @@ class SubjectArchiveRepositoryTest {
         }
     }
 
+    @Test
+    fun lowercaseCanonicalPrefixIsNormalizedAndArchived() {
+        val root = Files.createTempDirectory("subject-archive-lower")
+        val sessions = root.resolve("sessions")
+        val subjects = root.resolve("subjects")
+        try {
+            writeSession(sessions, "ppg-subject-1", "lower", withRaw = true)
+            val snapshot = SubjectArchiveRepository.rebuild(sessions, subjects)
+            assertEquals(listOf("subject"), snapshot.groups.map { it.summary.subject })
+            assertEquals("PPG-subject-1", snapshot.groups.single().sessions.single().session.baseName)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun writeSession(root: java.nio.file.Path, baseName: String, id: String, withRaw: Boolean) {
         val writer = CaptureSessionWriter(
             CaptureSessionConfiguration(

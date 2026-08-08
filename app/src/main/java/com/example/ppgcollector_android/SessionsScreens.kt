@@ -65,6 +65,13 @@ internal fun SavedSessionsScreen(
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
+    onToggleSelection: (NioPath) -> Unit,
+    onBeginSelection: () -> Unit,
+    onSelectAll: () -> Unit,
+    onCancelSelection: () -> Unit,
+    onExportSelection: () -> Unit,
+    onDeleteSelected: () -> Unit,
+    onOpenArchive: () -> Unit,
     onCancelAnalysis: (NioPath) -> Unit,
     onOpenCompare: () -> Unit,
     modifier: Modifier = Modifier,
@@ -72,11 +79,30 @@ internal fun SavedSessionsScreen(
     Column(modifier.fillMaxSize()) {
         PageHeader(
             title = "已保存会话",
-            subtitle = "文件系统记录、完整性复核与版本化离线分析",
+            subtitle = if (state.sessionSelectionMode) {
+                "逐文件视图 · 已选择 ${state.archiveSelectedDirectories.size} 项"
+            } else {
+                "逐文件视图 · 完整性复核与版本化离线分析"
+            },
             onBack = onBack,
             trailing = {
-                OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) {
-                    Text("刷新")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (state.sessionSelectionMode) {
+                        Button(
+                            onClick = onExportSelection,
+                            enabled = state.archiveSelectedDirectories.isNotEmpty() && !state.action.isRunning,
+                        ) { Text("导出") }
+                        OutlinedButton(
+                            onClick = onDeleteSelected,
+                            enabled = state.archiveSelectedDirectories.isNotEmpty() && !state.action.isRunning,
+                        ) { Text("删除") }
+                        OutlinedButton(onClick = onSelectAll, enabled = !state.isLoading) { Text("全选") }
+                        OutlinedButton(onClick = onCancelSelection) { Text("取消") }
+                    } else {
+                        OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
+                        OutlinedButton(onClick = onOpenArchive) { Text("被试档案") }
+                        OutlinedButton(onClick = onBeginSelection) { Text("选择") }
+                    }
                 }
             },
         )
@@ -165,7 +191,10 @@ internal fun SavedSessionsScreen(
                 SessionSummaryCard(
                     item = item,
                     analysisCount = state.artifactsBySession[item.directory]?.size ?: 0,
-                    onClick = { onSelect(item) },
+                    selectionMode = state.sessionSelectionMode,
+                    selected = item.directory in state.archiveSelectedDirectories,
+                    onClick = { if (state.sessionSelectionMode) onToggleSelection(item.directory) else onSelect(item) },
+                    onToggleSelection = { onToggleSelection(item.directory) },
                 )
             }
             item { Spacer(Modifier.height(8.dp)) }
@@ -177,7 +206,10 @@ internal fun SavedSessionsScreen(
 private fun SessionSummaryCard(
     item: SessionListItemUi,
     analysisCount: Int,
+    selectionMode: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
+    onToggleSelection: () -> Unit,
 ) {
     Card(
         onClick = onClick,
@@ -194,6 +226,12 @@ private fun SessionSummaryCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top,
             ) {
+                if (selectionMode) {
+                    androidx.compose.material3.Checkbox(
+                        checked = selected,
+                        onCheckedChange = { onToggleSelection() },
+                    )
+                }
                 Column(Modifier.weight(1f)) {
                     Text(item.baseName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(

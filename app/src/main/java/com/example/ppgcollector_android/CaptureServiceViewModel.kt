@@ -271,8 +271,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     init {
         _sessionName.value = SessionNamePolicy
-            .suggestedBaseName(collectorApplication.sessionsRoot)
-            .orEmpty()
+            .suggestedBaseNameOrExample(collectorApplication.sessionsRoot)
         viewModelScope.launch {
             combine(
                 _sessionName,
@@ -291,12 +290,12 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     }
 
     fun setSessionName(value: String) {
-        _sessionName.value = value
+        _sessionName.value = SessionNamePolicy.normalizeCanonical(value) ?: value
         if (!participantDraftDirty) prefillParticipantFor(value)
     }
 
     fun useSuggestedSessionName() {
-        setSessionName(SessionNamePolicy.suggestedBaseName(collectorApplication.sessionsRoot).orEmpty())
+        setSessionName(SessionNamePolicy.suggestedBaseNameOrExample(collectorApplication.sessionsRoot))
     }
 
     fun setParticipantDraft(value: CaptureParticipantDraft) {

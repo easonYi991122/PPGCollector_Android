@@ -1,9 +1,11 @@
 # PPGCollector Android Development Status
 
 更新时间：2026-08-08
-当前迁移版本：`M7.4`（subject 档案与多会话导出已实现）
+当前迁移版本：`M7.5`（M7 UI 收敛、命名归一化与已保存会话双视图已实现）
 当前规划阶段：M7 五轮增量规划；M7.5 尚未完成
-状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.4 已落地，M7.5 最终 UI 仍待后续轮次。
+状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.5 已落地，真机与设备矩阵门禁仍待执行。
+
+本轮增量：无历史 canonical 会话时，命名建议回退到明确的 `PPG-subject-seq` 示例；大小写不敏感 canonical parser 将 `ppg-subject-1` 归一化为 `PPG-subject-1`，写入器、metadata 和档案均沿用归一化 stem。Saved Sessions 现在是外层页面，默认被试档案视图与逐文件视图同级切换；两种视图都支持进入选择模式后的导出、删除、全选、取消，档案视图可选择 subject，删除只作用于会话目录。录制态隐藏扫描详情并保留紧凑连接/断开、波形、指标、参考血压和停止入口；页面加入 `imePadding` 与示例命名提示。
 
 本轮增量：M7.4 新增 filesystem 重建的 subject-first archive，canonical seq 数值排序、资料缺失标记、HR evidence precedence、BP 组摘要和 unclassified/legacy 保留；新增多会话流式 ZIP exporter，写入 manifest、entry size/SHA-256、subject profile、missing/skipped 原因，subject/session 多选去重并防止路径碰撞。Saved Sessions 默认进入档案页，仍可切回逐文件详情，SAF 批量导出经 staging 后再写用户目标。
 
@@ -81,7 +83,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作台；M7.0 已把十项新增需求收敛为五轮计划但尚无产品代码。下一步是 M7.1 的 session v2/sidecar、命名和 subject profile 纯 Kotlin 合同，同时保留 `Nordic_UART_Service`、FFF1/FFF2 与真实 runtime 矩阵门禁。
+Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作台；M7.1～M7.5 已把采集追溯、reference BP、subject archive、批量导出和最终 UI 收敛落到代码。下一步是按计划执行 emulator/真机与文件分享/可访问性门禁，同时保留 `Nordic_UART_Service`、FFF1/FFF2 与真实 runtime 矩阵门禁。
 
 ## 与 MigrationPlanning 对照
 
@@ -95,11 +97,12 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 | `M4` | Phase 4 | V1 Compose 实时/录制/历史/详情/重放 | lifecycle-aware FGS binding、合法帧→freshness→capture gate、Swift 对等保序极值双轨 Path、连接/断开状态按钮、分组卡片/状态/指标 UI、Sessions/detail/SAF/replay、可滚动页面、waveform semantics 和 instrumentation seam 已实现；真机波形/录制、instrumentation runtime/系统重建/动态字号/TalkBack/SAF provider 验收未完成 | 真机复验本轮交互后继续 M5 runtime matrix |
 | `M5` | Phase 5 | 长稳、API/厂商矩阵、性能、隐私、发布硬化，形成 V1.0 | 已完成 release preflight、R8/resource shrinking、release lint（历史 0 errors）、静态 artifact scan、sessions backup exclusion、REL-001 模拟、REL-002/003/004/005/006/007 静态门禁；2026-08-03 Android Studio fresh unsigned APK/manifest/SHA/ZIP/privacy 校验通过。正式 identity/signing、API/厂商/真机/隐私门禁未完成 | API emulator/厂商运行矩阵、真实 lifecycle/2 h；取得 D-004 输入后生成正式签名包 |
 | `M6` | Phase 6 | V1.1 离线稳定段、频谱、周期和对比工作台 | raw replay/独立版本 JSON/Python 与 SciPy 对等、完整 RAW/全程 zero-phase 触控视窗、窗口审计/频谱/周期/诊断、横屏工作台、历史/取消/Sessions/compare，以及统一实时 RAW/CAUSAL 0.6–4 Hz runtime 均已实现并经 JVM/build/privacy 证据；runtime UI/性能和长任务跨进程策略待验收 | emulator/真机运行实时 causal、完整信号触控、横屏与性能；按 `D-014` 决定 WorkManager/用户可见 FGS |
-| `M7.0` | 五轮增量规划 | 采集追溯、手工参考血压、被试档案/批量导出、滤波与 UI 收敛 | 规划文档已形成；M7.1–M7.3 已实现，后续轮次按 `docs/09` 推进 | M7.4：被试档案与批量导出 |
+| `M7.0` | 五轮增量规划 | 采集追溯、手工参考血压、被试档案/批量导出、滤波与 UI 收敛 | 规划文档与旧文档治理已形成 | M7.1～M7.5 已实现，转入设备门禁 |
 | `M7.1` | M7 第 1 轮 | session v2 可选 sidecar、命名/canonical parser、subject profile revision、v1/v2 manifest、sidecar inspection/recovery/export 兼容 | JVM/build/privacy 综合门禁通过；尚未执行真机/Android runtime 资料表单验收 | M7.2：完成显示/指标/固定时延滤波 wiring |
 | `M7.2` | M7 第 2 轮 | RAW 显示层反相、PI 同源计算、1 Hz epoch/source timestamp sidecar wiring、0.5–12 Hz fixed-lag display candidate | JVM/build/privacy 综合门禁通过；candidate 与真实 CUP/zero-phase 的相关、峰时、PI 偏差及真机 UX 尚待准入 | M7.3：命名/资料表单与非阻塞参考血压弹窗 |
 | `M7.3` | M7 第 3 轮 | 自由命名/建议名/重复校验、participant snapshot/profile revision、录制中手工参考 BP、取负 raw 后的 0.5–12 Hz causal/fixed-lag/离线显示链路 | JVM/build/privacy 综合门禁通过（含编译 Android instrumentation）；真实多次 BP、IME/旋转和滤波观感仍待真机 | M7.4：subject archive 与多会话导出 |
 | `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP、subject/session selection 与 SAF staging | JVM/build/privacy 综合门禁通过；真实 SAF 大批量/取消进度、档案页动态字号和真机运行仍待验收 | M7.5：紧凑录制 UI、IME/可访问性与整体验收 |
+| `M7.5` | M7 第 5 轮 | 示例建议名与 canonical 前缀归一化；已保存会话外层页、档案/逐文件切换、选择模式导出/删除/全选/取消；录制态折叠设备诊断与 IME 避让 | 综合 Gradle gate 通过（160 JVM tests、lint/build/androidTest/privacy）；真机 IME、TalkBack、动态字号、SAF、长录制仍待验收 | 维护 M7 contracts，随后执行 emulator/真机门禁 |
 
 ## 当前 Android 工程事实
 
@@ -110,7 +113,7 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 
 ## 当前未完成能力
 
-Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。M7 的 RAW 显示反相、PI、1 Hz metrics sidecar、手工参考 BP、自由命名建议、被试资料/档案、批量导出、0.5～12 Hz fixed-lag 和录制态紧凑 UI 均尚未实现；当前 SQI/ratio 仍 provisional/diagnostic，计算 SpO2/BP unavailable，IMU 不显示。
+Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。M7.5 的本地 UI/命名/选择代码已实现；真实 IME 遮挡、动态字号、TalkBack、SAF 批量删除/导出进度、2 小时 CPU/heap/功耗仍 pending。当前 SQI/ratio 仍 provisional/diagnostic，计算 SpO2/BP unavailable，IMU 不显示。
 
 ## 验证与真机策略
 
@@ -125,6 +128,7 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 - 最近 M5 使用 Android Studio JDK 25 完成 release artifact、REL-001 30 min/2 h simulation、checkpoint 预算、raw/CSV/replay 对齐断言、REL-007 FGS 启动失败映射和 target/permission/service 静态 contract、API 33+ notification permission gate、REL-006 BLE permission API boundary matrix、CAP-007 写入失败升级与 incomplete-prefix 断言、REL-004 service finalization wait、merged-manifest/API target report，以及 `:app:verifyReleasePrivacy --no-configuration-cache` 的源码日志/APK 内容审计；本轮 M4 不重复关闭这些证据。
 - `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、固定 SOS/DC/gap reset、四个 preprocessing fixture case、plateau midpoint、distance tie、prominence/width peak semantics、6 个 HR fixture case 的 BPM/DFT/RR/confidence/reason trace、8 个 SQI fixture case 的 peak/cycle/template/Pearson/grade trace、ratio-of-ratios 的 trim/RMS/ACDC/invalid paths、MetricResult invalid/calibration separation、800/100 cadence/window bound、gap generation、rejected frame、stale request/source timestamp、M2 NUS/FFF0 profile/name filter 与 service 自动选择、API 30/31/33 permission branches、waiting/fresh/stale freshness、stage/device stale deadline、timeout clamp、phase flags、fake transport command order、fake GATT connect/service/characteristic/CCCD/receiving path、raw byte/timestamp copy、wrong phase/generation rejection、missing service/notify failure、deadline polling、Android adapter compile/Manifest merge、permission result deny/recover、coordinator permission/availability/scan/connect gates、coordinator snapshot/raw seam、Activity Result/lifecycle-compose compile、Application manifest wiring、Locale.ROOT、RFC 4180 转义、metadata round-trip 和 JSON audit 均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
+- 2026-08-08 M7.5 综合门禁首次发现新增 lower-case canonical archive 回归，修正 writer 配置遮蔽后按同一轮规则重试；LazyColumn 与固定录制操作卡收尾后最终 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 4m 25s`、130 actionable tasks，160 JVM tests/0 failures/errors/skips，lint、debug/release/androidTest、R8 与 privacy contract 通过。真机未执行；IME、TalkBack、动态字号、SAF 批量操作和 2 小时录制继续 pending。
 
 ## 当前开放阻塞
 
