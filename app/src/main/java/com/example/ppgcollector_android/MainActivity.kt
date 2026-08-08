@@ -1069,12 +1069,12 @@ private fun LiveWaveformAndMetrics(
     val red = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> displayCausal.first
         LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagRed
-        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.red)
+        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUpForPlot(waveform.red)
     }
     val ir = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> displayCausal.second
         LiveWaveformDisplayMode.FIXED_LAG -> waveform.fixedLagIr
-        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUp(waveform.ir)
+        LiveWaveformDisplayMode.RAW -> PpgDisplayTransform.rawPeakUpForPlot(waveform.ir)
     }
     val settlingSamples = if (effectiveMode == LiveWaveformDisplayMode.CAUSAL) {
         waveform.settlingSampleCount
@@ -1084,7 +1084,7 @@ private fun LiveWaveformAndMetrics(
     val modeDescription = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.5–12 Hz（取负 raw 后滤波）"
         LiveWaveformDisplayMode.FIXED_LAG -> "fixed-lag 0.5–12 Hz，约 ${waveform.fixedLagLatencySamples / 100.0} s 延迟"
-        LiveWaveformDisplayMode.RAW -> "原始数据，显示取负"
+        LiveWaveformDisplayMode.RAW -> "原始数据，显示取负并去除可视化线性基线趋势"
     }
     WaveformPanel(
         "RED",
