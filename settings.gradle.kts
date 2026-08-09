@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PPGCollector_Android"
 include(":app")
+include(":baselineprofile")

@@ -23,24 +23,34 @@ object PpgDisplayTransform {
      * display transform.
      */
     fun rawPeakUpForPlot(values: DoubleArray): DoubleArray {
-        val inverted = rawPeakUp(values)
-        val finite = inverted.indices.filter { inverted[it].isFinite() }
-        if (finite.size < 2) return inverted
+        var finiteCount = 0
+        var sumX = 0.0
+        var sumY = 0.0
+        for (index in values.indices) {
+            val value = values[index]
+            if (!value.isFinite()) continue
+            finiteCount++
+            sumX += index.toDouble()
+            sumY -= value
+        }
+        if (finiteCount < 2) return rawPeakUp(values)
 
-        val meanX = finite.average()
-        val meanY = finite.sumOf { inverted[it] } / finite.size.toDouble()
+        val meanX = sumX / finiteCount.toDouble()
+        val meanY = sumY / finiteCount.toDouble()
         var covariance = 0.0
         var variance = 0.0
-        finite.forEach { index ->
+        for (index in values.indices) {
+            val source = values[index]
+            if (!source.isFinite()) continue
             val dx = index.toDouble() - meanX
-            covariance += dx * (inverted[index] - meanY)
+            covariance += dx * (-source - meanY)
             variance += dx * dx
         }
         val slope = if (variance > 0.0) covariance / variance else 0.0
         val intercept = meanY - slope * meanX
-        return DoubleArray(inverted.size) { index ->
-            val value = inverted[index]
-            if (value.isFinite()) value - (slope * index + intercept) else value
+        return DoubleArray(values.size) { index ->
+            val value = values[index]
+            if (value.isFinite()) -value - (slope * index + intercept) else value
         }
     }
 

@@ -198,3 +198,14 @@ Parity rule: exact frame/sample/stats; random chunking invariant
 | `M7.5` `M7-UI-001` plus naming/archive integration | `SessionNamePolicy.kt`, `CaptureSessionWriter.kt`, `SubjectArchiveScreen.kt`, `SessionsScreens.kt`, `SessionsViewModel.kt`, `MainActivity.kt` | example suggestion fallback, case-insensitive canonical prefix normalization, Saved Sessions archive/file sibling views, selection toolbar/delete/export, compact recording device block and `imePadding`; emulator/real-device accessibility and SAF runtime pending |
 
 M7.5 code is implemented and indexed above; real-device IME/rotation, TalkBack/dynamic font, SAF batch progress/cancellation and long-capture gates remain pending.
+
+## M7.6 Compose UI、状态与发布性能索引（2026-08-09）
+
+| 需求 | Android target | 关键合同/证据 |
+|---|---|---|
+| `M7-UI-002/003` | `SavedSessionsRoute.kt`, `SavedSessionsUiPolicy.kt`, `SubjectArchiveScreen.kt`, `SessionsScreens.kt`, `SessionsViewModel.kt` | 单一 Saved Sessions route、固定双层 top bar、稳定返回/视图切换语义、contextual selection bar、去重会话计数、删除确认、扁平 archive LazyList keys；`SavedSessionsUiPolicyTest` / `SavedSessionsRouteTest` |
+| `M7-UI-004/005` | `LiveCaptureScreen.kt`, `LiveWaveformComponents.kt`, `CaptureUiPolicy.kt`, `ManualBloodPressureDialog.kt`, `CaptureServiceViewModel.kt` | event-driven compact/detailed、固定录制操作栏、RAW/CAUSAL/FIXED、五指标自适应一行、IME/focus/数字键盘、BP dialog ViewModel state；`CaptureUiPolicyTest` / existing Compose seams |
+| `M7-PERF-001/002` | `MainActivity.kt`, `CaptureServiceViewModel.kt`, `LiveWaveformComponents.kt`, `PpgDisplayTransform.kt`, `LiveWaveformRuntime.kt` | waveform/analysis/preview leaf collection、low/high-frequency state slice、只读 array ownership、无装箱 detrend、publication-keyed transform/plot 与 `drawWithCache`、删除旧 duplicate `SessionsPanel` |
+| `M7-PERF-003` | `baselineprofile/`, `app/src/main/baseline-prof.txt`, Gradle/settings/version catalog, `verifyReleasePrivacy` | Baseline Profile generator + startup/sessions CUJ、ProfileInstaller、release `assets/dexopt/baseline.prof` 打包断言；真实设备 profile 生成与 Macrobenchmark 数值仍是 runtime 门禁 |
+
+本节与 [`10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`](10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md) 是 M7.6 UI/性能的当前依据；`docs/09` 继续作为 M7.0～M7.5 历史和数据合同依据，不得用于回退本节页面层级。

@@ -44,6 +44,14 @@ internal inline fun <T> runCatchingCancellable(block: () -> T): Result<T> =
         Result.failure(error)
     }
 
+private fun SessionsUiState.recountSelection(): SessionsUiState = copy(
+    selectedSessionCount = SavedSessionsUiPolicy.selectedSessionDirectories(
+        archive = archive,
+        selectedDirectories = archiveSelectedDirectories,
+        selectedSubjects = archiveSelectedSubjects,
+    ).size,
+)
+
 data class SessionListItemUi(
     val directory: Path,
     val baseName: String,
@@ -109,7 +117,10 @@ data class SessionsUiState(
     val archive: SubjectArchiveSnapshot = SubjectArchiveSnapshot(),
     val archiveSelectedDirectories: Set<Path> = emptySet(),
     val archiveSelectedSubjects: Set<String> = emptySet(),
+    val selectedSessionCount: Int = 0,
     val sessionSelectionMode: Boolean = false,
+    val savedSessionsViewMode: SavedSessionsViewMode = SavedSessionsViewMode.ARCHIVE,
+    val expandedArchiveSubjects: Set<String> = emptySet(),
 )
 
 enum class SessionAnalysisTaskStatus { RUNNING, COMPLETED, CANCELLED, FAILED }
@@ -205,7 +216,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                         sessions = items,
                         artifactsBySession = mergedArtifacts,
                         archive = archive,
-                    )
+                    ).recountSelection()
                 }
             }.onFailure { error ->
                 _state.value = _state.value.copy(
@@ -220,7 +231,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         _state.update { state ->
             val next = state.archiveSelectedDirectories.toMutableSet()
             if (!next.add(directory)) next.remove(directory)
-            state.copy(archiveSelectedDirectories = next)
+            state.copy(archiveSelectedDirectories = next).recountSelection()
         }
     }
 
@@ -228,16 +239,34 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
         _state.update { state ->
             val next = state.archiveSelectedSubjects.toMutableSet()
             if (!next.add(subject)) next.remove(subject)
-            state.copy(archiveSelectedSubjects = next)
+            state.copy(archiveSelectedSubjects = next).recountSelection()
         }
     }
 
     fun clearArchiveSelection() {
-        _state.update { it.copy(archiveSelectedDirectories = emptySet(), archiveSelectedSubjects = emptySet()) }
+        _state.update {
+            it.copy(
+                archiveSelectedDirectories = emptySet(),
+                archiveSelectedSubjects = emptySet(),
+                selectedSessionCount = 0,
+            )
+        }
     }
 
     fun beginSessionSelection() {
         _state.update { it.copy(sessionSelectionMode = true) }
+    }
+
+    fun setSavedSessionsViewMode(mode: SavedSessionsViewMode) {
+        _state.update { it.copy(savedSessionsViewMode = mode) }
+    }
+
+    fun toggleArchiveExpandedSubject(subject: String) {
+        _state.update { state ->
+            val next = state.expandedArchiveSubjects.toMutableSet()
+            if (!next.add(subject)) next.remove(subject)
+            state.copy(expandedArchiveSubjects = next)
+        }
     }
 
     fun cancelSessionSelection() {
@@ -246,6 +275,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                 sessionSelectionMode = false,
                 archiveSelectedDirectories = emptySet(),
                 archiveSelectedSubjects = emptySet(),
+                selectedSessionCount = 0,
             )
         }
     }
@@ -256,7 +286,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                 sessionSelectionMode = true,
                 archiveSelectedSubjects = state.archive.groups.mapTo(linkedSetOf()) { it.summary.subject },
                 archiveSelectedDirectories = state.archive.unclassified.mapTo(linkedSetOf()) { it.directory },
-            )
+            ).recountSelection()
         }
     }
 
@@ -266,7 +296,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                 sessionSelectionMode = true,
                 archiveSelectedSubjects = emptySet(),
                 archiveSelectedDirectories = state.sessions.mapTo(linkedSetOf()) { it.directory },
-            )
+            ).recountSelection()
         }
     }
 
@@ -301,6 +331,7 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                         sessionSelectionMode = false,
                         archiveSelectedDirectories = emptySet(),
                         archiveSelectedSubjects = emptySet(),
+                        selectedSessionCount = 0,
                     )
                 }
                 setAction(SessionActionUi(kind = SessionActionKind.DELETE, message = "已删除 $deleted 个会话"))

@@ -2,7 +2,7 @@
 
 版本：1.2（agent 执行基线）
 日期：2026-08-08
-当前迭代：`M7.5`（M7 采集追溯、被试档案与最终 UI 收敛已实现；真机门禁仍待执行）
+当前迭代：`M7.6`（Saved Sessions 统一骨架、紧凑录制 UI、Compose 性能与 Baseline Profile 构建路径已实现；真机门禁仍待执行）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -22,7 +22,7 @@
 
 证据优先级固定为：真实产品需求与真实 CUP 固件/GATT 抓包 > 当前 iOS Swift 源码、Swift 测试和 golden fixtures > Python/C++ 交叉参考 > 规划建议。reference_sources 是只读快照；不要直接修改它，也不要把被 EXCLUSIONS.md 排除的旧 BLE/NUS、旧协议、旧 CSV、IMU 或隔壁项目作为 Android V1 依据。资料冲突时先记录 ADR/决策，不要悄悄猜测。
 
-当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值。M1～M7.5 已有 BLE、CUP 协议、信号处理、raw-first 会话、前台服务、实时/会话页面、subject archive 与 UI 代码及 JVM/build/privacy 证据；真机、模拟器、API/厂商矩阵、正式 identity/signing 和可访问性门禁仍开放。不要把 app versionName=1.0 当作迁移完成版本。
+当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值。M1～M7.6 已有 BLE、CUP 协议、信号处理、raw-first 会话、前台服务、实时/会话页面、subject archive、统一 Saved Sessions route、紧凑录制 UI 与 Baseline Profile producer 代码及 JVM/build/privacy 证据；真机、模拟器、API/厂商矩阵、正式 identity/signing、Macrobenchmark 数值和可访问性门禁仍开放。不要把 app versionName=1.0 当作迁移完成版本。
 
 必须保持或显式验证的核心契约：
 - CUP transport profile 当前包含 NUS `6E400001/3/2` 与 FFF0/FFF1/FFF2 两组 service/notify/control UUID；连接后按设备身份和实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
@@ -81,6 +81,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：未决证据和风险，不得在代码中偷偷作决定。
 10. [实时数据处理与数据存储实现指南](../REALTIME_AND_STORAGE.md)：当前 Android production 调用链、文件格式、函数索引与修改边界。
 11. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：2026-08-08 用户增量的权威实施顺序、数据合同、旧文档治理和单轮单次校验要求。
+12. [M7.6 Compose UI 与性能收敛规划](docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md)：Saved Sessions 统一层级、录制信息密度、Compose 状态/绘图边界、无障碍与 Baseline Profile；本轮 UI 冲突以此为准。
 
 ## 4. 证据优先级与冲突处理
 
@@ -110,6 +111,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M7.3` | M7 第 3 轮 | 自由命名/建议名、participant snapshot/profile revision、录制中多组 reference BP、取负 raw 后的 causal/fixed-lag/离线显示 | JVM/build/privacy 综合门禁通过；真实 BP、IME/旋转与观感门禁延期 |
 | `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP | JVM/build/privacy 综合门禁通过；真实 SAF、动态字号与设备门禁延期 |
 | `M7.5` | M7 第 5 轮 | 示例建议名、canonical 前缀归一化、已保存会话双视图/多选导出删除、录制态紧凑设备区、IME 避让与 UI 收尾 | 本地综合门禁通过；真机 IME/TalkBack/动态字号/SAF/长录制门禁延期 |
+| `M7.6` | Compose UI/性能单轮收敛 | Saved Sessions 单 route/固定顶栏/安全选择，录制 compact/detail/固定操作/五指标，state slice/缓存绘图/语义，Baseline Profile producer 与 release 打包断言 | 165 JVM tests、lint/build/R8/REL/profile 综合门禁通过；真机 UI、SAF、Macrobenchmark/功耗门禁延期 |
 
 ## 6. 不可破坏的核心契约
 
@@ -142,6 +144,8 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 - Compose 通过 StateFlow 和 lifecycle-aware collection 消费不可变快照；波形默认 8 秒、5 Hz、RED/IR 独立动态 Y，Canvas 绘制前做 min/max bucket。
 - 会话命名在 ASCII 合法性和大小写不敏感重名检查后，canonical `PPG-{subject}-{seq}` 前缀统一归一化；无历史时的建议按钮使用明确的 `PPG-subject-seq` 示例，真实 session 才推进 seq。
 - Saved Sessions 是外层页面，默认被试档案视图与逐文件视图为同级子视图；进入选择模式后只显示导出、删除、全选、取消，subject 选择删除其会话而不删除 profile。
+- Saved Sessions 两种视图必须共享同一个固定顶栏和稳定返回语义；选择计数按展开后去重会话计算，删除必须二次确认。录制状态默认 compact，BP/停止操作固定可达，RAW/CAUSAL/FIXED 与五项指标保留自适应布局和无效/超时语义。
+- 高频 waveform/analysis/preview 只在信号叶子收集；primitive arrays 只按 ownership-transferred read-only snapshot 使用，禁止为跳过重组而错误标注深层可变状态。release 必须继续打包 compiled Baseline Profile，但实际性能收益只能由设备 Macrobenchmark 关闭。
 - BLE/API/服务/文件分享为平台重写，不要把 SwiftUI 层级逐行搬到 Kotlin；core protocol/signal 不依赖 Android SDK。
 
 ## 7. 每轮工作流程

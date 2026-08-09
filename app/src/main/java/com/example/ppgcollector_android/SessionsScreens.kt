@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
@@ -60,68 +61,30 @@ private val uiDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
     .withZone(ZoneId.systemDefault())
 
 @Composable
-internal fun SavedSessionsScreen(
+internal fun FlatSessionsContent(
     state: SessionsUiState,
-    onBack: () -> Unit,
-    onRefresh: () -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
     onToggleSelection: (NioPath) -> Unit,
-    onBeginSelection: () -> Unit,
-    onSelectAll: () -> Unit,
-    onCancelSelection: () -> Unit,
-    onExportSelection: () -> Unit,
-    onDeleteSelected: () -> Unit,
-    onOpenArchive: () -> Unit,
     onCancelAnalysis: (NioPath) -> Unit,
     onOpenCompare: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier.fillMaxSize()) {
-        PageHeader(
-            title = "已保存会话",
-            subtitle = if (state.sessionSelectionMode) {
-                "逐文件视图 · 已选择 ${state.archiveSelectedDirectories.size} 项"
-            } else {
-                "逐文件视图 · 完整性复核与版本化离线分析"
-            },
-            onBack = onBack,
-            trailing = {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (state.sessionSelectionMode) {
-                        Button(
-                            onClick = onExportSelection,
-                            enabled = state.archiveSelectedDirectories.isNotEmpty() && !state.action.isRunning,
-                        ) { Text("导出") }
-                        OutlinedButton(
-                            onClick = onDeleteSelected,
-                            enabled = state.archiveSelectedDirectories.isNotEmpty() && !state.action.isRunning,
-                        ) { Text("删除") }
-                        OutlinedButton(onClick = onSelectAll, enabled = !state.isLoading) { Text("全选") }
-                        OutlinedButton(onClick = onCancelSelection) { Text("取消") }
-                    } else {
-                        OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
-                        OutlinedButton(onClick = onOpenArchive) { Text("被试档案") }
-                        OutlinedButton(onClick = onBeginSelection) { Text("选择") }
-                    }
-                }
-            },
-        )
+        val running = remember(state.analysisTasks) {
+            state.analysisTasks.filterValues { it.status == SessionAnalysisTaskStatus.RUNNING }
+        }
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
+            item(key = "flat-notice") {
                 NoticeCard(
                     "会话保存在本应用内部，卸载应用会删除未导出的数据。" +
                         "进入详情可导出 ZIP；检查与分析均不会改写 raw、CSV 或 metadata。",
                 )
             }
-            val running = state.analysisTasks.filterValues {
-                it.status == SessionAnalysisTaskStatus.RUNNING
-            }
             if (running.isNotEmpty()) {
-                item { SectionTitle("离线分析任务") }
+                item(key = "flat-analysis-title") { SectionTitle("离线分析任务") }
                 items(running.entries.toList(), key = { it.key.toString() }) { (directory, task) ->
                     SectionCard(title = task.sessionBaseName) {
                         Row(
@@ -153,7 +116,7 @@ internal fun SavedSessionsScreen(
                 }
             }
             if (state.artifactsBySession.count { it.value.isNotEmpty() } >= 2) {
-                item {
+                item(key = "flat-compare") {
                     SectionCard(title = "会话对比") {
                         Text(
                             "选择两个已生成离线结果的会话，对照稳定段指标、平均周期与统一归一化曲线。",
@@ -167,9 +130,9 @@ internal fun SavedSessionsScreen(
                 }
             }
             state.error?.let { message ->
-                item { StatusMessage(message, isError = true) }
+                item(key = "flat-error") { StatusMessage(message, isError = true) }
             }
-            item {
+            item(key = "flat-session-title") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -180,7 +143,7 @@ internal fun SavedSessionsScreen(
                 }
             }
             if (!state.isLoading && state.sessions.isEmpty()) {
-                item {
+                item(key = "flat-empty") {
                     EmptyState(
                         title = "尚无本地会话",
                         detail = "完成一次录制后，会话将在这里独立展示。",
@@ -197,9 +160,8 @@ internal fun SavedSessionsScreen(
                     onToggleSelection = { onToggleSelection(item.directory) },
                 )
             }
-            item { Spacer(Modifier.height(8.dp)) }
+            item(key = "flat-bottom-space") { Spacer(Modifier.height(8.dp)) }
         }
-    }
 }
 
 @Composable
@@ -210,10 +172,15 @@ private fun SessionSummaryCard(
     selected: Boolean,
     onClick: () -> Unit,
     onToggleSelection: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().semantics {
+            if (selectionMode) {
+                stateDescription = if (selected) "已选择" else "未选择"
+            }
+        },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
@@ -901,9 +868,10 @@ private fun PageHeader(
     title: String,
     subtitle: String,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
     trailing: @Composable () -> Unit = {},
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,

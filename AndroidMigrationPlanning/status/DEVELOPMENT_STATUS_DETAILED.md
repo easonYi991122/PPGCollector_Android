@@ -2844,6 +2844,49 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 - 进入 emulator/真机运行门禁：IME/旋转/后台、TalkBack/dynamic font、真实 BP、多选 SAF 大批量/取消进度、2 小时 CPU/heap/功耗；若发现布局问题只在 UI 层修正，不改变 raw/CSV/sidecar 契约。
 
+## 2026-08-09 · M7.6 · Unified Saved Sessions, compact capture and Compose performance
+
+### 本轮目标
+
+- 在单一开发轮次中完成已保存会话顶部错位修正、双视图 UI 层级、录制态 compact/detail、五指标与三滤波紧凑布局、Compose 状态/重组/绘图优化、IME/无障碍，以及 Baseline Profile/R8 发布性能路径。
+- 开发前先形成 [`docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`](../docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md)，明确 M7.6 UI 冲突覆盖 `docs/09` 的历史“最终 UI”表述；不改变 raw、25 列 CSV、metrics/BP sidecar、1 Hz 指标和滤波算法合同。
+
+### 需求/参考/Android 目标
+
+- Requirement: `M7-UI-002`、`M7-UI-003`、`M7-UI-004`、`M7-UI-005`、`M7-PERF-001`、`M7-PERF-002`、`M7-PERF-003`。
+- Primary source: 用户 2026-08-09 UI/Compose 优化要求、`docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`、M7.5 现有 `MainActivity`/Saved Sessions/subject archive 代码；Baseline Profile 配置参考 Android 官方 generator/consumer 模式。
+- Tests: `SavedSessionsUiPolicyTest`、`CaptureUiPolicyTest`、`SavedSessionsRouteTest`、既有 `WaveformAccessibilityTest`/`CupDeviceListTest` 与全部 JVM/storage/signal/BLE regression。
+- Android target: `SavedSessionsRoute.kt`、`SubjectArchiveScreen.kt`、`SessionsScreens.kt`、`SessionsViewModel.kt`、`LiveCaptureScreen.kt`、`LiveWaveformComponents.kt`、`CaptureServiceViewModel.kt`、`PpgDisplayTransform.kt`、`baselineprofile/` 与 release audit。
+- Non-goals: 不执行真实设备 Baseline Profile generation/Macrobenchmark，不宣称 TalkBack/动态字号/IME/SAF 真机通过，不修改 CUPRAW1/CSV/sidecar/计算 BP/SpO₂ 或 fixed-lag 数值准入。
+
+### 实现事实
+
+- 新 `SavedSessionsRoute` 是唯一 Saved Sessions 外层页面；被试档案/逐文件只切换内容，返回始终退出到录制页。固定双层 top bar 避免标题与 3～4 个文字按钮挤在同一行；选择态只显示导出、error 色删除、全选、取消，删除前确认。ViewModel 持有 view mode/subject expansion，selected count 用 archive selection 展开并按目录去重。
+- `SubjectArchiveContent` 将 subject header、展开 seq 与 unclassified session 扁平化为稳定 key LazyList；卡片不再持有局部 expansion，也不再把完整 state 传到 session row。flat 动态 notice/task/error/empty/section 项增加固定 key。
+- 原 1,484 行 `MainActivity` 收敛为路由/launcher，删除未使用 `SessionsPanel`/重复 replay UI。`LiveCaptureScreen` 拥有 event-driven compact/detail reducer；录制默认 compact，BP/停止进入固定 bottom bar，连接/断开与 freshness 仍可达，详细诊断可展开。资料表单新增其它信息、数字/小数键盘、Next/Done focus chain、bring-into-view 和 bounded profile field。
+- `LiveWaveformComponents` 将 selector、Canvas 和 metrics 拆分：按钮只显示 RAW/CAUSAL/FIXED；正常字体下 HR/RR/PI/SQI/BP 一行五列，大字体/窄屏改为横向可达；compact 仅显示名称/数值，detail 保留 source/algorithm/unavailable。滤波 mode 使用 radio semantics，指标合并可读描述。
+- `CaptureViewModel` 将 service low-frequency status、waveform 与 analysis 暴露为 `distinctUntilChanged/stateIn` slices；waveform/analysis/preview 只在 `LiveSignalCard` lifecycle-aware 收集。BP dialog reference 提升到 ViewModel，Activity 配置重建不会因普通 `remember` 丢失 dialog-open PPG anchor。
+- `PpgDisplayTransform.rawPeakUpForPlot` 改为 primitive loops，一次输出数组且不创建 boxed finite-index list；RAW transform/plot 按 generation/publication/array cache，Canvas 使用 `drawWithCache` 保留 path。`LiveWaveformSnapshot` 明确 producer-copy、发布后禁止修改的 ownership contract；仅深层不可变的 metric tile 标注 `@Immutable`。
+- 新 `:baselineprofile` `com.android.test` producer 使用 `BaselineProfileRule` 覆盖启动、Saved Sessions、视图切换与列表滚动；app 接入 consumer、ProfileInstaller 和 seed `baseline-prof.txt`，关闭 build 时自动设备生成。release privacy task 同时断言 APK 内存在 `assets/dexopt/baseline.prof`，R8/resource shrinking 继续执行。
+
+### 验证
+
+- 最终综合命令：`env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy :app:assembleRelease :baselineprofile:assembleNonMinifiedRelease --no-configuration-cache --no-daemon`。
+- 结果：`BUILD SUCCESSFUL in 6m 8s`，163 actionable tasks（66 executed、97 up-to-date）；165 JVM tests、0 failures/errors/skips，debug lint、debug/release/androidTest APK、R8、REL-002/003/004/005/006/007、Baseline Profile producer APK 和 release compiled profile audit 均通过。
+- 首次同命令 app compile 暴露 Flow property-reference inference 与 `BoxScope.matchParentSize` import 问题；第二次 producer compile 暴露非必要 `LargeTest` 分类依赖；只修正这些编译兼容点后，用完全相同的综合命令得到最终绿色证据，没有用缩小测试替代全门禁。沙箱首次启动因 Gradle cache lock 权限被拒，提权后才进入实际构建。
+- Hardware validation: pending。未运行 emulator/真机、connected-device profile generation、Macrobenchmark 帧时间/TTID、TalkBack、动态字号、IME、SAF、多次 BP 或 2 h capture。
+
+### 风险与决策变化
+
+- `app/src/main/baseline-prof.txt` 是可打包 seed；producer 是后续可重复生成入口。没有设备采集与 before/after Macrobenchmark 前，只能声明构建/打包合同通过，不能声明启动或滚动性能已提升。
+- 五指标一行只在宽度与 fontScale 允许时成立；大字体/窄屏主动横向滚动，优先可读性而非强行五列。真实 TalkBack/字体缩放仍需设备关闭。
+- selection delete 仍是不可恢复的 app-internal directory 删除，但现在必须经过确认且继续执行 sessions-root direct-parent check；subject profile 不随会话删除。
+- 用户 `.idea/deploymentTargetSelector.xml`、`.idea/misc.xml` 与未跟踪 `app/release/` 未修改、未暂存。
+
+### 下一轮
+
+- 执行 emulator/真机门禁：Saved Sessions 视图切换与选择/删除确认、compact capture 同屏、IME/focus/TalkBack/dynamic font、SAF 大批量；在 API 33+ 设备生成 Baseline Profile 并用 Macrobenchmark 比较启动、切页、列表滚动和录制波形帧时间，再执行 2 h CPU/heap/功耗测试。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

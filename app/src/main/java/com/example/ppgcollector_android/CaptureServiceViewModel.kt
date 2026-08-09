@@ -28,9 +28,13 @@ import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.file.Files
@@ -48,6 +52,14 @@ data class CaptureServiceObservation(
     val recording: CaptureRecordingSnapshot = CaptureRecordingSnapshot(),
     val analysis: CaptureAnalysisSnapshot = CaptureAnalysisSnapshot(),
     val waveform: LiveWaveformSnapshot = LiveWaveformSnapshot(),
+    val runtimeFailure: CaptureStartFailure? = null,
+    val error: String? = null,
+)
+
+/** Low-frequency service slice; live waveform publications do not invalidate the capture form tree. */
+data class CaptureServiceStatusObservation(
+    val binding: CaptureServiceBindingState = CaptureServiceBindingState.UNBOUND,
+    val recording: CaptureRecordingSnapshot = CaptureRecordingSnapshot(),
     val runtimeFailure: CaptureStartFailure? = null,
     val error: String? = null,
 )
@@ -262,12 +274,33 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private var participantDraftDirty = false
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
     private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
+    private val _bloodPressureReference = MutableStateFlow<CaptureReferenceTimestamp?>(null)
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
+    val serviceStatus: StateFlow<CaptureServiceStatusObservation> = serviceClient.state
+        .map { state ->
+            CaptureServiceStatusObservation(
+                binding = state.binding,
+                recording = state.recording,
+                runtimeFailure = state.runtimeFailure,
+                error = state.error,
+            )
+        }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CaptureServiceStatusObservation())
+    val waveformState: StateFlow<LiveWaveformSnapshot> = serviceClient.state
+        .map { state -> state.waveform }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LiveWaveformSnapshot())
+    val analysisState: StateFlow<CaptureAnalysisSnapshot> = serviceClient.state
+        .map { state -> state.analysis }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CaptureAnalysisSnapshot())
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
     val participantDraft: StateFlow<CaptureParticipantDraft> = _participantDraft.asStateFlow()
     val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
     val previewState: StateFlow<BlePreviewSnapshot> = collectorApplication.bleCoordinator.previewFlow
+    val bloodPressureReference: StateFlow<CaptureReferenceTimestamp?> = _bloodPressureReference.asStateFlow()
 
     init {
         _sessionName.value = SessionNamePolicy
@@ -314,10 +347,19 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     fun stopRecording() = serviceClient.stopRecording()
 
-    fun captureReferenceTimestamp(): CaptureReferenceTimestamp? = serviceClient.captureReferenceTimestamp()
+    fun openManualBloodPressure() {
+        _bloodPressureReference.value = serviceClient.captureReferenceTimestamp()
+    }
 
-    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
-        serviceClient.commitManualBloodPressure(event)
+    fun dismissManualBloodPressure() {
+        _bloodPressureReference.value = null
+    }
+
+    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean {
+        val accepted = serviceClient.commitManualBloodPressure(event)
+        if (accepted) _bloodPressureReference.value = null
+        return accepted
+    }
 
     fun updateParticipantProfile(): Boolean {
         val participant = participantForSession(_sessionName.value, persistCanonical = true)

@@ -3,6 +3,7 @@ import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.androidx.baselineprofile)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -53,6 +54,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.profileinstaller)
+    "baselineProfile"(project(":baselineprofile"))
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -62,7 +65,12 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
+baselineProfile {
+    automaticGenerationDuringBuild = false
+}
+
 val releasePrivacySourceDir = layout.projectDirectory.dir("src/main")
+val releaseBaselineProfile = layout.projectDirectory.file("src/main/baseline-prof.txt")
 val releasePrivacyApk = layout.buildDirectory.file("outputs/apk/release/app-release-unsigned.apk")
 val releaseMergedManifest = layout.buildDirectory.file(
     "intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml",
@@ -356,6 +364,7 @@ tasks.register("verifyReleasePrivacy") {
     dependsOn("verifyReleaseBleTransportContract")
     notCompatibleWithConfigurationCache("uses a streaming APK/source audit action")
     inputs.dir(releasePrivacySourceDir)
+    inputs.file(releaseBaselineProfile)
     inputs.file(releasePrivacyApk)
 
     doLast {
@@ -384,21 +393,23 @@ tasks.register("verifyReleasePrivacy") {
         val releaseApk = releasePrivacyApk.get().asFile
         check(releaseApk.isFile) { "REL-005 release APK is missing: ${releaseApk.path}" }
 
-        val artifactViolations = ZipFile(releaseApk).use { zip ->
-            zip.entries().asSequence()
-                .map { it.name }
-                .filter { entry ->
-                    forbiddenEntryTokens.any { token ->
-                        entry.contains(token, ignoreCase = true)
-                    }
-                }
-                .toList()
+        val releaseEntries = ZipFile(releaseApk).use { zip ->
+            zip.entries().asSequence().map { it.name }.toList()
         }
+        val artifactViolations = releaseEntries
+            .filter { entry ->
+                forbiddenEntryTokens.any { token ->
+                    entry.contains(token, ignoreCase = true)
+                }
+            }
         check(artifactViolations.isEmpty()) {
             "REL-005 release artifact audit failed: ${artifactViolations.joinToString()}"
         }
+        check(releaseEntries.any { it == "assets/dexopt/baseline.prof" }) {
+            "REL-005 release artifact is missing compiled Baseline Profile"
+        }
         logger.lifecycle(
-            "REL-005 privacy audit passed: no production logging APIs and no test/session fixture APK entries",
+            "REL-005 privacy/profile audit passed: no logging/fixtures and compiled Baseline Profile is packaged",
         )
     }
 }

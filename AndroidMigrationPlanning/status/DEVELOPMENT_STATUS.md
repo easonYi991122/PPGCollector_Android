@@ -1,9 +1,11 @@
 # PPGCollector Android Development Status
 
-更新时间：2026-08-08
-当前迁移版本：`M7.5`（M7 UI 收敛、命名归一化与已保存会话双视图已实现）
-当前规划阶段：M7 五轮增量规划；M7.5 尚未完成
-状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.5 已落地，真机与设备矩阵门禁仍待执行。
+更新时间：2026-08-09
+当前迁移版本：`M7.6`（Compose 双视图骨架、录制态信息密度与发布性能收敛已实现）
+当前规划阶段：M7.6 单轮 UI/Compose/性能优化已完成本地综合门禁
+状态：M1–M6 既有实现与本地证据均保留；M7.1～M7.6 已落地，真机与设备矩阵门禁仍待执行。
+
+本轮增量：新增 [`docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`](../docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md) 并按单轮计划实现。Saved Sessions 改为单一固定顶栏 route，返回与档案/逐文件切换分离，选择操作使用独立 contextual bar、去重会话计数和删除确认；archive 展开项扁平化为稳定 key LazyList。录制页拆出 compact/detailed reducer、固定 BP/停止底栏、RAW/CAUSAL/FIXED 三等宽选择、五指标自适应一行、IME/数字键盘/焦点导航；波形/analysis/preview 只在叶子收集，RAW detrend 去除装箱中间列表，plot 按 publication 缓存并用 `drawWithCache`。新增 Baseline Profile producer、ProfileInstaller、seed profile 与 release APK `assets/dexopt/baseline.prof` 断言。
 
 本轮增量：无历史 canonical 会话时，命名建议回退到明确的 `PPG-subject-seq` 示例；大小写不敏感 canonical parser 将 `ppg-subject-1` 归一化为 `PPG-subject-1`，写入器、metadata 和档案均沿用归一化 stem。Saved Sessions 现在是外层页面，默认被试档案视图与逐文件视图同级切换；两种视图都支持进入选择模式后的导出、删除、全选、取消，档案视图可选择 subject，删除只作用于会话目录。录制态隐藏扫描详情并保留紧凑连接/断开、波形、指标、参考血压和停止入口；页面加入 `imePadding` 与示例命名提示。
 
@@ -83,7 +85,7 @@
 
 ## 当前一句话
 
-Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作台；M7.1～M7.5 已把采集追溯、reference BP、subject archive、批量导出和最终 UI 收敛落到代码。下一步是按计划执行 emulator/真机与文件分享/可访问性门禁，同时保留 `Nordic_UART_Service`、FFF1/FFF2 与真实 runtime 矩阵门禁。
+Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作台；M7.1～M7.6 已把采集追溯、reference BP、subject archive、批量导出、统一会话页、紧凑录制 UI 与 Baseline Profile 构建路径落到代码。下一步是执行 emulator/真机的 IME、TalkBack、动态字号、SAF、profile/帧时间和长录制门禁，同时保留 `Nordic_UART_Service`、FFF1/FFF2 与真实 runtime 矩阵门禁。
 
 ## 与 MigrationPlanning 对照
 
@@ -103,6 +105,7 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 | `M7.3` | M7 第 3 轮 | 自由命名/建议名/重复校验、participant snapshot/profile revision、录制中手工参考 BP、取负 raw 后的 0.5–12 Hz causal/fixed-lag/离线显示链路 | JVM/build/privacy 综合门禁通过（含编译 Android instrumentation）；真实多次 BP、IME/旋转和滤波观感仍待真机 | M7.4：subject archive 与多会话导出 |
 | `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP、subject/session selection 与 SAF staging | JVM/build/privacy 综合门禁通过；真实 SAF 大批量/取消进度、档案页动态字号和真机运行仍待验收 | M7.5：紧凑录制 UI、IME/可访问性与整体验收 |
 | `M7.5` | M7 第 5 轮 | 示例建议名与 canonical 前缀归一化；已保存会话外层页、档案/逐文件切换、选择模式导出/删除/全选/取消；录制态折叠设备诊断与 IME 避让 | 综合 Gradle gate 通过（160 JVM tests、lint/build/androidTest/privacy）；真机 IME、TalkBack、动态字号、SAF、长录制仍待验收 | 维护 M7 contracts，随后执行 emulator/真机门禁 |
+| `M7.6` | Compose UI/性能单轮收敛 | Saved Sessions 单 route/固定顶栏/安全选择、archive flat Lazy keys；录制 compact/detail、固定操作栏、五指标/三滤波；高低频 state slice、缓存绘图、BP dialog ViewModel；Baseline Profile producer/release 打包 | 最终综合 Gradle gate 通过（165 JVM tests、lint、debug/release/androidTest、R8、REL contracts、producer APK、compiled profile）；真实设备 UI/Macrobenchmark 未执行 | emulator/真机 IME/TalkBack/dynamic font/SAF、生成并测量 Baseline Profile、2 h capture |
 
 ## 当前 Android 工程事实
 
@@ -113,7 +116,7 @@ Android 工程已形成可运行的 M1～M6 Compose 采集与独立会话工作�
 
 ## 当前未完成能力
 
-Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。M7.5 的本地 UI/命名/选择代码已实现；真实 IME 遮挡、动态字号、TalkBack、SAF 批量删除/导出进度、2 小时 CPU/heap/功耗仍 pending。当前 SQI/ratio 仍 provisional/diagnostic，计算 SpO2/BP unavailable，IMU 不显示。
+Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并说明卸载与显式 ZIP 导出边界。M4 live capture 与 M6 实时 RAW/CAUSAL、独立 Saved Sessions/detail/replay/analysis/compare/横屏工作台均已有本地实现；完整信号最多持有 1,500,000 点的 raw/filter 数组，离开详情即释放，分析仍是短任务 app-scope coroutine，普通进程被系统终止后不会自动续跑。尚未运行 emulator/device instrumentation、真实 causal 波形/gap/录制/断开、完整 replay 指尖缩放/全幅性能、横屏沉浸与旋转恢复、分析 cancel/history/compare、backup/SAF/TalkBack/dynamic font/系统后台。capture metadata/CSV 仍需关闭正式 `alg_version`/preprocess profile 命名，FGS 通知仍缺 elapsed/write health，FileProvider 分享未接 UI。M7.6 已提供本地 UI、可访问性语义与 profile 构建代码，但真实 IME 遮挡、五列大字体退化、TalkBack、SAF 批量删除/导出进度、Baseline Profile 生成/性能收益和 2 小时 CPU/heap/功耗仍 pending。当前 SQI/ratio 仍 provisional/diagnostic，计算 SpO2/BP unavailable，IMU 不显示。
 
 ## 验证与真机策略
 
@@ -129,9 +132,10 @@ Android 真机长稳均未交付；sessions 不进入 cloud/device backup，并�
 - `git diff --check` 通过；golden wire、协议边界、CUPRAW1 round-trip、LE header、截尾 safe-prefix、超限防御、跨 raw chunk replay、bounded recent samples、25 列 header、CSV streaming tail audit、raw/CSV/metadata cross-check、固定 SOS/DC/gap reset、四个 preprocessing fixture case、plateau midpoint、distance tie、prominence/width peak semantics、6 个 HR fixture case 的 BPM/DFT/RR/confidence/reason trace、8 个 SQI fixture case 的 peak/cycle/template/Pearson/grade trace、ratio-of-ratios 的 trim/RMS/ACDC/invalid paths、MetricResult invalid/calibration separation、800/100 cadence/window bound、gap generation、rejected frame、stale request/source timestamp、M2 NUS/FFF0 profile/name filter 与 service 自动选择、API 30/31/33 permission branches、waiting/fresh/stale freshness、stage/device stale deadline、timeout clamp、phase flags、fake transport command order、fake GATT connect/service/characteristic/CCCD/receiving path、raw byte/timestamp copy、wrong phase/generation rejection、missing service/notify failure、deadline polling、Android adapter compile/Manifest merge、permission result deny/recover、coordinator permission/availability/scan/connect gates、coordinator snapshot/raw seam、Activity Result/lifecycle-compose compile、Application manifest wiring、Locale.ROOT、RFC 4180 转义、metadata round-trip 和 JSON audit 均有 JVM 测试。
 - 每轮迭代结束不立即上机；真机协议、后台/锁屏、API/厂商矩阵、长录制和功耗统一作为待执行硬件门禁。除非用户明确要求，不将真机测试作为本轮默认动作。
 - 2026-08-08 M7.5 综合门禁首次发现新增 lower-case canonical archive 回归，修正 writer 配置遮蔽后按同一轮规则重试；LazyColumn 与固定录制操作卡收尾后最终 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 4m 25s`、130 actionable tasks，160 JVM tests/0 failures/errors/skips，lint、debug/release/androidTest、R8 与 privacy contract 通过。真机未执行；IME、TalkBack、动态字号、SAF 批量操作和 2 小时录制继续 pending。
+- 2026-08-09 M7.6 最终综合命令 `./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy :app:assembleRelease :baselineprofile:assembleNonMinifiedRelease --no-configuration-cache --no-daemon` → `BUILD SUCCESSFUL in 6m 8s`、163 actionable tasks（66 executed/97 up-to-date）、165 JVM tests/0 failures/errors/skips；lint、debug/release/androidTest、R8、REL-002～007、Baseline Profile producer APK 和 release `assets/dexopt/baseline.prof` 审计通过。首次 app compile 暴露 Flow property-reference 与 BoxScope import 兼容问题，第二次 producer compile 暴露非必要 `LargeTest` 分类依赖，修正后以同一全量命令闭环；未运行 emulator/真机或 Macrobenchmark 数值测量。
 
 ## 当前开放阻塞
 
-`D-001` 各设备固件、sensor 稳定身份/真实采样率、控制与长稳；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` 计算 SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。M1～M6 的代码/运行时/发布余项详见带历史提示的 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)；M7 新范围以 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](../docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准。
+`D-001` 各设备固件、sensor 稳定身份/真实采样率、控制与长稳；`D-002` 目标设备矩阵；`D-003` 后台录制策略；`D-004` 最终包名/签名/分发；`D-005` 数据保留/导出/加密；`D-006` 跨平台文件双向兼容；`D-007` version/profile 命名；`D-008` 计算 SpO2/BP 产品文案；`D-009`–`D-013` 的 location/页面退出/刷新/空间/device ID；`D-014` 离线分析跨进程策略；`D-016` SQI provisional 提升证据。M1～M6 的代码/运行时/发布余项详见带历史提示的 [`docs/08_REMAINING_MIGRATION_AUDIT.md`](../docs/08_REMAINING_MIGRATION_AUDIT.md)；M7.0～M7.5 数据合同以 [`docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md`](../docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md) 为准，M7.6 UI/Compose/性能冲突以 [`docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`](../docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md) 为准。
 
 详细事实记录见 [`DEVELOPMENT_STATUS_DETAILED.md`](DEVELOPMENT_STATUS_DETAILED.md)。

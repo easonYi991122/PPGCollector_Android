@@ -5,6 +5,10 @@ import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import java.time.Instant
 import kotlin.math.min
 
+/**
+ * Ownership-transferred read-only publication. Array instances are copied by the producer and
+ * must never be mutated after construction; consumers may retain them until the next publication.
+ */
 data class LiveWaveformSnapshot(
     val generation: Long = 0,
     val publicationSequence: Long = 0,

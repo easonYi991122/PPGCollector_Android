@@ -10,20 +10,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
@@ -35,141 +36,179 @@ import java.time.format.DateTimeFormatter
 private val archiveDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
     .withZone(ZoneId.systemDefault())
 
+private sealed interface ArchiveListEntry {
+    val stableKey: String
+
+    data class Subject(val group: SubjectArchiveGroup) : ArchiveListEntry {
+        override val stableKey: String = "subject:${group.summary.subject}"
+    }
+
+    data class Session(
+        val session: StoredCaptureSession,
+        val subject: String?,
+        val sequenceLabel: String?,
+    ) : ArchiveListEntry {
+        override val stableKey: String = "session:${session.directory}"
+    }
+
+    data class UnclassifiedHeader(val count: Int) : ArchiveListEntry {
+        override val stableKey: String = "unclassified-header"
+    }
+}
+
 @Composable
-internal fun SubjectArchiveScreen(
+internal fun SubjectArchiveContent(
     state: SessionsUiState,
-    onBack: () -> Unit,
-    onRefresh: () -> Unit,
+    expandedSubjects: Set<String>,
+    onToggleExpanded: (String) -> Unit,
     onSelect: (SessionListItemUi) -> Unit,
     onToggleSubject: (String) -> Unit,
     onToggleSession: (java.nio.file.Path) -> Unit,
-    onExport: () -> Unit,
-    onDelete: () -> Unit,
-    onBeginSelection: () -> Unit,
-    onSelectAll: () -> Unit,
-    onCancelSelection: () -> Unit,
-    onOpenFlat: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val selectedCount = state.archiveSelectedDirectories.size + state.archiveSelectedSubjects.size
-    val selectionMode = state.sessionSelectionMode
+    val entries = remember(state.archive, expandedSubjects) {
+        buildList {
+            state.archive.groups.forEach { group ->
+                add(ArchiveListEntry.Subject(group))
+                if (group.summary.subject in expandedSubjects) {
+                    group.sessions.forEach { session ->
+                        add(
+                            ArchiveListEntry.Session(
+                                session = session.session,
+                                subject = group.summary.subject,
+                                sequenceLabel = "seq ${session.identity.sequence}",
+                            ),
+                        )
+                    }
+                }
+            }
+            if (state.archive.unclassified.isNotEmpty()) {
+                add(ArchiveListEntry.UnclassifiedHeader(state.archive.unclassified.size))
+                state.archive.unclassified.forEach { session ->
+                    add(ArchiveListEntry.Session(session, subject = null, sequenceLabel = null))
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (state.isLoading && entries.isEmpty()) {
+            item(key = "archive-loading") {
                 Row(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) { CircularProgressIndicator() }
+            }
+        }
+        if (!state.isLoading && entries.isEmpty()) {
+            item(key = "archive-empty") {
+                Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("已保存会话", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("尚无本地会话", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            if (selectionMode) "已选择 $selectedCount 项"
-                            else "被试档案视图 · canonical subject 与未归档会话",
+                            "完成录制后，canonical 会话会按被试归档，其它文件保留在未归档区域。",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    OutlinedButton(onClick = onBack) { Text("返回") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (selectionMode) {
-                        Button(onClick = onExport, enabled = selectedCount > 0 && !state.action.isRunning) {
-                            Text("导出")
-                        }
-                        OutlinedButton(onClick = onDelete, enabled = selectedCount > 0 && !state.action.isRunning) {
-                            Text("删除")
-                        }
-                        OutlinedButton(onClick = onSelectAll, enabled = !state.isLoading) { Text("全选") }
-                        OutlinedButton(onClick = onCancelSelection) { Text("取消") }
-                    } else {
-                        OutlinedButton(onClick = onRefresh, enabled = !state.isLoading) { Text("刷新") }
-                        OutlinedButton(onClick = onOpenFlat) { Text("逐文件视图") }
-                        OutlinedButton(onClick = onBeginSelection) { Text("选择") }
-                    }
                 }
             }
         }
-        if (state.action.isRunning) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Text(if (state.action.kind == SessionActionKind.DELETE) "正在删除所选会话…" else "正在流式生成 ZIP…")
-                }
+        items(entries, key = ArchiveListEntry::stableKey) { entry ->
+            when (entry) {
+                is ArchiveListEntry.Subject -> ArchiveSubjectCard(
+                    group = entry.group,
+                    expanded = entry.group.summary.subject in expandedSubjects,
+                    selectionMode = state.sessionSelectionMode,
+                    selected = entry.group.summary.subject in state.archiveSelectedSubjects,
+                    onToggleExpanded = { onToggleExpanded(entry.group.summary.subject) },
+                    onToggleSelected = { onToggleSubject(entry.group.summary.subject) },
+                )
+
+                is ArchiveListEntry.Session -> ArchiveSessionRow(
+                    session = entry.session,
+                    sequenceLabel = entry.sequenceLabel,
+                    selectionMode = state.sessionSelectionMode,
+                    selected = entry.session.directory in state.archiveSelectedDirectories ||
+                        entry.subject in state.archiveSelectedSubjects,
+                    onToggleSelected = { onToggleSession(entry.session.directory) },
+                    onSelect = { onSelect(SessionListItemMapper.map(entry.session)) },
+                    modifier = if (entry.subject == null) Modifier else Modifier.padding(start = 18.dp),
+                )
+
+                is ArchiveListEntry.UnclassifiedHeader -> Text(
+                    "未归档 / legacy（${entry.count}）",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
             }
         }
-        state.action.message?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.tertiary) } }
-        state.action.error?.let { error -> item { Text("操作失败：$error", color = MaterialTheme.colorScheme.error) } }
-        state.error?.let { error -> item { Text(error, color = MaterialTheme.colorScheme.error) } }
-        if (state.isLoading && state.archive.groups.isEmpty() && state.archive.unclassified.isEmpty()) {
-            item { CircularProgressIndicator() }
-        }
-        if (!state.isLoading && state.archive.groups.isEmpty() && state.archive.unclassified.isEmpty()) {
-            item { Text("尚无本地会话", style = MaterialTheme.typography.bodyLarge) }
-        }
-        items(state.archive.groups, key = { it.summary.subject }) { group ->
-            SubjectArchiveCard(
-                group = group,
-                state = state,
-                selectionMode = selectionMode,
-                onToggleSubject = onToggleSubject,
-                onToggleSession = onToggleSession,
-                onSelect = onSelect,
-            )
-        }
-        if (state.archive.unclassified.isNotEmpty()) {
-            item { Text("未归档 / legacy（${state.archive.unclassified.size}）", style = MaterialTheme.typography.titleMedium) }
-            items(state.archive.unclassified, key = { it.directory.toString() }) { session ->
-                ArchiveSessionRow(session, state, selectionMode, onToggleSession, onSelect)
-            }
-        }
-        item { Spacer(Modifier.padding(bottom = 8.dp)) }
+        item(key = "archive-bottom-space") { Spacer(Modifier.padding(bottom = 8.dp)) }
     }
 }
 
 @Composable
-private fun SubjectArchiveCard(
+private fun ArchiveSubjectCard(
     group: SubjectArchiveGroup,
-    state: SessionsUiState,
+    expanded: Boolean,
     selectionMode: Boolean,
-    onToggleSubject: (String) -> Unit,
-    onToggleSession: (java.nio.file.Path) -> Unit,
-    onSelect: (SessionListItemUi) -> Unit,
+    selected: Boolean,
+    onToggleExpanded: () -> Unit,
+    onToggleSelected: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    var expanded by rememberSaveable(group.summary.subject) { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (selectionMode) {
-                    Checkbox(
-                        checked = group.summary.subject in state.archiveSelectedSubjects,
-                        onCheckedChange = { onToggleSubject(group.summary.subject) },
-                    )
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(group.summary.subject, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "${group.summary.recordingCount} seq · 最大 ${group.summary.maxSequence ?: "—"} · " +
-                            "完整 ${group.summary.completeCount} / 异常 ${group.summary.anomalyCount} · BP ${group.summary.bloodPressureGroupCount} 组",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        "HR ${group.summary.heartRateBpm?.let { "%.1f bpm".format(it) } ?: "不可用"} · " +
-                            "${formatArchiveInstant(group.summary.firstStartedUtc)} — ${formatArchiveInstant(group.summary.lastStartedUtc)}" +
-                            if (group.summary.profileMissing) " · 资料缺失" else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                OutlinedButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "展开") }
+    Card(
+        modifier = modifier.fillMaxWidth().semantics {
+            stateDescription = if (expanded) "已展开" else "已收起"
+        },
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (selectionMode) {
+                Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
             }
-            if (expanded) {
-                group.sessions.forEach { entry ->
-                    ArchiveSessionRow(entry.session, state, selectionMode, onToggleSession, onSelect, "seq ${entry.identity.sequence}")
-                }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    group.summary.subject,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "${group.summary.recordingCount} seq · 最大 ${group.summary.maxSequence ?: "—"} · " +
+                        "完整 ${group.summary.completeCount} / 异常 ${group.summary.anomalyCount} · " +
+                        "BP ${group.summary.bloodPressureGroupCount} 组",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "HR ${group.summary.heartRateBpm?.let { "%.1f bpm".format(it) } ?: "不可用"} · " +
+                        "${formatArchiveInstant(group.summary.firstStartedUtc)} — " +
+                        formatArchiveInstant(group.summary.lastStartedUtc) +
+                        if (group.summary.profileMissing) " · 资料缺失" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            FilledTonalButton(onClick = onToggleExpanded) {
+                Text(if (expanded) "收起" else "展开")
             }
         }
     }
@@ -178,31 +217,46 @@ private fun SubjectArchiveCard(
 @Composable
 private fun ArchiveSessionRow(
     session: StoredCaptureSession,
-    state: SessionsUiState,
+    sequenceLabel: String?,
     selectionMode: Boolean,
-    onToggleSession: (java.nio.file.Path) -> Unit,
-    onSelect: (SessionListItemUi) -> Unit,
-    prefix: String? = null,
+    selected: Boolean,
+    onToggleSelected: () -> Unit,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        modifier = modifier.fillMaxWidth().semantics {
+            if (selectionMode) stateDescription = if (selected) "已选择" else "未选择"
+        },
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
     ) {
-        if (selectionMode) {
-            Checkbox(
-                checked = session.directory in state.archiveSelectedDirectories,
-                onCheckedChange = { onToggleSession(session.directory) },
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (selectionMode) {
+                Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    sequenceLabel?.let { "$it · ${session.baseName}" } ?: session.baseName,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    "${session.metadata?.sampleCount ?: 0} samples · " +
+                        formatArchiveInstant(session.metadata?.startedUtc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            FilledTonalButton(onClick = onSelect) { Text("详情") }
         }
-        Column(Modifier.weight(1f)) {
-            Text(prefix?.let { "$it · ${session.baseName}" } ?: session.baseName)
-            Text(
-                "${session.metadata?.sampleCount ?: 0} samples · ${formatArchiveInstant(session.metadata?.startedUtc)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        OutlinedButton(onClick = { onSelect(SessionListItemMapper.map(session)) }) { Text("详情") }
     }
 }
 
