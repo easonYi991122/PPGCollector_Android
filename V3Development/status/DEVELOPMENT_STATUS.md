@@ -1,13 +1,14 @@
 # V3.0 开发状态（简版）
 
 更新：2026-08-19  
-当前轮次：**V3.R5 已完成代码收口，待后续真机/产品复验**
+当前轮次：**V3.R4.1 / V3.R5 代码已提交，仍需补齐验收尾项**
 
 ## 当前事实
 
 - Android 采集 App 已能扫描/连接 CUP（名称前缀 `CUP`）和 `Nordic_UART_Service`（NUS），解析两种 168-byte PPG 帧，前台服务录制，会话目录落盘。
 - R1–R3 产品面已合入；R4.1 已补齐 Nordic 120 预览解码、锁定后切换、录制 PPG/ECG 显示管线、optional ECG 文件契约及协议探测交互。
 - R5 已补齐会话级参考血压写回、PPG/MB 导出目录、ECG sidecar 导出/恢复与旧 metadata 兼容。
+- 尚未宣称全部轮次验收完成：Combo SQI 的 Python 全量对齐、25 Hz fake 120 发生器、部分 fake 录制行数契约测试，以及两项既有离线分析回归仍需后续处理。
 - 规划与参考已收口到 `V3Development/`。旧 iOS 移植文档在 `archive/2026-08-ios-migration/`。
 
 ## R1 证据与残留
@@ -45,7 +46,7 @@
 ## 验收记录
 
 - `:app:compileDebugKotlin` 通过。
-- JVM 测试共 183 个，当前 3 个失败：2 个为工作区既有离线分析回归（`OfflinePpgAnalysisTest`、`OfflineBloodPressurePreviewTest`），1 个归档路径断言已按 R5 新目录修正，需再次运行确认。
+- JVM 全量测试上一轮共 183 个，2 个为工作区既有离线分析回归（`OfflinePpgAnalysisTest`、`OfflineBloodPressurePreviewTest`）；归档路径断言已按 R5 新目录修正，需定向复验。
 - 真机仍不作为默认门禁；需后续用 fake 120/168、CUP 和真实腕部设备复验。
 
 ## 真机门禁
