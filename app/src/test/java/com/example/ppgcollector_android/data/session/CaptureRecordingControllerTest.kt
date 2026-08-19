@@ -19,6 +19,51 @@ import org.junit.Test
 
 class CaptureRecordingControllerTest {
     @Test
+    fun timedRecordingStopsAfterAcceptedSamplesAndPersistsPlan() {
+        val root = Files.createTempDirectory("capture-timed")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration().copy(
+                        recordMode = CaptureRecordMode.TIMED,
+                        plannedDurationSeconds = 10,
+                    ),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 21,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            repeat(50) { index ->
+                assertTrue(
+                    controller.onRawChunk(
+                        BleRawNotificationChunk(
+                            21,
+                            index.toLong(),
+                            encodeCupBatchFrame(frame().copy(sequence = index.toUByte())),
+                        ),
+                    ),
+                )
+            }
+            val summary = controller.awaitFinalized(5, TimeUnit.SECONDS)
+            assertNotNull(summary)
+            assertEquals(CaptureStopReason.DURATION_ELAPSED, summary!!.stopReason)
+            assertEquals(1_000L, controller.snapshot.acceptedSampleCount)
+            val metadata = CaptureSessionMetadataCodec.decode(
+                Files.readString(summary.directory.resolve("controller_001.session.json")),
+            )
+            assertEquals(10, metadata.plannedDurationSeconds)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun acceptedRawChunkIsDecodedAndWrittenThroughSingleController() {
         val root = Files.createTempDirectory("capture-controller")
         try {

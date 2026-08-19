@@ -6,15 +6,35 @@ data class CaptureParticipantDraft(
     val ageYears: String = "",
     val heightCm: String = "",
     val weightKg: String = "",
+    val smokingFreq: String = "",
+    val drinkingFreq: String = "",
+    val systolicBp: String = "",
+    val diastolicBp: String = "",
     val additionalFields: Map<String, String> = emptyMap(),
 ) {
+    companion object {
+        val smokingOptions = listOf("", "不吸烟", "偶尔", "经常", "每天")
+        val drinkingOptions = listOf("", "不饮酒", "偶尔", "经常", "每天")
+        val genderOptions = listOf("男", "女")
+        fun fromSnapshot(snapshot: CaptureParticipantSnapshot?): CaptureParticipantDraft =
+            CaptureParticipantDraft(
+                sex = snapshot?.sex?.takeIf { it in genderOptions }.orEmpty(),
+                ageYears = snapshot?.ageYears?.toString().orEmpty(),
+                heightCm = snapshot?.heightCm?.toString().orEmpty(),
+                weightKg = snapshot?.weightKg?.toString().orEmpty(),
+                smokingFreq = snapshot?.smokingFreq.orEmpty(),
+                drinkingFreq = snapshot?.drinkingFreq.orEmpty(),
+                additionalFields = snapshot?.additionalFields.orEmpty(),
+            )
+    }
+
     val isComplete: Boolean
         get() = sex.isNotBlank() && ageYears.toIntOrNull() != null &&
             heightCm.toDoubleOrNull()?.let { it > 0.0 } == true &&
             weightKg.toDoubleOrNull()?.let { it > 0.0 } == true
 
     fun validationErrors(): List<String> = buildList {
-        if (sex.isBlank()) add("性别未填写")
+        if (sex !in genderOptions) add("性别需选择男或女")
         val age = ageYears.toIntOrNull()
         if (age == null || age !in 0..150) add("年龄需为 0–150 的整数")
         val height = heightCm.toDoubleOrNull()
@@ -24,9 +44,15 @@ data class CaptureParticipantDraft(
         if (additionalFields.size > SubjectProfileStore.maximumAdditionalFields) {
             add("扩展资料过多")
         }
+        if (smokingFreq !in smokingOptions) add("吸烟频率取值无效")
+        if (drinkingFreq !in drinkingOptions) add("饮酒频率取值无效")
+        bloodPressureValidationError(systolicBp, diastolicBp)?.let { add(it) }
     }
 
-    fun toSnapshot(identity: CanonicalSessionIdentity?, revisionId: String? = null): CaptureParticipantSnapshot {
+    fun toSnapshot(
+        identity: CanonicalSessionIdentity?,
+        revisionId: String? = null,
+    ): CaptureParticipantSnapshot {
         val age = ageYears.toIntOrNull()?.takeIf { it in 0..150 }
         val height = heightCm.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
         val weight = weightKg.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
@@ -34,8 +60,11 @@ data class CaptureParticipantDraft(
             subjectId = identity?.subject,
             sequence = identity?.sequence,
             profileRevisionId = revisionId,
-            profileComplete = sex.isNotBlank() && age != null && height != null && weight != null,
-            sex = sex.trim().takeIf(String::isNotEmpty),
+            profileComplete = sex in genderOptions && age != null && height != null && weight != null,
+            sex = sex.takeIf { it in genderOptions },
+            genderCode = genderCodeFor(sex),
+            smokingFreq = smokingFreq.takeIf { it in smokingOptions && it.isNotEmpty() }.orEmpty(),
+            drinkingFreq = drinkingFreq.takeIf { it in drinkingOptions && it.isNotEmpty() }.orEmpty(),
             ageYears = age,
             heightCm = height,
             weightKg = weight,
@@ -46,17 +75,33 @@ data class CaptureParticipantDraft(
         )
     }
 
-    companion object {
-        fun fromSnapshot(snapshot: CaptureParticipantSnapshot?): CaptureParticipantDraft =
-            CaptureParticipantDraft(
-                sex = snapshot?.sex.orEmpty(),
-                ageYears = snapshot?.ageYears?.toString().orEmpty(),
-                heightCm = snapshot?.heightCm?.toString().orEmpty(),
-                weightKg = snapshot?.weightKg?.toString().orEmpty(),
-                additionalFields = snapshot?.additionalFields.orEmpty(),
-            )
+}
+
+fun genderCodeFor(sex: String): Int? = when (sex) {
+    "男" -> 1
+    "女" -> 0
+    else -> null
+}
+
+fun bloodPressureValidationError(systolic: String, diastolic: String): String? {
+    if (systolic.isBlank() && diastolic.isBlank()) return null
+    val sbp = systolic.toIntOrNull()
+    val dbp = diastolic.toIntOrNull()
+    return when {
+        sbp == null || dbp == null -> "血压需同时填写正整数"
+        sbp !in 20..300 || dbp !in 10..250 -> "血压范围：收缩压 20–300、舒张压 10–250 mmHg"
+        sbp <= dbp -> "收缩压须高于舒张压"
+        else -> null
     }
 }
+
+fun CaptureParticipantDraft.referenceBloodPressure(): Pair<Int, Int>? =
+    if (systolicBp.isBlank() && diastolicBp.isBlank()) {
+        null
+    } else {
+        val error = bloodPressureValidationError(systolicBp, diastolicBp)
+        if (error != null) null else systolicBp.toInt() to diastolicBp.toInt()
+    }
 
 data class CaptureSetupFormState(
     val sessionName: String = "",

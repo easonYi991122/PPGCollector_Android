@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.signal
 
 import java.time.Instant
+import com.example.ppgcollector_android.core.signal.combo.ComboSqiResult
 
 enum class MetricUnavailableReason(val wireValue: String, val message: String) {
     NO_DEVICE("noDevice", "尚未连接设备"),
@@ -83,6 +84,7 @@ data class LiveMetricSnapshot(
         MetricUnavailableReason.CALIBRATION_UNAVAILABLE,
         algorithmVersion = "ppg-pi-red-acdc-0.1",
     ),
+    val comboSqi: ComboSqiResult = com.example.ppgcollector_android.core.signal.combo.ComboSqi.unknown(),
 ) {
     companion object {
         fun unavailable(
@@ -101,6 +103,7 @@ data class LiveMetricSnapshot(
                     signalQuality = MetricResult.unavailable(MetricUnavailableReason.REFERENCE_PARITY_PENDING),
                     bloodPressure = MetricResult.unavailable(MetricUnavailableReason.MODEL_UNAVAILABLE),
                     perfusionIndex = MetricResult.unavailable(MetricUnavailableReason.CALIBRATION_UNAVAILABLE),
+                    comboSqi = com.example.ppgcollector_android.core.signal.combo.ComboSqi.unknown(),
                 )
             }
         }
@@ -124,6 +127,7 @@ data class LiveMetricSnapshot(
                 MetricUnavailableReason.INSUFFICIENT_DATA,
                 algorithmVersion = "ppg-pi-red-acdc-0.1",
             ),
+            comboSqi = com.example.ppgcollector_android.core.signal.combo.ComboSqi.unknown(),
         )
 
         fun runtime(
@@ -137,6 +141,7 @@ data class LiveMetricSnapshot(
                 MetricUnavailableReason.CALIBRATION_UNAVAILABLE,
                 algorithmVersion = "ppg-pi-red-acdc-0.1",
             ),
+            comboSqi: ComboSqiResult = com.example.ppgcollector_android.core.signal.combo.ComboSqi.unknown(),
         ) = LiveMetricSnapshot(
             heartRateBpm = heartRateBpm,
             oxygenSaturationPercent = MetricResult.unavailable(MetricUnavailableReason.CALIBRATION_UNAVAILABLE),
@@ -144,6 +149,7 @@ data class LiveMetricSnapshot(
             signalQuality = signalQuality,
             bloodPressure = MetricResult.unavailable(MetricUnavailableReason.MODEL_UNAVAILABLE),
             perfusionIndex = perfusionIndex,
+            comboSqi = comboSqi,
         )
 
         private fun allUnavailable(reason: MetricUnavailableReason) = LiveMetricSnapshot(

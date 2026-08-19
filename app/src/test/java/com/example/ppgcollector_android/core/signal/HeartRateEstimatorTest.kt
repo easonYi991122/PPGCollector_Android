@@ -1,8 +1,6 @@
 package com.example.ppgcollector_android.core.signal.hr
 
 import com.example.ppgcollector_android.core.signal.*
-import java.nio.file.Files
-import java.nio.file.Paths
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -142,13 +140,12 @@ class HeartRateEstimatorTest {
     }
 
     private fun loadFixture(): JsonValue {
-        val candidates = listOf(
-            Paths.get("AndroidMigrationPlanning/reference_sources/signal_fixtures/heart_rate/heart_rate_vectors.json"),
-            Paths.get("../AndroidMigrationPlanning/reference_sources/signal_fixtures/heart_rate/heart_rate_vectors.json"),
-        )
-        val path = candidates.firstOrNull { Files.exists(it) }
-            ?: error("heart-rate fixture not found from ${Paths.get("").toAbsolutePath()}")
-        return JsonParser(Files.readString(path)).parse()
+        val json = javaClass.classLoader!!
+            .getResourceAsStream("signal_fixtures/heart_rate/heart_rate_vectors.json")
+            ?.bufferedReader()
+            ?.readText()
+            ?: error("heart-rate fixture not found on test classpath")
+        return JsonParser(json).parse()
     }
 }
 

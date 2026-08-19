@@ -48,6 +48,7 @@ object CaptureSessionRepository {
         val baseName = directory.fileName.toString()
         val conventionalMetrics = directory.resolve("$baseName.metrics.csv")
         val conventionalBloodPressure = directory.resolve("$baseName.blood-pressure.csv")
+        val conventionalEcg = directory.resolve("${baseName}_ecg.csv")
         val metadata = directory.resolve("$baseName.session.json")
             .takeIf(Files::isRegularFile)
             ?.let { runCatching { CaptureSessionMetadataCodec.decode(it) }.getOrNull() }
@@ -59,6 +60,8 @@ object CaptureSessionRepository {
                 ?: conventionalMetrics.takeIf(Files::exists),
             bloodPressure = metadata?.files?.bloodPressure?.let(directory::resolve)
                 ?: conventionalBloodPressure.takeIf(Files::exists),
+            ecg = metadata?.files?.ecg?.let(directory::resolve)
+                ?: conventionalEcg.takeIf(Files::exists),
         )
     }
 
@@ -105,9 +108,10 @@ data class SessionFileSet(
     val metadata: Path,
     val metrics: Path? = null,
     val bloodPressure: Path? = null,
+    val ecg: Path? = null,
 ) {
     val requiredPaths: List<Path> get() = listOf(raw, csv, metadata)
-    val optionalPaths: List<Path> get() = listOfNotNull(metrics, bloodPressure)
+    val optionalPaths: List<Path> get() = listOfNotNull(metrics, bloodPressure, ecg)
     val allPaths: List<Path> get() = requiredPaths + optionalPaths
     val allNamedPaths: List<Pair<Path, String>> get() = allPaths.map { it to it.fileName.toString() }
 }

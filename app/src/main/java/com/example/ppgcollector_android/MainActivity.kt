@@ -74,10 +74,19 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             PPGCollector_AndroidTheme {
-                val snapshot by bleCoordinator.snapshotFlow.collectAsStateWithLifecycle()
+                val snapshot by bleCoordinator.uiSnapshotFlow.collectAsStateWithLifecycle(
+                    initialValue = bleCoordinator.snapshot.copy(
+                        diagnostics = com.example.ppgcollector_android.core.ble.BleGattDiagnostics(),
+                        attemptDiagnostics =
+                            com.example.ppgcollector_android.core.ble.BleConnectionAttemptDiagnostics(),
+                    ),
+                )
                 val captureStatus by captureViewModel.serviceStatus.collectAsStateWithLifecycle()
                 val sessionName by captureViewModel.sessionName.collectAsStateWithLifecycle()
                 val participantDraft by captureViewModel.participantDraft.collectAsStateWithLifecycle()
+                val sessionPrefix by captureViewModel.sessionPrefix.collectAsStateWithLifecycle()
+                val recordMode by captureViewModel.recordMode.collectAsStateWithLifecycle()
+                val plannedDurationText by captureViewModel.plannedDurationText.collectAsStateWithLifecycle()
                 val captureGate by captureViewModel.captureGate.collectAsStateWithLifecycle()
                 val bloodPressureReference by captureViewModel.bloodPressureReference.collectAsStateWithLifecycle()
                 val sessionNameIsValid = remember(sessionName) {
@@ -125,9 +134,15 @@ class MainActivity : ComponentActivity() {
                             previewState = captureViewModel.previewState,
                             sessionName = sessionName,
                             participantDraft = participantDraft,
+                            sessionPrefix = sessionPrefix,
+                            recordMode = recordMode,
+                            plannedDurationText = plannedDurationText,
                             sessionNameIsValid = sessionNameIsValid,
                             captureGate = captureGate,
                             onSessionNameChange = captureViewModel::setSessionName,
+                            onSessionPrefixChange = captureViewModel::setSessionPrefix,
+                            onRecordModeChange = captureViewModel::setRecordMode,
+                            onPlannedDurationChange = captureViewModel::setPlannedDurationText,
                             onParticipantDraftChange = captureViewModel::setParticipantDraft,
                             onUseSuggestedName = captureViewModel::useSuggestedSessionName,
                             onStartCapture = ::requestCaptureStart,
@@ -137,6 +152,7 @@ class MainActivity : ComponentActivity() {
                             onStopScan = bleCoordinator::stopScanning,
                             onConnect = bleCoordinator::connect,
                             onDisconnect = bleCoordinator::disconnect,
+                            onSelectNordicProtocol = { mode -> bleCoordinator.selectNordicProtocol(mode) },
                             onOpenSessions = {
                                 sessionsViewModel.refresh()
                                 page = AppPage.SESSIONS
@@ -190,6 +206,7 @@ class MainActivity : ComponentActivity() {
                                 onStartAnalysis = sessionsViewModel::startAnalysis,
                                 onCancelAnalysis = sessionsViewModel::cancelAnalysis,
                                 onOpenFullscreenWorkbench = { page = AppPage.WORKBENCH },
+                                onUpdateBloodPressure = sessionsViewModel::updateSelectedBloodPressure,
                                 modifier = Modifier.padding(innerPadding),
                             )
                         }

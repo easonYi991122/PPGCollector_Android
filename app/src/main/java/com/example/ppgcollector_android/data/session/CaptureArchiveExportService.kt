@@ -74,8 +74,12 @@ object CaptureArchiveExportService {
         val archive = SubjectArchiveRepository.rebuild(sessionsRoot, subjectsRoot, now)
         val selected = SubjectArchiveRepository.selectedSessions(archive, selection)
         if (selected.isEmpty()) throw CaptureSessionExportException.CannotExport("没有可导出的会话")
-        val subjectsByDirectory = archive.groups
-            .flatMap { group -> group.sessions.map { it.session.directory to group.summary.subject } }
+        val subjectsByDirectory: Map<Path, Pair<String, String>> = archive.groups
+            .flatMap {
+                group -> group.sessions.map {
+                    it.session.directory to (group.summary.subject to it.identity.prefix.wireValue)
+                }
+            }
             .toMap()
         val usedNames = HashSet<String>()
         val sources = ArrayList<SourceEntry>()
@@ -87,7 +91,8 @@ object CaptureArchiveExportService {
                 val prefix = if (subject == null) {
                     "unclassified/${safeComponent(session.baseName)}"
                 } else {
-                    "subjects/${safeComponent(subject)}/${safeComponent(session.baseName)}"
+                    "subjects/${safeComponent(subject.first)}/${subject.second}/" +
+                        safeComponent(session.baseName)
                 }
                 val requested = "$prefix/$fileName"
                 if (!Files.isRegularFile(path)) {
@@ -98,7 +103,8 @@ object CaptureArchiveExportService {
                 }
             }
         }
-        val selectedSubjects = selected.mapNotNull { subjectsByDirectory[it.directory] }.toSet() + selection.subjectIds
+        val selectedSubjects = selected.mapNotNull { subjectsByDirectory[it.directory]?.first }.toSet() +
+            selection.subjectIds
         val profileStore = SubjectProfileStore(subjectsRoot)
         selectedSubjects.sorted().forEach { subject ->
             val profilePath = runCatching { profileStore.pathFor(subject) }.getOrNull()

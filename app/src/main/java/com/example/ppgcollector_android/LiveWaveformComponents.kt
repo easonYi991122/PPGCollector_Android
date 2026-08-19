@@ -1,11 +1,11 @@
 package com.example.ppgcollector_android
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,8 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -141,6 +139,17 @@ internal fun LiveWaveformAndMetrics(
             semanticsDetail = modeDescription,
             compact = density == CaptureContentDensity.COMPACT,
         )
+        if (waveform.ecg.isNotEmpty()) {
+            WaveformPanel(
+                label = "ECG · 500 Hz",
+                color = Color(0xFF6A1B9A),
+                values = waveform.ecg,
+                publicationSequence = waveform.publicationSequence,
+                excludedLeadingSampleCount = 0,
+                semanticsDetail = "ADS1292R 原始 ADC，未取负",
+                compact = density == CaptureContentDensity.COMPACT,
+            )
+        }
         if (density == CaptureContentDensity.DETAILED) {
             Text(
                 waveformDetailText(waveform, effectiveMode, settlingSamples),
@@ -196,12 +205,14 @@ private fun WaveformModeSelector(
                     onClick = { onSelected(mode) },
                     enabled = enabled,
                     modifier = buttonModifier,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                 ) { Text(mode.compactLabel, maxLines = 1, style = MaterialTheme.typography.labelMedium) }
             } else {
                 OutlinedButton(
                     onClick = { onSelected(mode) },
                     enabled = enabled,
                     modifier = buttonModifier,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                 ) { Text(mode.compactLabel, maxLines = 1, style = MaterialTheme.typography.labelMedium) }
             }
         }
@@ -223,7 +234,7 @@ private fun WaveformPanel(
         LiveWaveformScaleMath.verticalRange(values, excludedLeadingSampleCount)
     }
     val plot = remember(values, publicationSequence) {
-        LiveWaveformPlotMath.plot(values, maximumPointCount = 1_600)
+        LiveWaveformPlotMath.plot(values, maximumPointCount = 320)
     }
     val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
     val settlingColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f)
@@ -336,6 +347,7 @@ private data class MetricTileModel(
     val detail: String,
     val valid: Boolean,
     val provisional: Boolean,
+    val accentColorHex: String? = null,
 )
 
 @Composable
@@ -351,38 +363,30 @@ private fun LiveMetricsPanel(
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val fontScale = LocalDensity.current.fontScale
-            val fitsFiveColumns = maxWidth >= 340.dp && fontScale <= 1.3f
+            val fitsFiveColumns = maxWidth >= 300.dp && fontScale <= 1.3f
             if (fitsFiveColumns) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    tiles.forEach { tile ->
-                        MetricTile(
-                            model = tile,
-                            compact = density == CaptureContentDensity.COMPACT,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
+                MetricTileRow(tiles)
             } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    tiles.forEach { tile ->
-                        MetricTile(
-                            model = tile,
-                            compact = density == CaptureContentDensity.COMPACT,
-                            modifier = Modifier.width(if (density == CaptureContentDensity.COMPACT) 96.dp else 152.dp),
-                        )
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MetricTileRow(tiles.take(3))
+                    MetricTileRow(tiles.drop(3))
                 }
             }
         }
         if (density == CaptureContentDensity.DETAILED) {
             Text(
-                "RR 仅为 Red/IR 诊断比值；SQI 为暂定评分。SpO₂ 与计算血压缺少正式标定。",
+                tiles.joinToString(" · ") { "${it.compactLabel} ${it.state}" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                tiles.joinToString("\n") { "${it.compactLabel}：${it.detail}" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 5,
+            )
+            Text(
+                "综合 SQI 仅用于实时提示，CSV sqi 仍保持原有口径；SpO₂ 与计算血压缺少正式标定。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -391,8 +395,27 @@ private fun LiveMetricsPanel(
 }
 
 @Composable
+private fun MetricTileRow(tiles: List<MetricTileModel>, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        tiles.forEach { tile ->
+            MetricTile(
+                model = tile,
+                compact = true,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
 private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modifier = Modifier) {
     val statusColor = when {
+        model.accentColorHex != null -> runCatching {
+            Color(android.graphics.Color.parseColor(model.accentColorHex))
+        }.getOrDefault(MaterialTheme.colorScheme.primary)
         !model.valid -> MaterialTheme.colorScheme.onSurfaceVariant
         model.provisional -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.tertiary
@@ -418,7 +441,7 @@ private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modif
             )
             Text(
                 model.value,
-                style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+                style = if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
             )
@@ -437,7 +460,9 @@ private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modif
 
 private fun metricTiles(metrics: LiveMetricSnapshot?): List<MetricTileModel> {
     if (metrics == null) {
-        return listOf("HR" to "心率", "RR" to "RR（Red/IR）", "PI" to "PI（RED AC/DC）", "SQI" to "信号质量 SQI", "BP" to "计算血压")
+        return liveMetricCompactOrder.zip(
+            listOf("心率", "RR（Red/IR）", "PI（RED AC/DC）", "综合 SQI", "计算血压"),
+        )
             .map { (compact, detailed) ->
                 MetricTileModel(compact, detailed, "—", "等待 8 秒窗口", "暂无来源", false, false)
             }
@@ -446,7 +471,16 @@ private fun metricTiles(metrics: LiveMetricSnapshot?): List<MetricTileModel> {
         metricTile("HR", "心率", metrics.heartRateBpm, "bpm") { "%.0f".format(Locale.ROOT, it) },
         metricTile("RR", "RR（Red/IR）", metrics.ratioOfRatios, "") { "%.3f".format(Locale.ROOT, it) },
         metricTile("PI", "PI（RED AC/DC）", metrics.perfusionIndex, "%") { "%.2f".format(Locale.ROOT, it) },
-        metricTile("SQI", "信号质量 SQI", metrics.signalQuality, "") { "%.2f".format(Locale.ROOT, it) },
+        MetricTileModel(
+            compactLabel = "SQI",
+            detailedLabel = "综合 SQI",
+            value = metrics.comboSqi.score?.let { "%.2f".format(Locale.ROOT, it) } ?: "—",
+            state = metrics.comboSqi.text,
+            detail = "状态 ${metrics.comboSqi.state.name.lowercase(Locale.ROOT)} · combo_sqi_v4.4.2",
+            valid = metrics.comboSqi.score != null,
+            provisional = false,
+            accentColorHex = metrics.comboSqi.colorHex,
+        ),
         MetricTileModel(
             compactLabel = "BP",
             detailedLabel = "计算血压",

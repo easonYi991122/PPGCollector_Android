@@ -1,6 +1,8 @@
 package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
@@ -34,6 +36,10 @@ data class CaptureSessionConfiguration(
     val canonicalSubjectId: String? = null,
     val canonicalSequence: Long? = null,
     val participant: CaptureParticipantSnapshot? = null,
+    val systolicBp: Int? = null,
+    val diastolicBp: Int? = null,
+    val recordMode: CaptureRecordMode = CaptureRecordMode.MANUAL,
+    val plannedDurationSeconds: Int? = null,
 )
 
 data class CaptureStreamChunkEvent(
@@ -60,6 +66,7 @@ data class CaptureWriterSnapshot(
     val lastFlushUtc: Instant? = null,
     val metricsRows: Long = 0,
     val bloodPressureRows: Long = 0,
+    val ecgRows: Long = 0,
 )
 
 data class CaptureSessionSummary(
@@ -119,6 +126,7 @@ class CaptureSessionWriter(
     val metadataPath: Path = directory.resolve("${this.configuration.baseName}.session.json")
     val metricsPath: Path = directory.resolve("${this.configuration.baseName}.metrics.csv")
     val bloodPressurePath: Path = directory.resolve("${this.configuration.baseName}.blood-pressure.csv")
+    val ecgPath: Path = directory.resolve("${this.configuration.baseName}_ecg.csv")
 
     private val rawWriter: CupRawWriter
     private var closed = false
@@ -131,6 +139,7 @@ class CaptureSessionWriter(
     private var lastCheckpointNanos = System.nanoTime()
     private var metricsInitialized = false
     private var bloodPressureInitialized = false
+    private var ecgInitialized = false
     private var participantSnapshot: CaptureParticipantSnapshot? = this.configuration.participant
 
     private companion object {
@@ -203,6 +212,70 @@ class CaptureSessionWriter(
             CaptureBloodPressureSeries.format(event).toByteArray(Charsets.UTF_8),
         )
         snapshot = snapshot.copy(bloodPressureRows = snapshot.bloodPressureRows + 1)
+        checkpointIfDue()
+        return snapshot
+    }
+
+    fun appendAds1292rPacket(
+        hostMonotonicNanoseconds: ULong,
+        packet: Ads1292rPacket,
+        metrics: LiveMetricSnapshot = LiveMetricSnapshot.unavailable(
+            hasConnectedDevice = true,
+            freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH,
+        ),
+    ): CaptureWriterSnapshot {
+        checkOpen()
+        require(configuration.protocolProfile == Ads1292rPacketProtocol.profileIdentifier) {
+            "ECG packet requires ads1292r protocol configuration"
+        }
+        ensureEcgFile()
+        val ppg = StringBuilder()
+        packet.red.indices.forEach { sampleInFrame ->
+            ppg.append(
+                CaptureCsvFormatter.format(
+                    CaptureCsvRow(
+                        CaptureSessionWriterPolicy.sensorPacketSampleSchemaVersion,
+                        configuration.sessionId,
+                        nextSampleIndex,
+                        hostMonotonicNanoseconds,
+                        packet.sequenceNumber,
+                        sampleInFrame,
+                        packet.red[sampleInFrame],
+                        packet.ir[sampleInFrame],
+                        metrics.heartRateBpm.toCsvCell(),
+                        metrics.oxygenSaturationPercent.toCsvCell(),
+                        metrics.signalQuality.toCsvCell(),
+                        configuration.softVersion,
+                        configuration.algorithmVersion,
+                        configuration.preprocessProfile,
+                        configuration.protocolProfile,
+                        metrics.ratioOfRatios.toCsvCell(),
+                    ),
+                    firstStreamSampleIndex ?: nextSampleIndex,
+                ),
+            )
+            nextSampleIndex++
+            snapshot = snapshot.copy(
+                csvRows = snapshot.csvRows + 1,
+                acceptedSamples = snapshot.acceptedSamples + 1,
+            )
+        }
+        appendBytes(csvPath, ppg.toString().toByteArray(Charsets.UTF_8))
+        appendBytes(
+            ecgPath,
+            packet.ecg.mapIndexed { index, value ->
+                CaptureEcgCsv.format(
+                    configuration.sessionId,
+                    snapshot.ecgRows + index,
+                    packet.sequenceNumber,
+                    value,
+                )
+            }.joinToString("").toByteArray(Charsets.UTF_8),
+        )
+        snapshot = snapshot.copy(
+            acceptedFrames = snapshot.acceptedFrames + 1,
+            ecgRows = snapshot.ecgRows + packet.ecg.size,
+        )
         checkpointIfDue()
         return snapshot
     }
@@ -323,6 +396,7 @@ class CaptureSessionWriter(
             CaptureStopReason.USER, CaptureStopReason.VIEW_EXIT,
             CaptureStopReason.SCENE_BACKGROUND, CaptureStopReason.DEVICE_DISCONNECT,
             CaptureStopReason.DATA_TIMEOUT,
+            CaptureStopReason.DURATION_ELAPSED,
         )
         writeMetadata(ended, reason, complete, error)
         return CaptureSessionSummary(
@@ -360,6 +434,7 @@ class CaptureSessionWriter(
         forceCsv()
         forceOptional(metricsPath, metricsInitialized)
         forceOptional(bloodPressurePath, bloodPressureInitialized)
+        forceOptional(ecgPath, ecgInitialized)
         snapshot = snapshot.copy(lastFlushUtc = Instant.now())
         writeMetadata(null, null, false, null)
         lastCheckpointNanos = now
@@ -395,6 +470,16 @@ class CaptureSessionWriter(
             StandardOpenOption.WRITE,
         ).use { it.write(CaptureBloodPressureSeries.header.toByteArray(Charsets.UTF_8)) }
         bloodPressureInitialized = true
+    }
+
+    private fun ensureEcgFile() {
+        if (ecgInitialized) return
+        Files.newOutputStream(
+            ecgPath,
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        ).use { it.write(CaptureEcgCsv.header.toByteArray(Charsets.UTF_8)) }
+        ecgInitialized = true
     }
 
     private fun appendBytes(path: Path, bytes: ByteArray) {
@@ -447,6 +532,7 @@ class CaptureSessionWriter(
                 samples = csvPath.fileName.toString(),
                 metrics = metricsPath.fileName.toString().takeIf { metricsInitialized },
                 bloodPressure = bloodPressurePath.fileName.toString().takeIf { bloodPressureInitialized },
+                ecg = ecgPath.fileName.toString().takeIf { ecgInitialized },
             ),
             recovery = null,
             canonicalSubjectId = this.configuration.canonicalSubjectId
@@ -454,6 +540,10 @@ class CaptureSessionWriter(
             canonicalSequence = this.configuration.canonicalSequence
                 ?: SessionNamePolicy.parseCanonical(this.configuration.baseName)?.sequence,
             participant = participantSnapshot,
+            systolicBp = this.configuration.systolicBp,
+            diastolicBp = this.configuration.diastolicBp,
+            plannedDurationSeconds = this.configuration.plannedDurationSeconds,
+            ecgSampleRateHz = ecgInitialized.takeIf { it }?.let { CaptureEcgCsv.sampleRateHz },
         )
         val tempPath = metadataPath.resolveSibling(".${metadataPath.fileName}.tmp")
         val bytes = CaptureSessionMetadataCodec.encode(metadata).toByteArray(Charsets.UTF_8)

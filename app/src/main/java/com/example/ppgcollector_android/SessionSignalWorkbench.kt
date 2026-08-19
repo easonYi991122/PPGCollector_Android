@@ -55,15 +55,18 @@ import com.example.ppgcollector_android.core.signal.OfflinePulseWindow
 import com.example.ppgcollector_android.core.signal.OfflineSignalSegment
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
 import com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace
+import com.example.ppgcollector_android.data.session.CaptureMetricTimelinePoint
+import com.example.ppgcollector_android.data.session.OfflineBloodPressurePreviewFactory
+import com.example.ppgcollector_android.data.session.OfflineBloodPressurePreviewPoint
 import com.example.ppgcollector_android.data.session.ReplayWaveformViewport
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 
-private enum class ReplaySignalStage { RAW, ZERO_PHASE }
+private enum class ReplaySignalStage { RAW, ZERO_PHASE, FIXED }
 private enum class WorkbenchPane { SIGNAL, WINDOWS, SPECTRUM, CYCLE, DIAGNOSTICS }
 private enum class WorkbenchChannel { SELECTED, RED, IR }
-private enum class WorkbenchSignalStage { RAW, BANDPASS, PEAKS }
+private enum class WorkbenchSignalStage { RAW, ZERO_PHASE, FIXED, PEAKS }
 
 private data class CompleteSignalSeries(
     val label: String,
@@ -114,7 +117,13 @@ internal fun CompleteSignalReplayPanel(
     ChoiceRow(
         values = ReplaySignalStage.entries,
         selected = stage,
-        label = { if (it == ReplaySignalStage.RAW) "RAW" else "ZERO-PHASE" },
+        label = {
+            when (it) {
+                ReplaySignalStage.RAW -> "RAW"
+                ReplaySignalStage.ZERO_PHASE -> "ZERO"
+                ReplaySignalStage.FIXED -> "FIXED"
+            }
+        },
         onSelect = { stage = it },
     )
     ViewportControls(
@@ -127,17 +136,25 @@ internal fun CompleteSignalReplayPanel(
             viewport = viewport.copyViewport().apply { showWindow(0, 800, total) }
         },
     )
-    val red = if (stage == ReplaySignalStage.RAW) {
-        PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
-    } else {
-        trace.filteredRed
+    val red = remember(trace, stage) {
+        when (stage) {
+            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
+            ReplaySignalStage.ZERO_PHASE -> trace.filteredRed
+            ReplaySignalStage.FIXED -> trace.fixedLagRed
+        }
     }
-    val ir = if (stage == ReplaySignalStage.RAW) {
-        PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
-    } else {
-        trace.filteredIr
+    val ir = remember(trace, stage) {
+        when (stage) {
+            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
+            ReplaySignalStage.ZERO_PHASE -> trace.filteredIr
+            ReplaySignalStage.FIXED -> trace.fixedLagIr
+        }
     }
-    val prefix = if (stage == ReplaySignalStage.RAW) "RAW" else "ZERO-PHASE"
+    val prefix = when (stage) {
+        ReplaySignalStage.RAW -> "RAW"
+        ReplaySignalStage.ZERO_PHASE -> "ZERO 0.5–12"
+        ReplaySignalStage.FIXED -> "FIXED 0.5–12"
+    }
     CompleteSignalChart(
         series = listOf(CompleteSignalSeries("$prefix RED", Color(0xFFD74747), red)),
         timeSeconds = trace.timeSeconds,
@@ -157,8 +174,8 @@ internal fun CompleteSignalReplayPanel(
         modifier = gesture.height(136.dp),
     )
     Text(
-        "${trace.preprocessProfile}：对每个连续数据段执行整段 0.6–4 Hz forward/backward SOS；" +
-            "gap 不跨越，稳定段仍只控制分析接受，不裁掉可视化信号。",
+        "ZERO=${trace.preprocessProfile}；FIXED=${trace.fixedLagProfile}，约 1 s 实时延迟、" +
+            "离线按 source cursor 对齐。二者均为 0.5–12 Hz，gap 不跨越。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -177,7 +194,7 @@ internal fun CompletePpgAnalysisPanel(
         return
     }
     var channel by remember(artifact.path) { mutableStateOf(WorkbenchChannel.SELECTED) }
-    var stage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.BANDPASS) }
+    var stage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.ZERO_PHASE) }
     val total = trace.timeSeconds.size
     val defaultStart = artifact.report.windows
         .filter(OfflinePulseWindow::accepted)
@@ -198,7 +215,7 @@ internal fun CompletePpgAnalysisPanel(
         },
     )
     val resolved = resolveChannel(channel, artifact)
-    val values = signalValues(trace, resolved, stage)
+    val values = remember(trace, resolved, stage) { signalValues(trace, resolved, stage) }
     val gesture = Modifier.pointerInput(total) {
         detectTransformGestures { centroid, pan, zoom, _ ->
             viewport = viewport.copyViewport().apply {
@@ -229,11 +246,362 @@ internal fun CompletePpgAnalysisPanel(
         showStableSegments = true,
         modifier = gesture.height(180.dp),
     )
+    AlignedMetricTimelineChart(
+        trace = trace,
+        artifact = artifact,
+        visibleRange = range,
+        modifier = Modifier.height(146.dp),
+    )
     Text(
-        "全程 ${trace.timeSeconds.size} 点；当前仅改变视窗与显示 stage，不改变已保存 detector 输出。",
+        "PPG 与指标共享 source 时间窗；全程 ${trace.timeSeconds.size} 点。切换 stage/视窗不会改写 sidecar 或 detector 输出。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+private data class AlignedMetricSeries(
+    val label: String,
+    val color: Color,
+    val points: List<Pair<Int, Double>>,
+)
+
+@Composable
+private fun AlignedMetricTimelineChart(
+    trace: CaptureSessionSignalTrace,
+    artifact: CaptureSessionAnalysisArtifact,
+    visibleRange: IntRange,
+    modifier: Modifier = Modifier,
+) {
+    val persisted = trace.metricTimeline.isNotEmpty()
+    val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
+    val series = remember(trace.metricTimeline, trace.timeSeconds, artifact.path) {
+        if (persisted) {
+            buildPersistedMetricSeries(trace.metricTimeline, trace.timeSeconds)
+        } else {
+            buildOfflineWindowSeries(artifact, trace.timeSeconds.size)
+        }
+    }
+    val visibleSeries = remember(series, visibleRange) {
+        series.map { item -> item.copy(points = item.points.pointsIn(visibleRange)) }
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(
+            if (persisted) "录制期 1 Hz 指标 · 与 PPG 共享时间窗" else "离线窗口指标 · legacy 无 metrics sidecar",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (series.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("当前会话没有可对齐的有效指标", style = MaterialTheme.typography.bodySmall)
+            }
+            return@Column
+        }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .semantics {
+                    contentDescription = "${series.joinToString { it.label }} 指标时间轴，与 PPG 共享缩放范围"
+                },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        ) {
+            Box(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 5.dp)) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val laneHeight = size.height / series.size.toFloat()
+                    val first = visibleRange.first
+                    val last = visibleRange.last
+                    val denominator = max(1, last - first).toFloat()
+                    fun xFor(index: Int): Float = (index - first).toFloat() / denominator * size.width
+                    visibleSeries.forEachIndexed { lane, item ->
+                        val top = lane * laneHeight
+                        val bottom = top + laneHeight
+                        if (lane > 0) {
+                            drawLine(
+                                dividerColor,
+                                Offset(0f, top),
+                                Offset(size.width, top),
+                                1.dp.toPx(),
+                            )
+                        }
+                        val visible = item.points
+                        if (visible.isEmpty()) return@forEachIndexed
+                        val minimum = visible.minOf { it.second }
+                        val maximum = visible.maxOf { it.second }
+                        val padding = max(abs(maximum - minimum) * 0.12, max(abs(maximum), 1.0) * 0.04)
+                        val lower = minimum - padding
+                        val upper = maximum + padding
+                        val span = (upper - lower).coerceAtLeast(1e-9)
+                        val path = Path()
+                        var previousSourceIndex = -1
+                        visible.forEach { point ->
+                            val x = xFor(point.first)
+                            val y = bottom - 4.dp.toPx() -
+                                ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat()
+                            val crossesGap = previousSourceIndex >= 0 && trace.breakIndices.any {
+                                it > previousSourceIndex && it <= point.first
+                            }
+                            if (previousSourceIndex < 0 || crossesGap) path.moveTo(x, y) else path.lineTo(x, y)
+                            previousSourceIndex = point.first
+                        }
+                        drawPath(
+                            path,
+                            item.color,
+                            style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                        )
+                    }
+                }
+                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
+                    series.forEach { item ->
+                        Text(item.label, color = item.color, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun buildPersistedMetricSeries(
+    points: List<CaptureMetricTimelinePoint>,
+    timeSeconds: DoubleArray,
+): List<AlignedMetricSeries> {
+    fun values(selector: (CaptureMetricTimelinePoint) -> Double?): List<Pair<Int, Double>> =
+        points.mapNotNull { point ->
+            val value = selector(point)?.takeIf(Double::isFinite) ?: return@mapNotNull null
+            nearestTimeIndex(timeSeconds, point.sourceTimeSeconds)?.let { it to value }
+        }
+    return listOf(
+        AlignedMetricSeries("HR bpm", Color(0xFFD74747), values(CaptureMetricTimelinePoint::heartRateBpm)),
+        AlignedMetricSeries("PI %", Color(0xFF7B61C9), values(CaptureMetricTimelinePoint::perfusionIndexPercent)),
+        AlignedMetricSeries("SQI", Color(0xFF2E8B57), values(CaptureMetricTimelinePoint::signalQuality)),
+        AlignedMetricSeries("RR", Color(0xFFB26A00), values(CaptureMetricTimelinePoint::ratioOfRatios)),
+    ).filter { it.points.isNotEmpty() }
+}
+
+private fun buildOfflineWindowSeries(
+    artifact: CaptureSessionAnalysisArtifact,
+    totalSamples: Int,
+): List<AlignedMetricSeries> {
+    val windows = artifact.report.windows
+    fun values(selector: (OfflinePulseWindow) -> Double?): List<Pair<Int, Double>> =
+        windows.mapNotNull { window ->
+            selector(window)?.takeIf(Double::isFinite)?.let { value ->
+                ((window.startIndex + window.stopIndex) / 2).coerceIn(0, max(0, totalSamples - 1)) to value
+            }
+        }
+    return listOf(
+        AlignedMetricSeries("HR bpm", Color(0xFFD74747), values(OfflinePulseWindow::peakBpm)),
+        AlignedMetricSeries(
+            "PI %",
+            Color(0xFF7B61C9),
+            values { if ((it.usedChannel ?: it.bestChannel) == "RED") it.redAcDcPercent else it.irAcDcPercent },
+        ),
+        AlignedMetricSeries("CONF", Color(0xFF2E8B57), values { it.confidence }),
+    ).filter { it.points.isNotEmpty() }
+}
+
+@Composable
+internal fun ReferenceBloodPressureComparisonPanel(
+    trace: CaptureSessionSignalTrace,
+    artifact: CaptureSessionAnalysisArtifact?,
+    modifier: Modifier = Modifier,
+) {
+    val preview = remember(trace.timeSeconds, trace.breakIndices, trace.metricTimeline) {
+        OfflineBloodPressurePreviewFactory.create(
+            timeSeconds = trace.timeSeconds,
+            breakIndices = trace.breakIndices,
+            metricTimeline = trace.metricTimeline,
+        )
+    }
+    val total = trace.timeSeconds.size
+    val anchorTime = trace.bloodPressureEvents.firstOrNull()?.reference?.sourceTimeSeconds
+        ?: preview.points.firstOrNull()?.sourceTimeSeconds
+    val anchorIndex = anchorTime?.let { nearestTimeIndex(trace.timeSeconds, it) } ?: 0
+    var viewport by remember(trace) {
+        mutableStateOf(
+            ReplayWaveformViewport().apply {
+                showWindow((anchorIndex - 400).coerceAtLeast(0), 800, total)
+            },
+        )
+    }
+    val range = viewport.visibleRange(total)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "参考 BP ${trace.bloodPressureEvents.size} 组 · 占位序列 ${preview.points.size} 点 · shared source time",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ViewportControls(
+            viewport = viewport,
+            total = total,
+            visibleRange = range,
+            timeSeconds = trace.timeSeconds,
+            onChange = { viewport = it },
+            onDefaultWindow = {
+                viewport = viewport.copyViewport().apply {
+                    showWindow((anchorIndex - 400).coerceAtLeast(0), 800, total)
+                }
+            },
+        )
+        CompleteSignalChart(
+            series = listOf(CompleteSignalSeries("ZERO RED 0.5–12", Color(0xFFD74747), trace.filteredRed)),
+            timeSeconds = trace.timeSeconds,
+            visibleRange = range,
+            breakIndices = trace.breakIndices,
+            stableSegments = artifact?.report?.segments.orEmpty(),
+            showStableSegments = true,
+            modifier = Modifier.height(92.dp),
+        )
+        BloodPressureTimelineChart(
+            referenceEvents = trace.bloodPressureEvents,
+            placeholderPoints = preview.points,
+            timeSeconds = trace.timeSeconds,
+            visibleRange = range,
+            breakIndices = trace.breakIndices,
+            modifier = Modifier.height(132.dp),
+        )
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+        ) {
+            Text(
+                "未接入血压预测算法：图中的 120/80 mmHg 为 1 Hz 对齐占位序列，不是模型输出，" +
+                    "不写入会话、不参与误差或临床评估。实时页继续显示横杠。",
+                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BloodPressureTimelineChart(
+    referenceEvents: List<com.example.ppgcollector_android.data.session.ManualBloodPressureEvent>,
+    placeholderPoints: List<OfflineBloodPressurePreviewPoint>,
+    timeSeconds: DoubleArray,
+    visibleRange: IntRange,
+    breakIndices: IntArray,
+    modifier: Modifier = Modifier,
+) {
+    val reference = remember(referenceEvents, timeSeconds) {
+        referenceEvents.mapNotNull { event ->
+            nearestTimeIndex(timeSeconds, event.reference.sourceTimeSeconds)?.let { index -> index to event }
+        }.sortedBy { it.first }
+    }
+    val placeholder = remember(placeholderPoints, timeSeconds) {
+        placeholderPoints.mapNotNull { point ->
+            nearestTimeIndex(timeSeconds, point.sourceTimeSeconds)?.let { index -> index to point }
+        }.sortedBy { it.first }
+    }
+    val visibleReference = remember(reference, visibleRange) { reference.pointsIn(visibleRange) }
+    val visiblePlaceholder = remember(placeholder, visibleRange) { placeholder.pointsIn(visibleRange) }
+    val predictedSbp = Color(0xFF7B61C9)
+    val predictedDbp = Color(0xFF00897B)
+    val referenceSbp = Color(0xFFD32F2F)
+    val referenceDbp = Color(0xFFF57C00)
+    val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("参考 SBP", color = referenceSbp, style = MaterialTheme.typography.labelSmall)
+            Text("参考 DBP", color = referenceDbp, style = MaterialTheme.typography.labelSmall)
+            Text("占位 SBP", color = predictedSbp, style = MaterialTheme.typography.labelSmall)
+            Text("占位 DBP", color = predictedDbp, style = MaterialTheme.typography.labelSmall)
+        }
+        Surface(
+            modifier = modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = "参考血压与未接入模型的占位血压时间轴，共享 PPG source time"
+                },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        ) {
+            Canvas(Modifier.fillMaxSize().padding(8.dp)) {
+                if (visibleRange.isEmpty()) return@Canvas
+                val first = visibleRange.first
+                val last = visibleRange.last
+                val denominator = max(1, last - first).toFloat()
+                fun xFor(index: Int): Float = (index - first).toFloat() / denominator * size.width
+                val values = buildList {
+                    visiblePlaceholder.forEach { add(it.second.systolicMmHg); add(it.second.diastolicMmHg) }
+                    visibleReference.forEach { add(it.second.systolicMmHg.toDouble()); add(it.second.diastolicMmHg.toDouble()) }
+                }
+                val minimum = (values.minOrNull() ?: 60.0) - 10.0
+                val maximum = (values.maxOrNull() ?: 140.0) + 10.0
+                val span = (maximum - minimum).coerceAtLeast(1.0)
+                fun yFor(value: Double): Float =
+                    ((maximum - value) / span * size.height).toFloat().coerceIn(0f, size.height)
+                repeat(3) { row ->
+                    val y = size.height * (row + 1) / 4f
+                    drawLine(
+                        gridColor,
+                        Offset(0f, y),
+                        Offset(size.width, y),
+                        1.dp.toPx(),
+                    )
+                }
+                fun drawPlaceholder(selector: (OfflineBloodPressurePreviewPoint) -> Double, color: Color) {
+                    val path = Path()
+                    var started = false
+                    var previousIndex = -1
+                    visiblePlaceholder.forEach { (index, point) ->
+                        val crossesGap = previousIndex >= 0 && breakIndices.any { it > previousIndex && it <= index }
+                        val x = xFor(index)
+                        val y = yFor(selector(point))
+                        if (!started || crossesGap) path.moveTo(x, y) else path.lineTo(x, y)
+                        started = true
+                        previousIndex = index
+                    }
+                    drawPath(path, color, style = Stroke(1.8.dp.toPx(), cap = StrokeCap.Round))
+                }
+                drawPlaceholder(OfflineBloodPressurePreviewPoint::systolicMmHg, predictedSbp)
+                drawPlaceholder(OfflineBloodPressurePreviewPoint::diastolicMmHg, predictedDbp)
+                visibleReference.forEach { (index, event) ->
+                    val x = xFor(index)
+                    val systolicY = yFor(event.systolicMmHg.toDouble())
+                    val diastolicY = yFor(event.diastolicMmHg.toDouble())
+                    drawLine(referenceSbp.copy(alpha = 0.5f), Offset(x, systolicY), Offset(x, diastolicY), 1.dp.toPx())
+                    drawCircle(referenceSbp, 4.dp.toPx(), Offset(x, systolicY))
+                    drawCircle(referenceDbp, 4.dp.toPx(), Offset(x, diastolicY))
+                }
+            }
+        }
+    }
+}
+
+private fun nearestTimeIndex(timeSeconds: DoubleArray, target: Double): Int? {
+    if (timeSeconds.isEmpty() || !target.isFinite()) return null
+    var low = 0
+    var high = timeSeconds.lastIndex
+    while (low <= high) {
+        val middle = (low + high) ushr 1
+        when {
+            timeSeconds[middle] < target -> low = middle + 1
+            timeSeconds[middle] > target -> high = middle - 1
+            else -> return middle
+        }
+    }
+    val right = low.coerceIn(0, timeSeconds.lastIndex)
+    val left = (right - 1).coerceAtLeast(0)
+    return if (abs(timeSeconds[left] - target) <= abs(timeSeconds[right] - target)) left else right
+}
+
+/** Returns a bounded, allocation-free view over already source-sorted points. */
+private fun <T> List<Pair<Int, T>>.pointsIn(range: IntRange): List<Pair<Int, T>> {
+    if (isEmpty() || range.isEmpty()) return emptyList()
+    fun lowerBound(target: Int): Int {
+        var low = 0
+        var high = size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (this[middle].first < target) low = middle + 1 else high = middle
+        }
+        return low
+    }
+    val start = lowerBound(range.first)
+    val stop = if (range.last == Int.MAX_VALUE) size else lowerBound(range.last + 1)
+    return if (start >= stop) emptyList() else subList(start, stop)
 }
 
 @Composable
@@ -257,7 +625,7 @@ internal fun FullscreenSessionWorkbenchScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (detail.isLoadingSignal) CircularProgressIndicator()
-                    Text(detail.signalError ?: "请先完成一次 M6 离线分析并等待完整信号重放。")
+                    Text(detail.signalError ?: "请先生成一次离线分析并等待完整信号重放。")
                 }
             }
         }
@@ -269,7 +637,7 @@ internal fun FullscreenSessionWorkbenchScreen(
         .maxByOrNull(OfflinePulseWindow::confidence)
     var pane by remember(artifact.path) { mutableStateOf(WorkbenchPane.SIGNAL) }
     var channel by remember(artifact.path) { mutableStateOf(WorkbenchChannel.SELECTED) }
-    var signalStage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.BANDPASS) }
+    var signalStage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.ZERO_PHASE) }
     var showPeaks by remember(artifact.path) { mutableStateOf(true) }
     var showSegments by remember(artifact.path) { mutableStateOf(true) }
     var invert by remember(artifact.path) { mutableStateOf(false) }
@@ -377,7 +745,9 @@ internal fun FullscreenSessionWorkbenchScreen(
                     when (pane) {
                         WorkbenchPane.SIGNAL -> {
                             val resolved = resolveChannel(channel, artifact)
-                            val values = signalValues(trace, resolved, signalStage)
+                            val values = remember(trace, resolved, signalStage) {
+                                signalValues(trace, resolved, signalStage)
+                            }
                             val gesture = Modifier.pointerInput(total) {
                                 detectTransformGestures { centroid, pan, zoom, _ ->
                                     viewport = viewport.copyViewport().apply {
@@ -429,10 +799,12 @@ internal fun FullscreenSessionWorkbenchScreen(
                         )
                         WorkbenchPane.SPECTRUM -> {
                             val resolved = resolveChannel(channel, artifact)
-                            val spectrum = OfflineDisplaySpectrum.estimate(
-                                if (resolved == "RED") trace.filteredRed else trace.filteredIr,
-                                range,
-                            )
+                            val spectrumSignal = remember(trace, resolved, signalStage) {
+                                signalValues(trace, resolved, signalStage)
+                            }
+                            val spectrum = remember(spectrumSignal, range) {
+                                OfflineDisplaySpectrum.estimate(spectrumSignal, range)
+                            }
                             SpectrumPane(spectrum.frequenciesHz, spectrum.power, range, modifier = Modifier.weight(1f))
                         }
                         WorkbenchPane.CYCLE -> CyclePane(artifact, Modifier.weight(1f))
@@ -841,7 +1213,7 @@ private fun WorkbenchHeader(title: String, subtitle: String, onBack: () -> Unit)
                 Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text("RAW → ZERO-PHASE → PEAKS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text("RAW → ZERO / FIXED 0.5–12 → PEAKS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -865,6 +1237,8 @@ private fun signalValues(
     stage == WorkbenchSignalStage.RAW && channel == "RED" ->
         PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
     stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
+    stage == WorkbenchSignalStage.FIXED && channel == "RED" -> trace.fixedLagRed
+    stage == WorkbenchSignalStage.FIXED -> trace.fixedLagIr
     channel == "RED" -> trace.filteredRed
     else -> trace.filteredIr
 }
@@ -877,7 +1251,8 @@ private fun channelLabel(value: WorkbenchChannel): String = when (value) {
 
 private fun signalStageLabel(value: WorkbenchSignalStage): String = when (value) {
     WorkbenchSignalStage.RAW -> "RAW"
-    WorkbenchSignalStage.BANDPASS -> "ZERO-PHASE"
+    WorkbenchSignalStage.ZERO_PHASE -> "ZERO"
+    WorkbenchSignalStage.FIXED -> "FIXED"
     WorkbenchSignalStage.PEAKS -> "PEAKS"
 }
 

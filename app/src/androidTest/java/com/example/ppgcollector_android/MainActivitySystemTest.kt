@@ -36,7 +36,7 @@ class MainActivitySystemTest {
     private fun assertLiveSurfacesVisible() {
         composeRule.onNodeWithText("CUPCollector").assertIsDisplayed()
         composeRule.onNodeWithText("扫描 CUP").assertIsDisplayed()
-        composeRule.onNodeWithText("CAUSAL 0.6–4 Hz").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("CAUSAL").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithContentDescription(
             "RED 波形",
             substring = true,
@@ -45,6 +45,11 @@ class MainActivitySystemTest {
             "IR 波形",
             substring = true,
         ).performScrollTo().assertIsDisplayed()
+        listOf("心率", "RR（Red/IR）", "PI（RED AC/DC）", "信号质量 SQI", "计算血压").forEach { label ->
+            composeRule.onNodeWithContentDescription(label, substring = true)
+                .performScrollTo()
+                .assertIsDisplayed()
+        }
         composeRule.onNodeWithText("开始录制").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("已保存会话").performScrollTo().assertIsDisplayed()
     }

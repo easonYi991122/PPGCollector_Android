@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
+import com.example.ppgcollector_android.core.signal.MetricResult
 import java.nio.file.Files
 import java.time.Instant
 import org.junit.Assert.assertEquals
@@ -34,7 +35,37 @@ class CaptureSidecarTest {
                     sourceSampleIndex = 800,
                     sourceTimeSeconds = 8.0,
                     measuredUtc = Instant.parse("2026-08-08T00:00:08Z"),
-                    snapshot = LiveMetricSnapshot.warmingUp(),
+                    snapshot = LiveMetricSnapshot.runtime(
+                        heartRateBpm = MetricResult.valid(
+                            value = 72.0,
+                            measuredAt = Instant.parse("2026-08-08T00:00:08Z"),
+                            algorithmVersion = "hr-test",
+                            sourceSampleIndex = 800,
+                            sourceTimeSeconds = 8.0,
+                        ),
+                        signalQuality = MetricResult.valid(
+                            value = 0.91,
+                            measuredAt = Instant.parse("2026-08-08T00:00:08Z"),
+                            algorithmVersion = "sqi-test",
+                            sourceSampleIndex = 800,
+                            sourceTimeSeconds = 8.0,
+                            isProvisional = true,
+                        ),
+                        ratioOfRatios = MetricResult.valid(
+                            value = 0.52,
+                            measuredAt = Instant.parse("2026-08-08T00:00:08Z"),
+                            algorithmVersion = "rr-test",
+                            sourceSampleIndex = 800,
+                            sourceTimeSeconds = 8.0,
+                        ),
+                        perfusionIndex = MetricResult.valid(
+                            value = 1.25,
+                            measuredAt = Instant.parse("2026-08-08T00:00:08Z"),
+                            algorithmVersion = "pi-test",
+                            sourceSampleIndex = 800,
+                            sourceTimeSeconds = 8.0,
+                        ),
+                    ),
                 ),
             )
             writer.appendBloodPressure(
@@ -58,6 +89,14 @@ class CaptureSidecarTest {
             val files = CaptureSessionRepository.expectedFiles(stored.directory)
             assertTrue(files.metrics != null && Files.isRegularFile(files.metrics))
             assertTrue(files.bloodPressure != null && Files.isRegularFile(files.bloodPressure))
+            val metricTimeline = CaptureMetricSeries.readTimeline(files.metrics!!)
+            assertEquals(1, metricTimeline.size)
+            assertEquals(800L, metricTimeline.single().sourceSampleIndex)
+            assertEquals(8.0, metricTimeline.single().sourceTimeSeconds, 0.0)
+            assertEquals(72.0, metricTimeline.single().heartRateBpm!!, 0.0)
+            assertEquals(0.91, metricTimeline.single().signalQuality!!, 0.0)
+            assertEquals(0.52, metricTimeline.single().ratioOfRatios!!, 0.0)
+            assertEquals(1.25, metricTimeline.single().perfusionIndexPercent!!, 0.0)
             val inspection = CaptureSessionInspectionService.inspect(stored.directory)
             assertEquals(1L, inspection.metrics?.completeDataRowCount)
             assertEquals(1L, inspection.bloodPressure?.completeDataRowCount)
@@ -69,4 +108,3 @@ class CaptureSidecarTest {
         }
     }
 }
-

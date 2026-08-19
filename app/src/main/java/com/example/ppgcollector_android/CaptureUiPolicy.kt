@@ -29,3 +29,5 @@ internal enum class LiveWaveformDisplayMode(val compactLabel: String) {
     CAUSAL("CAUSAL"),
     FIXED_LAG("FIXED"),
 }
+
+internal val liveMetricCompactOrder = listOf("HR", "RR", "PI", "SQI", "BP")

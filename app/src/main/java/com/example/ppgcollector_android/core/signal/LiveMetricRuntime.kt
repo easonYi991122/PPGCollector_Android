@@ -5,6 +5,8 @@ import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import java.time.Instant
 import kotlin.math.max
+import com.example.ppgcollector_android.core.signal.combo.ComboSqi
+import com.example.ppgcollector_android.core.signal.combo.ComboSqiResult
 
 data class LiveMetricRuntimeProfile(
     val identifier: String,
@@ -49,6 +51,7 @@ data class LiveMetricAnalysisResult(
     val request: LiveMetricAnalysisRequest,
     val snapshot: LiveMetricSnapshot,
     val provisionalSignalQuality: TemplateMatchSqiEstimate?,
+    val comboSqiCandidate: ComboSqiResult = ComboSqi.unknown(),
 )
 
 /** Stateful causal preprocessing and bounded 800/100 sample-count scheduling. */
@@ -276,6 +279,10 @@ object LiveMetricAnalyzer {
                 perfusionIndex = perfusionIndexMetric,
             ),
             provisionalSignalQuality = provisionalSignalQuality,
+            comboSqiCandidate = ComboSqi.evaluate(
+                request.rawIr.takeLast(ComboSqi.minimumSamples),
+                profile.sampleRateHz,
+            ),
         )
     }
 

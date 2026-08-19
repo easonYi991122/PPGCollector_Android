@@ -35,8 +35,10 @@ data class CaptureSessionRecoveryResult(
     val csvDiscardedTailBytes: Long,
     val metricsPath: Path? = null,
     val bloodPressurePath: Path? = null,
+    val ecgPath: Path? = null,
     val metricsCopiedBytes: Long = 0,
     val bloodPressureCopiedBytes: Long = 0,
+    val ecgCopiedBytes: Long = 0,
 )
 
 sealed class CaptureSessionRecoveryException(message: String) : Exception(message) {
@@ -178,6 +180,9 @@ object CaptureSessionRecoveryService {
                 bloodPressure = sourceFiles.bloodPressure?.takeIf { bloodPressureScan != null }?.let {
                     staging.resolve("$requestedBaseName.blood-pressure.csv")
                 },
+                ecg = sourceFiles.ecg?.takeIf(Files::isRegularFile)?.let {
+                    staging.resolve("${requestedBaseName}_ecg.csv")
+                },
             )
             copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw)
             copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv)
@@ -190,6 +195,9 @@ object CaptureSessionRecoveryService {
                     bloodPressureScan.validByteCount,
                     destinationFiles.bloodPressure,
                 )
+            }
+            if (destinationFiles.ecg != null) {
+                Files.copy(sourceFiles.ecg!!, destinationFiles.ecg, StandardCopyOption.COPY_ATTRIBUTES)
             }
 
             val sourceMetadataBytes = if (Files.isRegularFile(sourceFiles.metadata)) {
@@ -259,8 +267,11 @@ object CaptureSessionRecoveryService {
                 metricsPath = destinationFiles.metrics?.let { destination.resolve(it.fileName.toString()) },
                 bloodPressurePath = destinationFiles.bloodPressure
                     ?.let { destination.resolve(it.fileName.toString()) },
+                ecgPath = destinationFiles.ecg
+                    ?.let { destination.resolve(it.fileName.toString()) },
                 metricsCopiedBytes = metricsScan?.validByteCount ?: 0L,
                 bloodPressureCopiedBytes = bloodPressureScan?.validByteCount ?: 0L,
+                ecgCopiedBytes = destinationFiles.ecg?.let { Files.size(it) } ?: 0L,
             )
         } catch (error: CaptureSessionRecoveryException) {
             throw error
@@ -326,6 +337,7 @@ object CaptureSessionRecoveryService {
                     samples = "$baseName.csv",
                     metrics = metrics?.let { "$baseName.metrics.csv" },
                     bloodPressure = bloodPressure?.let { "$baseName.blood-pressure.csv" },
+                    ecg = source?.files?.ecg?.let { "$baseName" + "_ecg.csv" },
                 ),
         recovery = recovery,
         canonicalSubjectId = source?.canonicalSubjectId,

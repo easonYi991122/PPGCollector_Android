@@ -16,14 +16,18 @@ import com.example.ppgcollector_android.data.session.CaptureStartContext
 import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import com.example.ppgcollector_android.data.session.CaptureStartGate
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.data.session.CaptureRecordMode
+import com.example.ppgcollector_android.data.session.CaptureRecordModePolicy
 import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
 import com.example.ppgcollector_android.data.session.CaptureParticipantDraft
+import com.example.ppgcollector_android.data.session.CaptureSessionWriterPolicy
 import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
 import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
 import com.example.ppgcollector_android.data.session.SessionNamePolicy
 import com.example.ppgcollector_android.data.session.CanonicalSessionIdentity
 import com.example.ppgcollector_android.data.session.SubjectProfileStore
 import com.example.ppgcollector_android.data.session.SubjectProfileRevision
+import com.example.ppgcollector_android.data.session.referenceBloodPressure
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
@@ -67,12 +71,16 @@ data class CaptureServiceStatusObservation(
 data class CaptureGateUiState(
     val sessionName: String = "",
     val failure: CaptureStartFailure? = CaptureStartFailure.InvalidSessionName,
+    val failures: List<CaptureStartFailure> = emptyList(),
 ) {
     val canStart: Boolean
-        get() = failure == null
+        get() = failures.isEmpty() && failure == null
+
+    val messages: List<String>
+        get() = failures.map(CaptureStartFailure::message)
 
     val message: String?
-        get() = failure?.message()
+        get() = messages.firstOrNull() ?: failure?.message()
 }
 
 private fun CaptureStartFailure.message(): String = when (this) {
@@ -85,6 +93,9 @@ private fun CaptureStartFailure.message(): String = when (this) {
     CaptureStartFailure.NotificationPermissionDenied ->
         "通知权限未授予，请允许通知后再开始录制，否则持续采集状态可能无法显示"
     CaptureStartFailure.SessionAlreadyExists -> "会话名已存在"
+    CaptureStartFailure.LogicalSessionAlreadyExists -> "次数重复：当前前缀下该被试的采集序号已存在"
+    is CaptureStartFailure.ParticipantIncomplete ->
+        "请补齐被试信息必填项：${fields.joinToString("、")}"
     CaptureStartFailure.InsufficientStorage -> "可用存储不足"
 }
 
@@ -270,7 +281,17 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private val collectorApplication = application as PpgCollectorApplication
     private val serviceClient = CaptureServiceClient(application, viewModelScope)
     private val _sessionName = MutableStateFlow("")
+    private val _sessionPrefix = MutableStateFlow(
+        com.example.ppgcollector_android.data.session.SessionNamePrefix.fromWireValue(
+            application.getSharedPreferences("capture_preferences", android.content.Context.MODE_PRIVATE)
+                .getString("session_prefix", "PPG").orEmpty(),
+        ) ?: com.example.ppgcollector_android.data.session.SessionNamePrefix.PPG,
+    )
     private val _participantDraft = MutableStateFlow(CaptureParticipantDraft())
+    private val _recordMode = MutableStateFlow(CaptureRecordMode.TIMED)
+    private val _plannedDurationText = MutableStateFlow(
+        CaptureRecordModePolicy.defaultDurationSeconds.toString(),
+    )
     private var participantDraftDirty = false
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
     private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
@@ -297,7 +318,11 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, CaptureAnalysisSnapshot())
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
+    val sessionPrefix: StateFlow<com.example.ppgcollector_android.data.session.SessionNamePrefix> =
+        _sessionPrefix.asStateFlow()
     val participantDraft: StateFlow<CaptureParticipantDraft> = _participantDraft.asStateFlow()
+    val recordMode: StateFlow<CaptureRecordMode> = _recordMode.asStateFlow()
+    val plannedDurationText: StateFlow<String> = _plannedDurationText.asStateFlow()
     val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
     val previewState: StateFlow<BlePreviewSnapshot> = collectorApplication.bleCoordinator.previewFlow
     val bloodPressureReference: StateFlow<CaptureReferenceTimestamp?> = _bloodPressureReference.asStateFlow()
@@ -308,15 +333,25 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         viewModelScope.launch {
             combine(
                 _sessionName,
-                collectorApplication.bleCoordinator.snapshotFlow,
+                collectorApplication.bleCoordinator.snapshotFlow
+                    .map { ble ->
+                        ble.copy(
+                            diagnostics = com.example.ppgcollector_android.core.ble.BleGattDiagnostics(),
+                            attemptDiagnostics =
+                                com.example.ppgcollector_android.core.ble.BleConnectionAttemptDiagnostics(),
+                        )
+                    }
+                    .distinctUntilChanged(),
                 serviceClient.state,
                 _notificationPermissionFailure,
-            ) { name, ble, service, notificationFailure ->
+                _participantDraft,
+            ) { name, ble, service, notificationFailure, participant ->
+                val failures = evaluateGate(name, ble, service.recording) +
+                    listOfNotNull(notificationFailure, service.runtimeFailure)
                 CaptureGateUiState(
                     sessionName = name,
-                    failure = evaluateGate(name, ble, service.recording)
-                        ?: notificationFailure
-                        ?: service.runtimeFailure,
+                    failures = failures,
+                    failure = failures.firstOrNull(),
                 )
             }.collect { _captureGate.value = it }
         }
@@ -324,16 +359,47 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     fun setSessionName(value: String) {
         _sessionName.value = SessionNamePolicy.normalizeCanonical(value) ?: value
+        SessionNamePolicy.parseCanonical(value)?.let { _sessionPrefix.value = it.prefix }
         if (!participantDraftDirty) prefillParticipantFor(value)
     }
 
+    fun setSessionPrefix(prefix: com.example.ppgcollector_android.data.session.SessionNamePrefix) {
+        _sessionPrefix.value = prefix
+        getApplication<android.app.Application>()
+            .getSharedPreferences("capture_preferences", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString("session_prefix", prefix.wireValue)
+            .apply()
+        val identity = SessionNamePolicy.parseCanonical(_sessionName.value)
+        if (identity != null) {
+            setSessionName(
+                "${prefix.wireValue}-${identity.subject}-${SessionNamePolicy.nextSequenceForSubject(
+                    collectorApplication.sessionsRoot, prefix, identity.subject,
+                )}",
+            )
+        }
+    }
+
     fun useSuggestedSessionName() {
-        setSessionName(SessionNamePolicy.suggestedBaseNameOrExample(collectorApplication.sessionsRoot))
+        setSessionName(
+            SessionNamePolicy.suggestedBaseNameOrExample(
+                collectorApplication.sessionsRoot,
+                _sessionPrefix.value,
+            ),
+        )
     }
 
     fun setParticipantDraft(value: CaptureParticipantDraft) {
         participantDraftDirty = true
         _participantDraft.value = value
+    }
+
+    fun setRecordMode(value: CaptureRecordMode) {
+        _recordMode.value = value
+    }
+
+    fun setPlannedDurationText(value: String) {
+        _plannedDurationText.value = value.filter(Char::isDigit).take(4)
     }
 
     fun resetParticipantDraftFromSubject() {
@@ -384,6 +450,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             ble.discoveredDevices.firstOrNull { it.id == id }?.name
         }
         val participant = participantForSession(gate.sessionName, persistCanonical = true)
+        val bp = _participantDraft.value.referenceBloodPressure()
         runCatching {
             androidx.core.content.ContextCompat.startForegroundService(
                 getApplication(),
@@ -392,6 +459,13 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                     sessionName = gate.sessionName,
                     deviceName = deviceName,
                     participant = participant,
+                    systolicBp = bp?.first,
+                    diastolicBp = bp?.second,
+                    recordMode = _recordMode.value,
+                    plannedDurationSeconds = CaptureRecordModePolicy.effectiveDurationSeconds(
+                        _recordMode.value,
+                        _plannedDurationText.value,
+                    ),
                 ),
             )
         }.onFailure { error ->
@@ -426,6 +500,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 ageYears = draftSnapshot.ageYears,
                 heightCm = draftSnapshot.heightCm,
                 weightKg = draftSnapshot.weightKg,
+                smokingFreq = draftSnapshot.smokingFreq,
+                drinkingFreq = draftSnapshot.drinkingFreq,
                 additionalFields = draftSnapshot.additionalFields,
             )
             return saved.latest?.asParticipantSnapshot(identity.subject)?.copy(sequence = identity.sequence)
@@ -439,10 +515,10 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         name: String,
         ble: BleCoordinatorSnapshot,
         recording: CaptureRecordingSnapshot,
-    ): CaptureStartFailure? {
+    ): List<CaptureStartFailure> {
         val root = collectorApplication.sessionsRoot
         val capacityRoot = root.parent ?: root
-        return CaptureStartGate.validate(
+        return CaptureStartGate.validateAll(
             CaptureStartContext(
                 isRecording = recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.IDLE &&
                     recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED &&
@@ -452,6 +528,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 sessionsRoot = root,
                 sessionName = name,
                 availableBytes = runCatching { Files.getFileStore(capacityRoot).usableSpace }.getOrNull(),
+                participant = _participantDraft.value,
             ),
         )
     }

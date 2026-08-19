@@ -81,6 +81,44 @@ data class PpgPreprocessingProfile(
             sqiPolarityTransform = PpgPolarityTransform.INVERT,
             standardDeviationEpsilon = 1e-8,
         )
+
+        /**
+         * Display/offline analysis profile for the requested 0.5–12 Hz band.
+         *
+         * The two normalized biquads are a second-order Butterworth high-pass
+         * followed by a second-order Butterworth low-pass at 100 Hz. Offline
+         * callers run them forward/backward, so this profile is deliberately
+         * separate from the live-metric iOS parity profile above.
+         */
+        val offlineBiquad05To12Hz01 = PpgPreprocessingProfile(
+            identifier = "offline-biquad-filtfilt-0.5-12hz-0.1",
+            sampleRateHz = 100.0,
+            dcTimeConstantSeconds = 0.5,
+            dcAlpha = 0.019801326693244747,
+            lowCutoffHz = 0.5,
+            highCutoffHz = 12.0,
+            filterOrder = 4,
+            sections = listOf(
+                PpgSecondOrderSection(
+                    b0 = 0.9780304792065596,
+                    b1 = -1.9560609584131192,
+                    b2 = 0.9780304792065596,
+                    a0 = 1.0,
+                    a1 = -1.9555782403150352,
+                    a2 = 0.9565436765112032,
+                ),
+                PpgSecondOrderSection(
+                    b0 = 0.09131490043583199,
+                    b1 = 0.18262980087166397,
+                    b2 = 0.09131490043583199,
+                    a0 = 1.0,
+                    a1 = -0.9824057931083954,
+                    a2 = 0.3476653948517233,
+                ),
+            ),
+            sqiPolarityTransform = PpgPolarityTransform.INVERT,
+            standardDeviationEpsilon = 1e-8,
+        )
     }
 }
 

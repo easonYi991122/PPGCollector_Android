@@ -1,6 +1,10 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
+import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
+import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
@@ -55,6 +59,7 @@ class BlePreviewRuntime(
     private var stopRequested = false
     private var lastClockTickNanos = System.nanoTime()
     private var decoder = CupBatchStreamDecoder()
+    private var adsDecoder = Ads1292rStreamDecoder()
     private var sequenceTracker = CupFrameSequenceTracker()
     private var signalRuntime = LivePpgSignalRuntime()
     private val worker = thread(start = true, isDaemon = true, name = "ppg-ble-preview") { loop() }
@@ -86,12 +91,14 @@ class BlePreviewRuntime(
     fun reset(
         generation: Long,
         streamProtocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+        clearQueuedChunks: Boolean = true,
     ) {
         synchronized(lock) {
             activeGeneration = generation
             activeStreamProtocolMode = streamProtocolMode
-            queue.clear()
+            if (clearQueuedChunks) queue.clear()
             decoder = CupBatchStreamDecoder(protocolMode = streamProtocolMode)
+            adsDecoder = Ads1292rStreamDecoder()
             sequenceTracker = CupFrameSequenceTracker()
             signalRuntime = LivePpgSignalRuntime()
             acceptedSampleIndex = 0L
@@ -138,7 +145,26 @@ class BlePreviewRuntime(
                 return
             }
             try {
-                val events = decoder.feed(input.bytes).map { frame ->
+                val events = if (activeStreamProtocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                    adsDecoder.feed(input.bytes).map { packet ->
+                        val frame = CupBatchFrame(
+                            sequence = packet.sequenceNumber.toUByte(),
+                            sequenceNumber = packet.sequenceNumber,
+                            wireProfile = CupWireFrameProfile.SENSOR_PACKET_168,
+                            samples = packet.red.indices.map { index ->
+                                CupPpgSample(packet.red[index], packet.ir[index])
+                            },
+                        )
+                        val sequence = sequenceTracker.observe(frame)
+                        signalRuntime.ingestEcgDisplaySamples(packet.ecg)
+                        CupDecodedFrameEvent(
+                            frame = frame,
+                            sequenceEvent = sequence,
+                            isAccepted = sequence !is CupSequenceEvent.Duplicate &&
+                                sequence !is CupSequenceEvent.OutOfOrder,
+                        )
+                    }
+                } else decoder.feed(input.bytes).map { frame ->
                     val sequence = sequenceTracker.observe(frame)
                     CupDecodedFrameEvent(
                         frame = frame,

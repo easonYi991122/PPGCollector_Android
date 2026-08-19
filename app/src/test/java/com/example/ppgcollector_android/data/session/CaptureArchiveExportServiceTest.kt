@@ -29,7 +29,7 @@ class CaptureArchiveExportServiceTest {
                 selection = CaptureArchiveSelection(subjectIds = setOf("A")),
                 destination = destination,
             )
-            assertTrue(report.entryNames.any { it.startsWith("subjects/A/PPG-A-1/") })
+            assertTrue(report.entryNames.any { it.startsWith("subjects/A/PPG/PPG-A-1/") })
             assertTrue(Files.size(destination) > 0L)
             val names = ZipInputStream(Files.newInputStream(destination)).use { zip ->
                 buildList {

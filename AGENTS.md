@@ -1,17 +1,22 @@
 # PPGCollector Android agent 工作约定
 
-本项目是把 `AndroidMigrationPlanning/reference_sources/` 中的 iOS/Swift、Python 和协议参考移植为 Android/Kotlin app。任何 Codex agent 在开始新一轮工作、恢复工作或发生上下文压缩后，必须先完整阅读：
+当前阶段是 **V3.0 增量开发**（在现有 Android 采集 App 上迭代），不是 iOS 移植。
 
-1. [`AndroidMigrationPlanning/00_AGENT_MIGRATION_BRIEF.md`](AndroidMigrationPlanning/00_AGENT_MIGRATION_BRIEF.md)
-2. [`AndroidMigrationPlanning/status/DEVELOPMENT_STATUS.md`](AndroidMigrationPlanning/status/DEVELOPMENT_STATUS.md)
-3. 与本轮任务直接相关的 [`AndroidMigrationPlanning/docs/`](AndroidMigrationPlanning/docs/) 和 [`AndroidMigrationPlanning/docs/05_SOURCE_REFERENCE_INDEX.md`](AndroidMigrationPlanning/docs/05_SOURCE_REFERENCE_INDEX.md)
+任何 agent 在开始新一轮、恢复工作或上下文压缩后，必须先读：
 
-执行规则：
+1. [`V3Development/00_AGENT_BRIEF.md`](V3Development/00_AGENT_BRIEF.md)
+2. [`V3Development/01_CODEBASE_AS_IS.md`](V3Development/01_CODEBASE_AS_IS.md)（对代码的认识以源码和这份纪要为准，不以归档文档为准）
+3. [`V3Development/03_DEVELOPMENT_PLAN.md`](V3Development/03_DEVELOPMENT_PLAN.md) 中的**本轮**章节
+4. [`V3Development/status/DEVELOPMENT_STATUS.md`](V3Development/status/DEVELOPMENT_STATUS.md)
 
-- 先检查 `git status`，保留用户已有修改；`reference_sources/` 是只读快照，不直接修改。
-- 每轮完成一个可验收的任务，理想状态下，一轮迭代应该至少完成一个M版本的移植开发再做相应验收检查，说明需求 ID、主参考文件、Android 目标和测试证据。
-- 每轮不要求立即上机真机测试；优先完成 JVM/unit、fake BLE、静态检查、文件格式和模拟长稳验证，并把真机门禁标为待执行。除非用户明确要求，不把真机操作当作当前轮的默认步骤。
-- 每轮完成后更新详细状态（追加事实记录）和简版状态（当前快照），然后用与 MigrationPlanning 版本映射一致的简洁提交说明提交本轮变更。
-- 不把未完成的 Compose 壳、模拟数据或未经校准的 ratio-of-ratios 宣称为已完成产品能力；不把 SpO2/BP 伪装成有效结果。
+需求原文与综合 SQI 参考在 [`V3Development/references/需求V3.0/`](V3Development/references/需求V3.0/)。相对当前代码 rebase 后的差距在 [`V3Development/02_REQUIREMENTS_REBASED.md`](V3Development/02_REQUIREMENTS_REBASED.md)。
 
-具体版本映射、证据优先级、数据契约、验收门禁、状态模板和 commit 格式以 `00_AGENT_MIGRATION_BRIEF.md` 为准。
+## 执行规则
+
+- 先检查 `git status`，保留用户已有修改。
+- 每轮只做开发方案中的一个轮次（`V3.Rn` 或 `V3.R4.1`），完成 JVM/fake BLE/文件契约验收后再停下。当前待执行见 `V3Development/status/DEVELOPMENT_STATUS.md`。
+- 默认不做真机操作；用户明确要求时再做。
+- 不要把未校准的 SpO2 / 预测血压宣称为有效结果。
+- 不要修改 `V3Development/references/需求V3.0/` 中的参考实现来迁就 Kotlin。
+- iOS 移植期文档在 [`archive/2026-08-ios-migration/`](archive/2026-08-ios-migration/README.md)，不是本阶段需求源。
+- 现有 HR/SQI/预处理回归金标在 `app/src/test/resources/signal_fixtures/`。

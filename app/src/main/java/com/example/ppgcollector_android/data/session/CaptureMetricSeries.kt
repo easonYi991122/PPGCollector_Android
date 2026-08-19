@@ -20,6 +20,17 @@ data class CaptureMetricEpoch(
     val snapshot: LiveMetricSnapshot,
 )
 
+/** Read-only, bounded subset used to align persisted 1 Hz metrics with replay. */
+data class CaptureMetricTimelinePoint(
+    val metricEpoch: Long,
+    val sourceSampleIndex: Long,
+    val sourceTimeSeconds: Double,
+    val heartRateBpm: Double?,
+    val signalQuality: Double?,
+    val ratioOfRatios: Double?,
+    val perfusionIndexPercent: Double?,
+)
+
 object CaptureMetricEpochFactory {
     fun fromAnalysis(sessionId: String, result: LiveMetricAnalysisResult): CaptureMetricEpoch =
         CaptureMetricEpoch(
@@ -47,6 +58,7 @@ data class CaptureSidecarScanReport(
 
 object CaptureMetricSeries {
     const val schemaVersion = "ppgcollector_metrics_v1"
+    private const val maximumTimelineRows = 100_000
     val columns = listOf(
         "schema_version", "session_id", "connection_generation", "metric_epoch",
         "source_sample_index", "source_time_s", "measured_utc",
@@ -77,12 +89,57 @@ object CaptureMetricSeries {
     fun scan(path: Path): CaptureSidecarScanReport =
         scanSessionSidecar(path, header, ::validateRow)
 
+    fun readTimeline(path: Path): List<CaptureMetricTimelinePoint> {
+        if (!Files.isRegularFile(path)) return emptyList()
+        Files.newBufferedReader(path).use { reader ->
+            require(reader.readLine()?.removeSuffix("\r") == header.trimEnd('\n')) {
+                "unexpected metrics header"
+            }
+            val result = ArrayList<CaptureMetricTimelinePoint>()
+            var previousEpoch = -1L
+            var previousSource = -1L
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (line.isBlank()) continue
+                require(result.size < maximumTimelineRows) {
+                    "metrics timeline exceeds $maximumTimelineRows rows"
+                }
+                val fields = parseSessionCsvFields(line.removeSuffix("\r"))
+                require(fields.size == columns.size) { "expected ${columns.size} metrics fields" }
+                require(fields[0] == schemaVersion) { "unsupported metrics schema" }
+                val epoch = fields[3].toLong()
+                val source = fields[4].toLong()
+                val sourceTime = fields[5].toDouble()
+                require(epoch > previousEpoch && source > previousSource && sourceTime.isFinite()) {
+                    "metrics timeline is not monotonic"
+                }
+                result += CaptureMetricTimelinePoint(
+                    metricEpoch = epoch,
+                    sourceSampleIndex = source,
+                    sourceTimeSeconds = sourceTime,
+                    heartRateBpm = validMetric(fields, 7, 8),
+                    signalQuality = validMetric(fields, 12, 13),
+                    ratioOfRatios = validMetric(fields, 17, 18),
+                    perfusionIndexPercent = validMetric(fields, 22, 23),
+                )
+                previousEpoch = epoch
+                previousSource = source
+            }
+            return result
+        }
+    }
+
     private fun appendMetric(fields: MutableList<String>, metric: MetricResult<Double>) {
         fields += metric.value?.takeIf(Double::isFinite)?.let(::formatDouble) ?: ""
         fields += metric.isValid.toString()
         fields += metric.isProvisional.toString()
         fields += metric.unavailableReason?.wireValue ?: ""
         fields += metric.algorithmVersion
+    }
+
+    private fun validMetric(fields: List<String>, valueIndex: Int, validIndex: Int): Double? {
+        if (!fields[validIndex].toBooleanStrict()) return null
+        return fields[valueIndex].toDoubleOrNull()?.takeIf(Double::isFinite)
     }
 
     private fun validateRow(fields: List<String>, previous: List<String>?): String? {

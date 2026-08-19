@@ -39,11 +39,13 @@ enum class CupWireFrameProfile(
 enum class CupStreamProtocolMode(val configuredProfileIdentifier: String) {
     BATCH_COMPATIBLE(CupBatchProtocolV1.profileIdentifier),
     SENSOR_PACKET_168(CupSensorPacketProtocolV1.profileIdentifier),
+    ADS1292R_120(Ads1292rPacketProtocol.profileIdentifier),
     ;
 
     companion object {
         fun fromProtocolProfileIdentifier(identifier: String?): CupStreamProtocolMode =
             if (identifier == CupSensorPacketProtocolV1.profileIdentifier) SENSOR_PACKET_168
+            else if (identifier == Ads1292rPacketProtocol.profileIdentifier) ADS1292R_120
             else BATCH_COMPATIBLE
     }
 }

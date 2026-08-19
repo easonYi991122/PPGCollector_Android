@@ -1,8 +1,5 @@
 package com.example.ppgcollector_android.core.signal
 
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.Paths
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -217,13 +214,12 @@ class PpgPreprocessingTest {
     }
 
     private fun loadFixture(): JsonValue.ObjectValue {
-        val candidates = listOf(
-            Paths.get("AndroidMigrationPlanning/reference_sources/signal_fixtures/preprocessing/preprocessing_vectors.json"),
-            Paths.get("../AndroidMigrationPlanning/reference_sources/signal_fixtures/preprocessing/preprocessing_vectors.json"),
-        )
-        val path = candidates.firstOrNull { Files.exists(it) }
-            ?: error("preprocessing fixture not found from ${Paths.get("").toAbsolutePath()}")
-        return JsonParser(Files.readString(path)).parse().objectValue()
+        val json = javaClass.classLoader!!
+            .getResourceAsStream("signal_fixtures/preprocessing/preprocessing_vectors.json")
+            ?.bufferedReader()
+            ?.readText()
+            ?: error("preprocessing fixture not found on test classpath")
+        return JsonParser(json).parse().objectValue()
     }
 }
 

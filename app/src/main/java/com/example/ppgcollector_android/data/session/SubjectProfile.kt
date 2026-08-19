@@ -13,9 +13,12 @@ data class SubjectProfileRevision(
     val revisionId: String,
     val createdUtc: Instant,
     val sex: String?,
+    val genderCode: Int? = genderCodeFor(sex.orEmpty()),
     val ageYears: Int?,
     val heightCm: Double?,
     val weightKg: Double?,
+    val smokingFreq: String = "",
+    val drinkingFreq: String = "",
     val additionalFields: Map<String, String> = emptyMap(),
 ) {
     val isComplete: Boolean
@@ -26,9 +29,12 @@ data class SubjectProfileRevision(
         profileRevisionId = revisionId,
         profileComplete = isComplete,
         sex = sex,
+        genderCode = genderCode,
         ageYears = ageYears,
         heightCm = heightCm,
         weightKg = weightKg,
+        smokingFreq = smokingFreq,
+        drinkingFreq = drinkingFreq,
         additionalFields = additionalFields,
     )
 }
@@ -67,19 +73,26 @@ class SubjectProfileStore(private val root: Path) {
         ageYears: Int?,
         heightCm: Double?,
         weightKg: Double?,
+        smokingFreq: String = "",
+        drinkingFreq: String = "",
         additionalFields: Map<String, String> = emptyMap(),
         revisionId: String = UUID.randomUUID().toString(),
         now: Instant = Instant.now(),
     ): SubjectProfile {
-        validateRevision(sex, ageYears, heightCm, weightKg, additionalFields)
+        validateRevision(
+            sex, ageYears, heightCm, weightKg, smokingFreq, drinkingFreq, additionalFields,
+        )
         val previous = read(subject)
         val revision = SubjectProfileRevision(
             revisionId = revisionId,
             createdUtc = now,
             sex = sex,
+            genderCode = genderCodeFor(sex.orEmpty()),
             ageYears = ageYears,
             heightCm = heightCm,
             weightKg = weightKg,
+            smokingFreq = smokingFreq,
+            drinkingFreq = drinkingFreq,
             additionalFields = additionalFields.toSortedMap(),
         )
         val profile = SubjectProfile(
@@ -97,6 +110,8 @@ class SubjectProfileStore(private val root: Path) {
         ageYears: Int?,
         heightCm: Double?,
         weightKg: Double?,
+        smokingFreq: String,
+        drinkingFreq: String,
         additionalFields: Map<String, String>,
     ) {
         require(additionalFields.size <= maximumAdditionalFields) { "too many additional fields" }
@@ -106,7 +121,12 @@ class SubjectProfileStore(private val root: Path) {
         require(additionalFields.values.all { it.length <= maximumFieldValueLength }) {
             "additional field value is too long"
         }
-        require(sex == null || sex.length <= maximumFieldValueLength) { "sex is too long" }
+        require(smokingFreq in CaptureParticipantDraft.smokingOptions) {
+            "invalid smoking frequency"
+        }
+        require(drinkingFreq in CaptureParticipantDraft.drinkingOptions) {
+            "invalid drinking frequency"
+        }
         require(ageYears == null || ageYears in 0..150) { "age is out of technical range" }
         require(heightCm == null || heightCm.isFinite() && heightCm > 0.0) { "height is invalid" }
         require(weightKg == null || weightKg.isFinite() && weightKg > 0.0) { "weight is invalid" }
@@ -169,12 +189,16 @@ private object SubjectProfileCodec {
             "revision_id" to JsonValue.StringValue(revision.revisionId),
             "created_utc" to JsonValue.StringValue(revision.createdUtc.toString()),
             "sex" to (revision.sex?.let(JsonValue::StringValue) ?: JsonValue.NullValue),
+            "gender_code" to (revision.genderCode?.let { JsonValue.NumberValue(it.toString()) }
+                ?: JsonValue.NullValue),
             "age_years" to (revision.ageYears?.let { JsonValue.NumberValue(it.toString()) }
                 ?: JsonValue.NullValue),
             "height_cm" to (revision.heightCm?.let { JsonValue.NumberValue(it.toString()) }
                 ?: JsonValue.NullValue),
             "weight_kg" to (revision.weightKg?.let { JsonValue.NumberValue(it.toString()) }
                 ?: JsonValue.NullValue),
+            "smoking_freq" to JsonValue.StringValue(revision.smokingFreq),
+            "drinking_freq" to JsonValue.StringValue(revision.drinkingFreq),
             "additional_fields" to JsonValue.ObjectValue(
                 revision.additionalFields.toSortedMap().mapValues { JsonValue.StringValue(it.value) },
             ),
@@ -189,9 +213,13 @@ private object SubjectProfileCodec {
                 revisionId = item.requiredString("revision_id"),
                 createdUtc = item.requiredString("created_utc").toInstant("created_utc"),
                 sex = item.optionalString("sex"),
+                genderCode = item.optionalLong("gender_code")?.toIntChecked("gender_code")
+                    ?: genderCodeFor(item.optionalString("sex").orEmpty()),
                 ageYears = item.optionalLong("age_years")?.toIntChecked("age_years"),
                 heightCm = item.optionalDouble("height_cm"),
                 weightKg = item.optionalDouble("weight_kg"),
+                smokingFreq = item.optionalString("smoking_freq").orEmpty(),
+                drinkingFreq = item.optionalString("drinking_freq").orEmpty(),
                 additionalFields = item.optionalObject("additional_fields")?.fields.orEmpty()
                     .mapValues { (key, childValue) -> childValue.asString("additional_fields.$key") },
             )

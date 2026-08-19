@@ -18,6 +18,7 @@ data class LiveWaveformSnapshot(
     val measuredAt: Instant? = null,
     val red: DoubleArray = doubleArrayOf(),
     val ir: DoubleArray = doubleArrayOf(),
+    val ecg: DoubleArray = doubleArrayOf(),
     val causalRed: DoubleArray = doubleArrayOf(),
     val causalIr: DoubleArray = doubleArrayOf(),
     val preprocessProfile: String? = null,
@@ -105,6 +106,9 @@ class LiveWaveformSnapshotScheduler(
 
     private val redRing = DoubleArray(windowSampleCount)
     private val irRing = DoubleArray(windowSampleCount)
+    private val ecgRing = DoubleArray(windowSampleCount)
+    private var ecgRingStart = 0
+    private var ecgRingSize = 0
     private var ringStart = 0
     private var ringSize = 0
     private var nextWriteSampleIndex = 0L
@@ -143,6 +147,13 @@ class LiveWaveformSnapshotScheduler(
         return publishIfDue(nowNanos, measuredAt)
     }
 
+    /** Adds ECG samples to the display-only 100 Hz view (500 Hz source, 5:1 stride). */
+    fun ingestEcgDisplaySamples(samples: List<UInt>) {
+        samples.forEachIndexed { index, sample ->
+            if (index % 5 == 0) appendEcg(sample.toDouble())
+        }
+    }
+
     fun publishNow(measuredAt: Instant): LiveWaveformSnapshot? {
         if (ringSize == 0) return null
         publicationSequence++
@@ -156,6 +167,7 @@ class LiveWaveformSnapshotScheduler(
             measuredAt = measuredAt,
             red = copyRing(redRing),
             ir = copyRing(irRing),
+            ecg = copyEcgRing(),
         )
     }
 
@@ -181,6 +193,7 @@ class LiveWaveformSnapshotScheduler(
             measuredAt = measuredAt,
             red = red,
             ir = ir,
+            ecg = copyEcgRing(),
         )
     }
 
@@ -206,10 +219,30 @@ class LiveWaveformSnapshotScheduler(
     private fun resetContinuity(nextIndex: Long, resetCount: Boolean = false) {
         ringStart = 0
         ringSize = 0
+        ecgRingStart = 0
+        ecgRingSize = 0
         nextWriteSampleIndex = nextIndex
         if (resetCount) acceptedSampleCount = 0L
         generation++
         nextPublishNanos = null
+    }
+
+    private fun appendEcg(value: Double) {
+        val index = (ecgRingStart + ecgRingSize) % windowSampleCount
+        ecgRing[index] = value
+        if (ecgRingSize < windowSampleCount) {
+            ecgRingSize++
+        } else {
+            ecgRingStart = (ecgRingStart + 1) % windowSampleCount
+        }
+    }
+
+    private fun copyEcgRing(): DoubleArray {
+        val result = DoubleArray(ecgRingSize)
+        for (index in 0 until ecgRingSize) {
+            result[index] = ecgRing[(ecgRingStart + index) % windowSampleCount]
+        }
+        return result
     }
 }
 

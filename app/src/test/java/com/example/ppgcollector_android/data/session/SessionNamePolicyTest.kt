@@ -23,8 +23,33 @@ class SessionNamePolicyTest {
             CanonicalSessionIdentity("subject", 1),
             SessionNamePolicy.parseCanonical("ppg-subject-1"),
         )
+        assertEquals(
+            CanonicalSessionIdentity("subject", 1, SessionNamePrefix.MB),
+            SessionNamePolicy.parseCanonical("mb-subject-1"),
+        )
         assertEquals("PPG-subject-1", SessionNamePolicy.normalizeCanonical("ppg-subject-1"))
+        assertEquals("MB-subject-1", SessionNamePolicy.normalizeCanonical("mb-subject-1"))
         assertNull(SessionNamePolicy.parseCanonical("PPG-subject-0"))
+    }
+
+    @Test
+    fun logicalSequenceIsScopedByPrefixButFilenameIsGlobal() {
+        val root = Files.createTempDirectory("name-policy-prefix")
+        try {
+            Files.createDirectory(root.resolve("PPG-S001-1"))
+            assertTrue(SessionNamePolicy.isDuplicate("ppg-s001-1", root))
+            assertFalse(SessionNamePolicy.isDuplicate("MB-S001-1", root))
+            val metadataPath = root.resolve("PPG-S001-1").resolve("PPG-S001-1.session.json")
+            // A directory alone is not a completed logical capture.
+            assertFalse(SessionNamePolicy.isLogicalDuplicate("PPG-S001-1", root))
+            assertFalse(SessionNamePolicy.isLogicalDuplicate("MB-S001-1", root))
+            assertEquals("MB-S001-1", SessionNamePolicy.suggestedBaseNameForSubject(
+                root, "S001", SessionNamePrefix.MB,
+            ))
+            assertFalse(Files.exists(metadataPath))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     @Test

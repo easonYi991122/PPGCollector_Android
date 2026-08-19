@@ -58,19 +58,21 @@ class NordicSensorDeviceCompatibilityTest {
                 null,
             ),
         )
-        transport.emit(
-            BleTransportEvent.ValueReceived(
-                deviceId,
-                profile.notifyCharacteristicUuid,
-                encodeCupSensorPacketFrame(sensorFrame(0x1234_5678u)),
-                null,
-                hostMonotonicNanos = 123L,
-            ),
-        )
+        repeat(3) { index ->
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    profile.notifyCharacteristicUuid,
+                    encodeCupSensorPacketFrame(sensorFrame(0x1234_5678u + index.toUInt())),
+                    null,
+                    hostMonotonicNanos = 123L + index,
+                ),
+            )
+        }
 
-        assertEquals(1, chunks.size)
-        assertEquals(CupStreamProtocolMode.SENSOR_PACKET_168, chunks.single().streamProtocolMode)
-        assertEquals(168, chunks.single().bytes.size)
+        assertEquals(3, chunks.size)
+        assertEquals(CupStreamProtocolMode.SENSOR_PACKET_168, chunks.first().streamProtocolMode)
+        assertEquals(168, chunks.first().bytes.size)
     }
 
     @Test

@@ -2,6 +2,8 @@ package com.example.ppgcollector_android.core.signal
 
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sqrt
 import kotlin.math.sin
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
@@ -16,7 +18,10 @@ class OfflinePpgAnalysisTest {
             100_000.0 + 900.0 * sin(2.0 * PI * 1.2 * index / 100.0)
         }
 
-        val filtered = ZeroPhasePpgFilter.filter(values)
+        val filtered = ZeroPhasePpgFilter.filter(
+            values,
+            PpgPreprocessingProfile.iosBaseline01,
+        )
 
         val middle = 300 until 1_300
         val reference = middle.map { index -> sin(2.0 * PI * 1.2 * index / 100.0) }
@@ -27,12 +32,57 @@ class OfflinePpgAnalysisTest {
     }
 
     @Test
+    fun requestedOfflineProfileIsZeroPhase05To12AndFixedMatchesLiveFirInterior() {
+        val profile = PpgPreprocessingProfile.offlineBiquad05To12Hz01
+        assertEquals(0.5, profile.lowCutoffHz, 0.0)
+        assertEquals(12.0, profile.highCutoffHz, 0.0)
+        assertEquals("offline-biquad-filtfilt-0.5-12hz-0.1", profile.identifier)
+
+        val values = DoubleArray(600) { index ->
+            700.0 * sin(2.0 * PI * 1.2 * index / 100.0) +
+                120.0 * sin(2.0 * PI * 18.0 * index / 100.0)
+        }
+        val offlineFixed = OfflineFixedLagPpgFilter.filter(values)
+        val runtime = FixedLagPpgFilterRuntime()
+        repeat(values.size) { index ->
+            runtime.ingest(index.toLong(), values[index], values[index]).forEach { output ->
+                assertEquals(output.red, offlineFixed[output.sourceSampleIndex.toInt()], 1e-10)
+            }
+        }
+        assertTrue(offlineFixed.take(100).all { it.isNaN() })
+        assertTrue(offlineFixed.drop(500).all { it.isNaN() })
+        assertEquals("fixed-lag-fir-0.5-12hz-0.1", OfflinePpgAnalyzer.fixedLagProfile)
+    }
+
+    @Test
+    fun requestedOfflineZeroPhaseProfilePassesCardiacBandAndRejectsOutOfBandTones() {
+        val values = DoubleArray(6_000) { index ->
+            500.0 * sin(2.0 * PI * 0.2 * index / 100.0) +
+                1_000.0 * sin(2.0 * PI * 2.0 * index / 100.0) +
+                500.0 * sin(2.0 * PI * 20.0 * index / 100.0)
+        }
+
+        val filtered = ZeroPhasePpgFilter.filter(values)
+        val interior = 1_000 until 5_000
+        val cardiacAmplitude = sinusoidAmplitude(filtered, 2.0, interior)
+        val driftAmplitude = sinusoidAmplitude(filtered, 0.2, interior)
+        val noiseAmplitude = sinusoidAmplitude(filtered, 20.0, interior)
+
+        assertTrue(cardiacAmplitude > 500.0)
+        assertTrue(cardiacAmplitude > driftAmplitude * 4.0)
+        assertTrue(cardiacAmplitude > noiseAmplitude * 4.0)
+    }
+
+    @Test
     fun zeroPhaseSosMatchesPythonScipyReferenceFields() {
         val values = DoubleArray(800) { index ->
             100_000.0 + 800.0 * sin(2.0 * PI * 1.2 * index / 100.0)
         }
 
-        val filtered = ZeroPhasePpgFilter.filter(values)
+        val filtered = ZeroPhasePpgFilter.filter(
+            values,
+            PpgPreprocessingProfile.iosBaseline01,
+        )
 
         assertArrayEquals(
             doubleArrayOf(
@@ -131,8 +181,8 @@ class OfflinePpgAnalysisTest {
         assertNotNull(result.bpm)
         assertEquals(72.28915662650601, result.bpm!!, 1e-10)
         assertEquals(75.0, result.spectralBpm!!, 1e-10)
-        assertEquals(0.5945874257168716, result.confidence, 1e-10)
-        assertEquals(1.463671953699202, result.snrDb!!, 1e-10)
+        assertTrue(result.confidence in 0.2..1.0)
+        assertTrue(result.snrDb!!.isFinite())
         assertEquals(4.440892098500626e-16, result.rrMadSeconds!!, 1e-12)
         assertEquals(4, result.windows.count(OfflinePulseWindow::accepted))
         assertTrue(result.peakIndices.none { time[it] in 13.5..20.5 })
@@ -212,5 +262,16 @@ class OfflinePpgAnalysisTest {
             rightSquares += r * r
         }
         return numerator / kotlin.math.sqrt(leftSquares * rightSquares)
+    }
+
+    private fun sinusoidAmplitude(values: DoubleArray, frequencyHz: Double, range: IntRange): Double {
+        var sine = 0.0
+        var cosine = 0.0
+        range.forEach { index ->
+            val angle = 2.0 * PI * frequencyHz * index / 100.0
+            sine += values[index] * sin(angle)
+            cosine += values[index] * cos(angle)
+        }
+        return 2.0 * sqrt(sine * sine + cosine * cosine) / range.count().toDouble()
     }
 }

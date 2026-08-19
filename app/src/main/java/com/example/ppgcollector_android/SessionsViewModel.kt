@@ -21,6 +21,7 @@ import com.example.ppgcollector_android.data.session.CaptureArchiveExportService
 import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
 import com.example.ppgcollector_android.data.session.CaptureBloodPressureSeries
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
+import com.example.ppgcollector_android.data.session.CaptureSessionMetadataEditor
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -76,6 +77,8 @@ data class SessionListItemUi(
     val findings: List<String>,
     val participant: CaptureParticipantSnapshot? = null,
     val bloodPressureCount: Int = 0,
+    val systolicBp: Int? = null,
+    val diastolicBp: Int? = null,
 )
 
 data class SessionDetailUi(
@@ -89,7 +92,7 @@ data class SessionDetailUi(
     val error: String? = null,
 )
 
-enum class SessionActionKind { EXPORT, ARCHIVE_EXPORT, DELETE, RECOVER }
+enum class SessionActionKind { EXPORT, ARCHIVE_EXPORT, DELETE, RECOVER, UPDATE_BP }
 
 data class SessionActionUi(
     val kind: SessionActionKind? = null,
@@ -174,6 +177,8 @@ object SessionListItemMapper {
                 CaptureSessionRepository.expectedFiles(session.directory).bloodPressure
                     ?.let(CaptureBloodPressureSeries::scan)?.completeDataRowCount?.toInt() ?: 0
             }.getOrDefault(0),
+            systolicBp = metadata?.systolicBp,
+            diastolicBp = metadata?.diastolicBp,
         )
     }
 }
@@ -529,6 +534,32 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                 setAction(
                     SessionActionUi(
                         kind = SessionActionKind.RECOVER,
+                        error = error.message ?: error::class.simpleName,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun updateSelectedBloodPressure(systolic: Int?, diastolic: Int?) {
+        val item = _state.value.selected?.item ?: return
+        actionJob?.cancel()
+        actionJob = viewModelScope.launch {
+            setAction(SessionActionUi(kind = SessionActionKind.UPDATE_BP, isRunning = true))
+            try {
+                withContext(Dispatchers.IO) {
+                    CaptureSessionMetadataEditor.updateReferenceBloodPressure(
+                        item.directory,
+                        systolic,
+                        diastolic,
+                    )
+                }
+                refreshAndSelect(item.directory)
+                setAction(SessionActionUi(kind = SessionActionKind.UPDATE_BP, message = "参考血压已保存"))
+            } catch (error: Exception) {
+                setAction(
+                    SessionActionUi(
+                        kind = SessionActionKind.UPDATE_BP,
                         error = error.message ?: error::class.simpleName,
                     ),
                 )

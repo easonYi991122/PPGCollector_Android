@@ -5,6 +5,9 @@ import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 enum class BlePermissionGateState {
     UNKNOWN,
@@ -76,6 +79,8 @@ data class BleCoordinatorSnapshot(
     val connectionGeneration: Long,
     val activeProfile: CupBleDeviceProfile?,
     val activeStreamProtocolMode: CupStreamProtocolMode?,
+    val protocolProbePending: Boolean = false,
+    val protocolProbeTimedOut: Boolean = false,
     val isScanning: Boolean,
     val discoveredDevices: List<DiscoveredBleDevice>,
     val discoveredServiceUuids: List<String>,
@@ -118,12 +123,22 @@ class BleCoordinator(
 
     private val _snapshotFlow = MutableStateFlow(snapshot)
     val snapshotFlow: StateFlow<BleCoordinatorSnapshot> = _snapshotFlow.asStateFlow()
+    val uiSnapshotFlow: Flow<BleCoordinatorSnapshot> =
+        snapshotFlow
+            .map { value ->
+                value.copy(
+                    diagnostics = BleGattDiagnostics(),
+                    attemptDiagnostics = BleConnectionAttemptDiagnostics(),
+                )
+            }
+            .distinctUntilChanged()
 
     val previewFlow: StateFlow<BlePreviewSnapshot> = previewRuntime.snapshot
 
     private var recordingRawSink: ((BleRawNotificationChunk) -> Unit)? = null
     private var previewGeneration = snapshot.connectionGeneration
     private var previewWasActive = false
+    private var previewProtocolMode = snapshot.activeStreamProtocolMode
 
     var onRawChunk: ((BleRawNotificationChunk) -> Unit)?
         get() = recordingRawSink
@@ -193,6 +208,9 @@ class BleCoordinator(
         publish()
     }
 
+    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean =
+        owner.selectNordicProtocol(mode).also { publish() }
+
     fun refreshFreshness() {
         owner.refreshFreshness(uptimeSeconds())
         publish()
@@ -216,6 +234,7 @@ class BleCoordinator(
         val next = snapshotNow()
         val previewActive = next.phase is BleConnectionPhase.Subscribed ||
             next.phase is BleConnectionPhase.Receiving
+        val modeChanged = next.activeStreamProtocolMode != previewProtocolMode
         if (next.connectionGeneration != previewGeneration ||
             (!previewActive && previewWasActive)
         ) {
@@ -224,7 +243,14 @@ class BleCoordinator(
                 next.activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
             )
             previewGeneration = next.connectionGeneration
+        } else if (modeChanged) {
+            previewRuntime.reset(
+                next.connectionGeneration,
+                next.activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
+                clearQueuedChunks = false,
+            )
         }
+        previewProtocolMode = next.activeStreamProtocolMode
         previewWasActive = previewActive
         snapshot = next
         _snapshotFlow.value = snapshot
@@ -258,6 +284,8 @@ class BleCoordinator(
         connectionGeneration = owner.connectionGeneration,
         activeProfile = owner.activeProfile,
         activeStreamProtocolMode = owner.activeStreamProtocolMode,
+        protocolProbePending = owner.protocolProbePending,
+        protocolProbeTimedOut = owner.protocolProbeTimedOut,
         isScanning = owner.isScanning,
         discoveredDevices = owner.discoveredDevices.toList(),
         discoveredServiceUuids = owner.discoveredServiceUuids,

@@ -30,6 +30,7 @@ class LivePpgSignalRuntime(
 
     private val rawRed = DoubleArray(profile.windowSampleCount)
     private val rawIr = DoubleArray(profile.windowSampleCount)
+    private val displayEcg = DoubleArray(profile.windowSampleCount)
     private val causalRed = DoubleArray(profile.windowSampleCount)
     private val causalIr = DoubleArray(profile.windowSampleCount)
     private val displayCausalRed = DoubleArray(profile.windowSampleCount)
@@ -43,6 +44,8 @@ class LivePpgSignalRuntime(
     private val fixedLagSamples = ArrayDeque<FixedLagPpgSample>(profile.windowSampleCount)
     private var ringStart = 0
     private var ringSize = 0
+    private var ecgRingStart = 0
+    private var ecgRingSize = 0
     private var nextAcceptedSampleIndex = 0L
     private var acceptedSampleCount = 0L
     private var continuousSampleCount = 0L
@@ -129,6 +132,21 @@ class LivePpgSignalRuntime(
     fun poll(nowNanos: Long, measuredAt: Instant): LiveWaveformSnapshot? =
         publishIfDue(nowNanos, measuredAt)
 
+    /** Display-only ECG path: retain one sample per five 500 Hz ADC samples. */
+    fun ingestEcgDisplaySamples(samples: List<UInt>) {
+        samples.forEachIndexed { index, sample ->
+            if (index % 5 == 0) {
+                val writeIndex = (ecgRingStart + ecgRingSize) % profile.windowSampleCount
+                displayEcg[writeIndex] = sample.toDouble()
+                if (ecgRingSize < profile.windowSampleCount) {
+                    ecgRingSize++
+                } else {
+                    ecgRingStart = (ecgRingStart + 1) % profile.windowSampleCount
+                }
+            }
+        }
+    }
+
     fun publishNow(nowNanos: Long, measuredAt: Instant): LiveWaveformSnapshot? {
         if (ringSize == 0) return null
         publicationSequence++
@@ -192,6 +210,7 @@ class LivePpgSignalRuntime(
             measuredAt = measuredAt,
             red = copyRing(rawRed),
             ir = copyRing(rawIr),
+            ecg = copyEcg(),
             causalRed = copyRing(causalRed),
             causalIr = copyRing(causalIr),
             preprocessProfile = profile.preprocessingProfile.identifier,
@@ -251,12 +270,22 @@ class LivePpgSignalRuntime(
         fixedLagSamples.clear()
         ringStart = 0
         ringSize = 0
+        ecgRingStart = 0
+        ecgRingSize = 0
         nextAcceptedSampleIndex = nextIndex
         continuousSampleCount = 0L
         nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()
         metricEpoch = 0L
         nextPublishNanos = null
         generation++
+    }
+
+    private fun copyEcg(): DoubleArray {
+        val result = DoubleArray(ecgRingSize)
+        for (index in 0 until ecgRingSize) {
+            result[index] = displayEcg[(ecgRingStart + index) % profile.windowSampleCount]
+        }
+        return result
     }
 
 }

@@ -1,8 +1,6 @@
 package com.example.ppgcollector_android.core.signal.sqi
 
 import com.example.ppgcollector_android.core.signal.*
-import java.nio.file.Files
-import java.nio.file.Paths
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -124,13 +122,12 @@ class TemplateMatchSqiTest {
         actual.zip(expected).forEachIndexed { index, (got, want) -> assertClose("$name[$index]", got, want, tolerance) }
     }
     private fun loadFixture(): JsonValue {
-        val candidates = listOf(
-            Paths.get("AndroidMigrationPlanning/reference_sources/signal_fixtures/sqi/sqi_vectors.json"),
-            Paths.get("../AndroidMigrationPlanning/reference_sources/signal_fixtures/sqi/sqi_vectors.json"),
-        )
-        val path = candidates.firstOrNull { Files.exists(it) }
-            ?: error("SQI fixture not found from ${Paths.get("").toAbsolutePath()}")
-        return SqiJsonParser(Files.readString(path)).parse()
+        val json = javaClass.classLoader!!
+            .getResourceAsStream("signal_fixtures/sqi/sqi_vectors.json")
+            ?.bufferedReader()
+            ?.readText()
+            ?: error("SQI fixture not found on test classpath")
+        return SqiJsonParser(json).parse()
     }
 }
 

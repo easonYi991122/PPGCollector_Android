@@ -13,6 +13,7 @@ enum class CaptureStopReason(val wireValue: String) {
     SCENE_BACKGROUND("sceneBackground"),
     DEVICE_DISCONNECT("deviceDisconnect"),
     DATA_TIMEOUT("dataTimeout"),
+    DURATION_ELAPSED("durationElapsed"),
     CRASH_RECOVERY("crashRecovery"),
     WRITE_ERROR("writeError"),
     PROTOCOL_ERROR("protocolError"),
@@ -49,6 +50,7 @@ data class CaptureSessionFilesMetadata(
     val samples: String,
     val metrics: String? = null,
     val bloodPressure: String? = null,
+    val ecg: String? = null,
 )
 
 data class CaptureParticipantSnapshot(
@@ -57,9 +59,12 @@ data class CaptureParticipantSnapshot(
     val profileRevisionId: String? = null,
     val profileComplete: Boolean = false,
     val sex: String? = null,
+    val genderCode: Int? = genderCodeFor(sex.orEmpty()),
     val ageYears: Int? = null,
     val heightCm: Double? = null,
     val weightKg: Double? = null,
+    val smokingFreq: String = "",
+    val drinkingFreq: String = "",
     val additionalFields: Map<String, String> = emptyMap(),
 )
 
@@ -115,6 +120,11 @@ data class CaptureSessionMetadata(
     val canonicalSubjectId: String? = null,
     val canonicalSequence: Long? = null,
     val participant: CaptureParticipantSnapshot? = null,
+    val systolicBp: Int? = null,
+    val diastolicBp: Int? = null,
+    val plannedDurationSeconds: Int? = null,
+    val ecgSampleRateHz: Int? = null,
+    val bloodPressureUpdatedUtc: Instant? = null,
 )
 
 class CaptureSessionMetadataJsonException(message: String) :
@@ -203,6 +213,7 @@ object CaptureSessionMetadataCodec {
                 "metrics" to (metadata.files.metrics?.let(::string) ?: JsonValue.NullValue),
                 "blood_pressure" to
                     (metadata.files.bloodPressure?.let(::string) ?: JsonValue.NullValue),
+                "ecg" to (metadata.files.ecg?.let(::string) ?: JsonValue.NullValue),
             ),
             "recovery" to (metadata.recovery?.let(::toJson) ?: JsonValue.NullValue),
             "canonical_subject_id" to
@@ -211,6 +222,14 @@ object CaptureSessionMetadataCodec {
                 (metadata.canonicalSequence?.let(::number) ?: JsonValue.NullValue),
             "participant" to
                 (metadata.participant?.let(::toJson) ?: JsonValue.NullValue),
+            "sbp" to (metadata.systolicBp?.let { number(it.toLong()) } ?: JsonValue.NullValue),
+            "dbp" to (metadata.diastolicBp?.let { number(it.toLong()) } ?: JsonValue.NullValue),
+            "ecg_sample_rate" to
+                (metadata.ecgSampleRateHz?.let { number(it.toLong()) } ?: JsonValue.NullValue),
+            "bp_updated_at" to
+                (metadata.bloodPressureUpdatedUtc?.let { string(it.toString()) } ?: JsonValue.NullValue),
+            "planned_duration_s" to
+                (metadata.plannedDurationSeconds?.let { number(it.toLong()) } ?: JsonValue.NullValue),
         )
 
     private fun toJson(participant: CaptureParticipantSnapshot): JsonValue.ObjectValue =
@@ -221,9 +240,13 @@ object CaptureSessionMetadataCodec {
                 (participant.profileRevisionId?.let(::string) ?: JsonValue.NullValue),
             "profile_complete" to JsonValue.BooleanValue(participant.profileComplete),
             "sex" to (participant.sex?.let(::string) ?: JsonValue.NullValue),
+            "gender_code" to
+                (participant.genderCode?.let { number(it.toLong()) } ?: JsonValue.NullValue),
             "age_years" to (participant.ageYears?.let { number(it.toLong()) } ?: JsonValue.NullValue),
             "height_cm" to (participant.heightCm?.let(::decimal) ?: JsonValue.NullValue),
             "weight_kg" to (participant.weightKg?.let(::decimal) ?: JsonValue.NullValue),
+            "smoking_freq" to string(participant.smokingFreq),
+            "drinking_freq" to string(participant.drinkingFreq),
             "additional_fields" to JsonValue.ObjectValue(
                 participant.additionalFields.toSortedMap().mapValues { string(it.value) },
             ),
@@ -307,11 +330,18 @@ object CaptureSessionMetadataCodec {
                 samples = files.requiredString("samples"),
                 metrics = files.optionalString("metrics"),
                 bloodPressure = files.optionalString("blood_pressure"),
+                ecg = files.optionalString("ecg"),
             ),
             recovery = root.optionalObject("recovery")?.let(::fromRecoveryJson),
             canonicalSubjectId = root.optionalString("canonical_subject_id"),
             canonicalSequence = root.optionalLong("canonical_sequence"),
             participant = root.optionalObject("participant")?.let(::fromParticipantJson),
+            systolicBp = root.optionalLong("sbp")?.toIntChecked("sbp"),
+            diastolicBp = root.optionalLong("dbp")?.toIntChecked("dbp"),
+            plannedDurationSeconds = root.optionalLong("planned_duration_s")
+                ?.toIntChecked("planned_duration_s"),
+            ecgSampleRateHz = root.optionalLong("ecg_sample_rate")?.toIntChecked("ecg_sample_rate"),
+            bloodPressureUpdatedUtc = root.optionalString("bp_updated_at")?.let(Instant::parse),
         )
     }
 
@@ -325,6 +355,8 @@ object CaptureSessionMetadataCodec {
             profileRevisionId = participant.optionalString("profile_revision_id"),
             profileComplete = participant.optionalBoolean("profile_complete") ?: false,
             sex = participant.optionalString("sex"),
+            genderCode = participant.optionalLong("gender_code")?.toIntChecked("gender_code")
+                ?: genderCodeFor(participant.optionalString("sex").orEmpty()),
             ageYears = participant.optionalLong("age_years")?.let {
                 if (it !in Int.MIN_VALUE..Int.MAX_VALUE) {
                     throw CaptureSessionMetadataJsonException("age_years is out of Int range")
@@ -333,6 +365,8 @@ object CaptureSessionMetadataCodec {
             },
             heightCm = participant.optionalDouble("height_cm"),
             weightKg = participant.optionalDouble("weight_kg"),
+            smokingFreq = participant.optionalString("smoking_freq").orEmpty(),
+            drinkingFreq = participant.optionalString("drinking_freq").orEmpty(),
             additionalFields = additional,
         )
     }
@@ -405,6 +439,10 @@ object CaptureSessionMetadataCodec {
             else it.asNumber(name).toDoubleOrNull()?.takeIf(Double::isFinite)
                 ?: throw CaptureSessionMetadataJsonException("$name must be finite number")
         }
+
+    private fun Long.toIntChecked(name: String): Int = toInt().also {
+        if (toLong() != this) throw CaptureSessionMetadataJsonException("$name out of range")
+    }
 
     private fun JsonValue.ObjectValue.requiredInstant(name: String): Instant =
         field(name).asString(name).parseInstant(name)

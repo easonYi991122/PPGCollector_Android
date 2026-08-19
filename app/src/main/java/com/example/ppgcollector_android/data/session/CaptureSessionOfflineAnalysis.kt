@@ -109,9 +109,13 @@ data class CaptureSessionSignalTrace(
     val rawIr: DoubleArray,
     val filteredRed: DoubleArray,
     val filteredIr: DoubleArray,
+    val fixedLagRed: DoubleArray,
+    val fixedLagIr: DoubleArray,
     val breakIndices: IntArray,
     val replay: CupRawReplayReport,
     val preprocessProfile: String,
+    val fixedLagProfile: String,
+    val metricTimeline: List<CaptureMetricTimelinePoint> = emptyList(),
     val bloodPressureEvents: List<ManualBloodPressureEvent> = emptyList(),
 )
 
@@ -235,6 +239,10 @@ object CaptureSessionOfflineAnalysisService {
         )
         cancellationCheck()
         val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.input, cancellationCheck)
+        val fixedLag = OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.input, cancellationCheck)
+        val metricTimeline = files.metrics?.let { path ->
+            runCatching { CaptureMetricSeries.readTimeline(path) }.getOrDefault(emptyList())
+        }.orEmpty()
         val bloodPressure = files.bloodPressure?.let { path ->
             runCatching { CaptureBloodPressureSeries.read(path) }.getOrDefault(emptyList())
         }.orEmpty()
@@ -244,9 +252,13 @@ object CaptureSessionOfflineAnalysisService {
             rawIr = loaded.input.ir,
             filteredRed = filtered.red,
             filteredIr = filtered.ir,
+            fixedLagRed = fixedLag.red,
+            fixedLagIr = fixedLag.ir,
             breakIndices = loaded.input.breakIndices,
             replay = loaded.replay,
             preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
+            fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
+            metricTimeline = metricTimeline,
             bloodPressureEvents = bloodPressure,
         )
     }

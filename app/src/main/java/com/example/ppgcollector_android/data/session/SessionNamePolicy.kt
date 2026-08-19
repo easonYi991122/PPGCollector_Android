@@ -12,7 +12,19 @@ import java.util.Locale
 data class CanonicalSessionIdentity(
     val subject: String,
     val sequence: Long,
+    val prefix: SessionNamePrefix = SessionNamePrefix.PPG,
 )
+
+enum class SessionNamePrefix(val wireValue: String, val displayName: String) {
+    PPG("PPG", "指尖 PPG"),
+    MB("MB", "腕部脉搏"),
+    ;
+
+    companion object {
+        fun fromWireValue(value: String): SessionNamePrefix? =
+            entries.firstOrNull { it.wireValue.equals(value, ignoreCase = true) }
+    }
+}
 
 enum class SessionNameInvalidReason {
     EMPTY,
@@ -36,7 +48,7 @@ object SessionNamePolicy {
     const val exampleSuggestedName = "PPG-subject-seq"
     private val allowed = Regex("[A-Za-z0-9_-]{1,$maximumLength}")
     private val canonical = Regex(
-        "PPG-([A-Za-z0-9_][A-Za-z0-9_-]*)-([1-9][0-9]*)",
+        "(PPG|MB)-([A-Za-z0-9_][A-Za-z0-9_-]*)-([1-9][0-9]*)",
         RegexOption.IGNORE_CASE,
     )
     private val reserved = buildSet {
@@ -80,18 +92,81 @@ object SessionNamePolicy {
 
     fun parseCanonical(name: String): CanonicalSessionIdentity? {
         val match = canonical.matchEntire(name) ?: return null
-        val sequence = match.groupValues[2].toLongOrNull() ?: return null
+        val prefix = SessionNamePrefix.fromWireValue(match.groupValues[1]) ?: return null
+        val sequence = match.groupValues[3].toLongOrNull() ?: return null
         if (sequence < 1L) return null
-        return CanonicalSessionIdentity(match.groupValues[1], sequence)
+        return CanonicalSessionIdentity(match.groupValues[2], sequence, prefix)
     }
 
     /** Canonicalizes the prefix while preserving the user-supplied subject spelling. */
     fun normalizeCanonical(name: String): String? =
-        parseCanonical(name)?.let { identity -> "PPG-${identity.subject}-${identity.sequence}" }
+        parseCanonical(name)?.let { identity ->
+            "${identity.prefix.wireValue}-${identity.subject}-${identity.sequence}"
+        }
+
+    fun isLogicalDuplicate(
+        name: String,
+        sessionsRoot: Path,
+        excludeName: String? = null,
+    ): Boolean {
+        val identity = parseCanonical(name) ?: return false
+        if (!Files.isDirectory(sessionsRoot)) return false
+        val excluded = excludeName?.let(::duplicateKey)
+        return CaptureSessionRepository.listSessions(sessionsRoot).any { session ->
+            duplicateKey(session.baseName) != excluded &&
+                (session.metadata?.rawChunkCount ?: 0L) > 0L &&
+                parseCanonical(session.baseName) == identity
+        }
+    }
+
+    fun nextSequenceForSubject(
+        sessionsRoot: Path,
+        prefix: SessionNamePrefix,
+        subject: String,
+    ): Long {
+        if (!Files.isDirectory(sessionsRoot)) return 1L
+        return CaptureSessionRepository.listSessions(sessionsRoot)
+            .asSequence()
+            .filter { (it.metadata?.rawChunkCount ?: 0L) > 0L }
+            .mapNotNull { parseCanonical(it.baseName) }
+            .filter {
+                it.prefix == prefix &&
+                    it.subject.equals(subject, ignoreCase = true)
+            }
+            .maxOfOrNull { it.sequence }
+            ?.plus(1L)
+            ?: 1L
+    }
 
     /** Returns the next real suggestion, or an explicit example for a new install. */
-    fun suggestedBaseNameOrExample(sessionsRoot: Path): String =
-        suggestedBaseName(sessionsRoot) ?: exampleSuggestedName
+    fun suggestedBaseNameOrExample(
+        sessionsRoot: Path,
+        prefix: SessionNamePrefix = SessionNamePrefix.PPG,
+    ): String =
+        suggestedBaseNameForPrefix(sessionsRoot, prefix)
+            ?: "${prefix.wireValue}-subject-seq"
+
+    fun suggestedBaseNameForPrefix(
+        sessionsRoot: Path,
+        prefix: SessionNamePrefix,
+    ): String? {
+        if (!Files.isDirectory(sessionsRoot)) return null
+        val candidates = CaptureSessionRepository.listSessions(sessionsRoot)
+            .asSequence()
+            .filter { (it.metadata?.rawChunkCount ?: 0L) > 0L }
+            .mapNotNull { session ->
+                parseCanonical(session.baseName)?.let { identity -> session to identity }
+            }
+            .filter { it.second.prefix == prefix }
+            .toList()
+        val last = candidates.maxWithOrNull(
+            compareBy<Pair<StoredCaptureSession, CanonicalSessionIdentity>> { it.first.modifiedAt }
+                .thenBy { it.second.sequence },
+        ) ?: return null
+        val subject = last.second.subject
+        val next = nextSequenceForSubject(sessionsRoot, prefix, subject)
+        return "${prefix.wireValue}-$subject-$next"
+    }
 
     /**
      * Rebuilds the next suggestion from actual sessions. Empty reservations do
@@ -112,27 +187,25 @@ object SessionNamePolicy {
         ) ?: return null
         val subject = last.second.subject
         val subjectKey = subject.lowercase(Locale.ROOT)
+        val prefix = last.second.prefix
         val next = candidates
             .asSequence()
-            .filter { it.second.subject.lowercase(Locale.ROOT) == subjectKey }
+            .filter {
+                it.second.prefix == prefix &&
+                    it.second.subject.lowercase(Locale.ROOT) == subjectKey
+            }
             .maxOfOrNull { it.second.sequence }
             ?.plus(1L)
             ?: 1L
-        return "PPG-$subject-$next"
+        return "${prefix.wireValue}-$subject-$next"
     }
 
-    fun suggestedBaseNameForSubject(sessionsRoot: Path, subject: String): String? {
+    fun suggestedBaseNameForSubject(
+        sessionsRoot: Path,
+        subject: String,
+        prefix: SessionNamePrefix = SessionNamePrefix.PPG,
+    ): String? {
         if (subject.isEmpty() || !Regex("[A-Za-z0-9_][A-Za-z0-9_-]*").matches(subject)) return null
-        val max = if (Files.isDirectory(sessionsRoot)) {
-            CaptureSessionRepository.listSessions(sessionsRoot)
-                .asSequence()
-                .filter { (it.metadata?.rawChunkCount ?: 0L) > 0L }
-                .mapNotNull { parseCanonical(it.baseName) }
-                .filter { it.subject.lowercase(Locale.ROOT) == subject.lowercase(Locale.ROOT) }
-                .maxOfOrNull { it.sequence } ?: 0L
-        } else {
-            0L
-        }
-        return "PPG-$subject-${max + 1L}"
+        return "$prefix-$subject-${nextSequenceForSubject(sessionsRoot, prefix, subject)}"
     }
 }

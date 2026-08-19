@@ -6,6 +6,8 @@ import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import java.nio.file.Path
 
 data class CupReplaySample(
@@ -94,10 +96,11 @@ object CupRawReplayEngine {
     }
 
     private class ReplayAccumulator(
-        protocolMode: CupStreamProtocolMode,
+        private val protocolMode: CupStreamProtocolMode,
         private val onAcceptedSample: (CupReplaySample) -> Unit = {},
     ) {
         private val decoder = CupBatchStreamDecoder(protocolMode = protocolMode)
+        private val adsDecoder = Ads1292rStreamDecoder()
         private val sequenceTracker = CupFrameSequenceTracker()
         private val recentSamples = ArrayDeque<CupReplaySample>(recentSampleCapacity)
         private var rawPayloadBytes = 0L
@@ -110,7 +113,20 @@ object CupRawReplayEngine {
 
         fun receive(record: CupRawRecord) {
             rawPayloadBytes += record.chunk.size.toLong()
-            val frames = decoder.feed(record.chunk)
+            val frames = if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                adsDecoder.feed(record.chunk).map { packet ->
+                    CupBatchFrame(
+                        sequence = packet.sequenceNumber.toUByte(),
+                        sequenceNumber = packet.sequenceNumber,
+                        wireProfile = CupWireFrameProfile.SENSOR_PACKET_168,
+                        samples = packet.red.indices.map { index ->
+                            CupPpgSample(packet.red[index], packet.ir[index])
+                        },
+                    )
+                }
+            } else {
+                decoder.feed(record.chunk)
+            }
             if (!hasDecodedFrame && frames.isNotEmpty()) {
                 // Raw-first capture can attach while the shared live decoder is already
                 // inside a frame. Replay has no earlier context, so this prefix is an

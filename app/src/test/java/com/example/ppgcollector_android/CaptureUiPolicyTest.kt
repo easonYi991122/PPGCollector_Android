@@ -23,6 +23,7 @@ class CaptureUiPolicyTest {
     @Test
     fun compactFilterLabelsRemainShortAndDistinct() {
         assertEquals(listOf("RAW", "CAUSAL", "FIXED"), LiveWaveformDisplayMode.entries.map { it.compactLabel })
+        assertEquals(listOf("HR", "RR", "PI", "SQI", "BP"), liveMetricCompactOrder)
     }
 
     @Test

@@ -186,9 +186,10 @@ data class OfflinePpgAnalysis(
  * 2 s hop are channel-scored and clustered before a session result is formed.
  */
 object OfflinePpgAnalyzer {
-    const val analysisProfile = "ppg-offline-segmented-0.1"
-    const val algorithmVersion = "segmented-pulse-parity-0.3"
-    const val preprocessProfile = "scipy-sosfiltfilt-parity-0.1"
+    const val analysisProfile = "ppg-offline-segmented-0.2"
+    const val algorithmVersion = "segmented-pulse-0.5-12hz-0.4"
+    const val preprocessProfile = "offline-biquad-filtfilt-0.5-12hz-0.1"
+    const val fixedLagProfile = "fixed-lag-fir-0.5-12hz-0.1"
     const val sampleRateHz = 100.0
     const val windowSeconds = 8.0
     const val hopSeconds = 2.0
@@ -201,45 +202,51 @@ object OfflinePpgAnalyzer {
     fun filterFullSignal(
         input: OfflinePpgInput,
         cancellationCheck: () -> Unit = {},
-        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.iosBaseline01,
+        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.offlineBiquad05To12Hz01,
     ): OfflineFilteredSignal {
         val count = input.timeSeconds.size
         val red = DoubleArray(count) { Double.NaN }
         val ir = DoubleArray(count) { Double.NaN }
         if (count == 0) return OfflineFilteredSignal(red, ir)
-        val breaks = BooleanArray(count)
-        input.breakIndices.filter { it in 1 until count }.forEach { breaks[it] = true }
-        for (index in 1 until count) {
-            val delta = input.timeSeconds[index] - input.timeSeconds[index - 1]
-            if (!delta.isFinite() || delta <= 0.0 || delta > 0.015) breaks[index] = true
-        }
-
-        fun filterRun(start: Int, stop: Int) {
-            if (stop - start < 32) return
+        continuityRuns(input).forEach { range ->
+            if (range.count() < 32) return@forEach
             cancellationCheck()
             ZeroPhasePpgFilter.filter(
-                PpgDisplayTransform.rawPeakUp(input.red.copyOfRange(start, stop)),
+                PpgDisplayTransform.rawPeakUp(input.red.copyOfRange(range.first, range.last + 1)),
                 profile,
-            ).copyInto(red, start)
+            ).copyInto(red, range.first)
             cancellationCheck()
             ZeroPhasePpgFilter.filter(
-                PpgDisplayTransform.rawPeakUp(input.ir.copyOfRange(start, stop)),
+                PpgDisplayTransform.rawPeakUp(input.ir.copyOfRange(range.first, range.last + 1)),
                 profile,
-            ).copyInto(ir, start)
+            ).copyInto(ir, range.first)
         }
+        return OfflineFilteredSignal(red, ir)
+    }
 
-        var runStart = -1
-        for (index in 0..count) {
-            val valid = index < count &&
-                input.timeSeconds[index].isFinite() &&
-                input.red[index].isFinite() &&
-                input.ir[index].isFinite()
-            val boundary = index == count || !valid || (index < count && breaks[index])
-            if (boundary && runStart >= 0) {
-                filterRun(runStart, index)
-                runStart = -1
-            }
-            if (valid && runStart < 0) runStart = index
+    /** Replays the same 201-tap FIR as live FIXED and aligns output to source indices. */
+    fun filterFixedLagFullSignal(
+        input: OfflinePpgInput,
+        cancellationCheck: () -> Unit = {},
+        profile: FixedLagPpgFilterProfile = FixedLagPpgFilterProfile.bandpass05To12Hz01,
+    ): OfflineFilteredSignal {
+        val count = input.timeSeconds.size
+        val red = DoubleArray(count) { Double.NaN }
+        val ir = DoubleArray(count) { Double.NaN }
+        continuityRuns(input).forEach { range ->
+            if (range.count() < profile.tapCount) return@forEach
+            cancellationCheck()
+            OfflineFixedLagPpgFilter.filter(
+                PpgDisplayTransform.rawPeakUp(input.red.copyOfRange(range.first, range.last + 1)),
+                profile,
+                cancellationCheck,
+            ).copyInto(red, range.first)
+            cancellationCheck()
+            OfflineFixedLagPpgFilter.filter(
+                PpgDisplayTransform.rawPeakUp(input.ir.copyOfRange(range.first, range.last + 1)),
+                profile,
+                cancellationCheck,
+            ).copyInto(ir, range.first)
         }
         return OfflineFilteredSignal(red, ir)
     }
@@ -269,8 +276,14 @@ object OfflinePpgAnalyzer {
             cancellationCheck()
             val redSlice = input.red.copyOfRange(segment.startIndex, segment.stopIndex)
             val irSlice = input.ir.copyOfRange(segment.startIndex, segment.stopIndex)
-            val filteredRed = ZeroPhasePpgFilter.filter(redSlice)
-            val filteredIr = ZeroPhasePpgFilter.filter(irSlice)
+            val filteredRed = ZeroPhasePpgFilter.filter(
+                redSlice,
+                PpgPreprocessingProfile.offlineBiquad05To12Hz01,
+            )
+            val filteredIr = ZeroPhasePpgFilter.filter(
+                irSlice,
+                PpgPreprocessingProfile.offlineBiquad05To12Hz01,
+            )
             filteredRed.copyInto(redBandpass, segment.startIndex)
             filteredIr.copyInto(irBandpass, segment.startIndex)
             for (index in segment.startIndex until segment.stopIndex) segmentIds[index] = segment.index
@@ -584,6 +597,32 @@ object OfflinePpgAnalyzer {
         return null
     }
 
+    private fun continuityRuns(input: OfflinePpgInput): List<IntRange> {
+        val count = input.timeSeconds.size
+        if (count == 0) return emptyList()
+        val breaks = BooleanArray(count)
+        input.breakIndices.filter { it in 1 until count }.forEach { breaks[it] = true }
+        for (index in 1 until count) {
+            val delta = input.timeSeconds[index] - input.timeSeconds[index - 1]
+            if (!delta.isFinite() || delta <= 0.0 || delta > 0.015) breaks[index] = true
+        }
+        return buildList {
+            var runStart = -1
+            for (index in 0..count) {
+                val valid = index < count &&
+                    input.timeSeconds[index].isFinite() &&
+                    input.red[index].isFinite() &&
+                    input.ir[index].isFinite()
+                val boundary = index == count || !valid || (index < count && breaks[index])
+                if (boundary && runStart >= 0) {
+                    add(runStart until index)
+                    runStart = -1
+                }
+                if (valid && runStart < 0) runStart = index
+            }
+        }
+    }
+
     private fun selectChannel(windows: List<WindowWork>): String? = listOf("RED", "IR")
         .map { channel ->
             channel to windows.sumOf { window ->
@@ -880,7 +919,7 @@ object OfflinePpgAnalyzer {
 internal object ZeroPhasePpgFilter {
     fun filter(
         values: DoubleArray,
-        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.iosBaseline01,
+        profile: PpgPreprocessingProfile = PpgPreprocessingProfile.offlineBiquad05To12Hz01,
     ): DoubleArray {
         if (values.size < 32) return DoubleArray(values.size)
         val sections = profile.sections
@@ -953,5 +992,28 @@ internal object ZeroPhasePpgFilter {
             delay2 = section.b2 * input - section.a2 * output
             return output
         }
+    }
+}
+
+/** Offline, source-aligned form of the live symmetric FIXED FIR. */
+internal object OfflineFixedLagPpgFilter {
+    fun filter(
+        values: DoubleArray,
+        profile: FixedLagPpgFilterProfile = FixedLagPpgFilterProfile.bandpass05To12Hz01,
+        cancellationCheck: () -> Unit = {},
+    ): DoubleArray {
+        val output = DoubleArray(values.size) { Double.NaN }
+        val center = profile.rightContextSamples
+        if (values.size < profile.tapCount) return output
+        for (sourceIndex in center until values.size - center) {
+            if (sourceIndex % 4_096 == 0) cancellationCheck()
+            var value = 0.0
+            val first = sourceIndex - center
+            profile.taps.indices.forEach { tapIndex ->
+                value += profile.taps[tapIndex] * values[first + tapIndex]
+            }
+            output[sourceIndex] = value
+        }
+        return output
     }
 }

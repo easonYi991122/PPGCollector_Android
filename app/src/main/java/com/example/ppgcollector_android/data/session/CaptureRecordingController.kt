@@ -3,15 +3,20 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BleRawNotificationChunk
 import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
+import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
+import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
+import com.example.ppgcollector_android.core.signal.combo.ComboSqiDebounce
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +48,11 @@ data class CaptureAnalysisSnapshot(
 
 data class CaptureRecordingSnapshot(
     val state: CaptureRecordingState = CaptureRecordingState.IDLE,
+    val recordMode: CaptureRecordMode = CaptureRecordMode.MANUAL,
+    val plannedDurationSeconds: Int? = null,
+    val acceptedSampleCount: Long = 0L,
+    val acceptedDurationSeconds: Double = 0.0,
+    val remainingDurationSeconds: Int? = null,
     val connectionGeneration: Long? = null,
     val pendingWriteCount: Int = 0,
     val queueOverflowCount: Long = 0,
@@ -96,10 +106,13 @@ class CaptureRecordingController(
     private var queueOverflowCount = 0L
     private var lastError: String? = null
     private var finalSummary: CaptureSessionSummary? = null
+    private var acceptedSampleCount = 0L
     private var worker: Thread? = null
     private var analysisWorker: Thread? = null
     private var analysisStopRequested = false
     private var signalRuntime = LivePpgSignalRuntime()
+    private var comboSqiDebounce = ComboSqiDebounce()
+    private var comboGeneration = -1L
     private var latestAcceptedSourceSampleIndex: Long? = null
     private var nextReferenceEventIndex = 0L
     private val committedReferenceTokens = ConcurrentHashMap.newKeySet<String>()
@@ -110,6 +123,7 @@ class CaptureRecordingController(
         val frames: List<CupDecodedFrameEvent>,
         val acceptedSampleStartIndex: Long,
         val measuredAt: Instant,
+        val ecgSamples: List<UInt> = emptyList(),
     )
 
     private data class ParticipantUpdate(val participant: CaptureParticipantSnapshot?)
@@ -163,9 +177,12 @@ class CaptureRecordingController(
                 participantQueue.clear()
                 committedReferenceTokens.clear()
                 latestAcceptedSourceSampleIndex = null
+                acceptedSampleCount = 0L
                 nextReferenceEventIndex = 0L
                 analysisStopRequested = false
                 signalRuntime = LivePpgSignalRuntime()
+                comboSqiDebounce = ComboSqiDebounce()
+                comboGeneration = -1L
                 _analysisSnapshot.value = CaptureAnalysisSnapshot(
                     state = CaptureAnalysisState.WARMING,
                 )
@@ -316,6 +333,7 @@ class CaptureRecordingController(
             CaptureStopReason.SCENE_BACKGROUND,
             CaptureStopReason.DEVICE_DISCONNECT,
             CaptureStopReason.DATA_TIMEOUT,
+            CaptureStopReason.DURATION_ELAPSED,
             CaptureStopReason.UNKNOWN,
         )
     }
@@ -326,6 +344,7 @@ class CaptureRecordingController(
             activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE
         }
         val decoder = CupBatchStreamDecoder(protocolMode = protocolMode)
+        val adsDecoder = Ads1292rStreamDecoder()
         val sequenceTracker = CupFrameSequenceTracker()
         var acceptedSampleIndex = 0L
         try {
@@ -336,6 +355,68 @@ class CaptureRecordingController(
                         "queued raw chunk protocol mode changed within one recording"
                     }
                     val acceptedBefore = acceptedSampleIndex
+                    if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                        writer?.appendRawThenDerive(
+                            hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
+                            data = item.bytes,
+                            acceptedSampleStartIndex = acceptedBefore,
+                        ) { emptyList() }
+                        val adsEvents = adsDecoder.feed(item.bytes).map { packet ->
+                            writer?.appendAds1292rPacket(
+                                hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
+                                packet = packet,
+                            )
+                            acceptedSampleIndex += packet.red.size
+                            val frame = CupBatchFrame(
+                                sequence = packet.sequenceNumber.toUByte(),
+                                sequenceNumber = packet.sequenceNumber,
+                                wireProfile = CupWireFrameProfile.SENSOR_PACKET_168,
+                                samples = packet.red.indices.map { index ->
+                                    CupPpgSample(packet.red[index], packet.ir[index])
+                                },
+                            )
+                            CupDecodedFrameEvent(
+                                frame = frame,
+                                sequenceEvent = CupSequenceEvent.Continuous,
+                                isAccepted = true,
+                            ) to packet.ecg
+                        }
+                        if (adsEvents.isNotEmpty() &&
+                            !analysisQueue.offer(
+                                AnalysisInput(
+                                    frames = adsEvents.map { it.first },
+                                    acceptedSampleStartIndex = acceptedBefore,
+                                    measuredAt = Instant.now(),
+                                    ecgSamples = adsEvents.flatMap { it.second },
+                                ),
+                            )
+                        ) {
+                            _analysisSnapshot.value = _analysisSnapshot.value.copy(
+                                state = CaptureAnalysisState.FAILED,
+                                error = "analysis queue overflow; raw recording preserved",
+                            )
+                        }
+                        synchronized(lock) {
+                            acceptedSampleCount = acceptedSampleIndex
+                            val planned = writer?.configuration?.plannedDurationSeconds
+                            if (writer?.configuration?.recordMode == CaptureRecordMode.TIMED &&
+                                planned != null && acceptedSampleIndex >= planned * 100L
+                            ) {
+                                requestStopLocked(CaptureStopReason.DURATION_ELAPSED, null)
+                                publish(CaptureRecordingState.STOPPING)
+                            }
+                            publish(snapshotValue.state)
+                        }
+                        drainMetricQueue()
+                        drainBloodPressureQueue()
+                        drainParticipantQueue()
+                        synchronized(lock) {
+                            if (stopRequested && queue.isEmpty() && bloodPressureQueue.isEmpty() &&
+                                participantQueue.isEmpty() && metricQueue.isEmpty()
+                            ) break
+                        }
+                        continue
+                    }
                     var events: List<CupDecodedFrameEvent> = emptyList()
                     writer?.appendRawThenDerive(
                         hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
@@ -356,6 +437,25 @@ class CaptureRecordingController(
                     }
                     events.filter { it.isAccepted }.forEach {
                         acceptedSampleIndex += it.frame.samples.size
+                    }
+                    synchronized(lock) {
+                        acceptedSampleCount = acceptedSampleIndex
+                        publish(snapshotValue.state)
+                    }
+                    if (events.any { it.isAccepted }) {
+                        val mode = synchronized(lock) { writer?.configuration?.recordMode }
+                        val planned = synchronized(lock) {
+                            writer?.configuration?.plannedDurationSeconds
+                        }
+                        if (mode == CaptureRecordMode.TIMED &&
+                            planned != null &&
+                            acceptedSampleIndex >= planned * 100L
+                        ) {
+                            synchronized(lock) {
+                                requestStopLocked(CaptureStopReason.DURATION_ELAPSED, null)
+                                publish(CaptureRecordingState.STOPPING)
+                            }
+                        }
                     }
                     if (events.any { it.isAccepted } &&
                         !analysisQueue.offer(
@@ -405,6 +505,7 @@ class CaptureRecordingController(
                             measuredAt = input.measuredAt,
                             nowNanos = nowNanos,
                         )
+                        signalRuntime.ingestEcgDisplaySamples(input.ecgSamples)
                         val acceptedSamples = input.frames.filter { it.isAccepted }
                             .sumOf { it.frame.samples.size }
                         if (acceptedSamples > 0) {
@@ -424,11 +525,21 @@ class CaptureRecordingController(
                         )
                         if (request != null) {
                             val result = LiveMetricAnalyzer.analyze(request)
+                            val comboResult = synchronized(lock) {
+                                if (comboGeneration != signalRuntime.generation) {
+                                    comboSqiDebounce.reset()
+                                    comboGeneration = signalRuntime.generation
+                                }
+                                comboSqiDebounce.update(result.comboSqiCandidate)
+                            }
+                            val publishedResult = result.copy(
+                                snapshot = result.snapshot.copy(comboSqi = comboResult),
+                            )
                             _analysisSnapshot.value = CaptureAnalysisSnapshot(
                                 state = CaptureAnalysisState.READY,
                                 generation = request.generation,
                                 processedSampleCount = signalRuntime.continuousSamples,
-                                lastResult = result,
+                                lastResult = publishedResult,
                                 error = null,
                             )
                             val sessionId = synchronized(lock) { writer?.configuration?.sessionId }
@@ -528,6 +639,17 @@ class CaptureRecordingController(
     private fun publish(state: CaptureRecordingState) {
         val next = CaptureRecordingSnapshot(
             state = state,
+            recordMode = writer?.configuration?.recordMode ?: snapshotValue.recordMode,
+            plannedDurationSeconds =
+                writer?.configuration?.plannedDurationSeconds ?: snapshotValue.plannedDurationSeconds,
+            acceptedSampleCount = acceptedSampleCount,
+            acceptedDurationSeconds = acceptedSampleCount / 100.0,
+            remainingDurationSeconds = CaptureRecordModePolicy.remainingSeconds(
+                writer?.configuration?.recordMode ?: snapshotValue.recordMode,
+                writer?.configuration?.plannedDurationSeconds ?: snapshotValue.plannedDurationSeconds,
+                acceptedSampleCount,
+                100,
+            ),
             connectionGeneration = activeGeneration,
             pendingWriteCount = queue.size,
             queueOverflowCount = queueOverflowCount,

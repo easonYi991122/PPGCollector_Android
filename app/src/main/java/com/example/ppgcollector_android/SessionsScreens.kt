@@ -2,6 +2,7 @@ package com.example.ppgcollector_android
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -25,6 +27,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -259,6 +262,7 @@ internal fun SavedSessionDetailScreen(
     onStartAnalysis: (SessionListItemUi) -> Unit,
     onCancelAnalysis: (NioPath) -> Unit,
     onOpenFullscreenWorkbench: () -> Unit,
+    onUpdateBloodPressure: (Int?, Int?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val detail = state.selected
@@ -272,6 +276,13 @@ internal fun SavedSessionDetailScreen(
     val item = detail.item
     val artifacts = state.artifactsBySession[item.directory].orEmpty()
     val task = state.analysisTasks[item.directory]
+    var expandedSections by remember(item.directory) {
+        mutableStateOf(SessionDetailUiPolicy.defaultExpandedSections)
+    }
+    fun isExpanded(section: SessionDetailSection): Boolean = section in expandedSections
+    fun toggle(section: SessionDetailSection) {
+        expandedSections = SessionDetailUiPolicy.toggle(expandedSections, section)
+    }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
@@ -285,7 +296,13 @@ internal fun SavedSessionDetailScreen(
             )
         }
         item {
-            SectionCard("会话概览", Modifier.padding(horizontal = 16.dp)) {
+            CollapsibleSectionCard(
+                title = "会话概览",
+                summary = "${item.sampleCount ?: 0} samples · ${item.participant?.subjectId ?: "未归档"} · BP ${item.bloodPressureCount} 组",
+                expanded = isExpanded(SessionDetailSection.OVERVIEW),
+                onToggle = { toggle(SessionDetailSection.OVERVIEW) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
                 DetailGrid(
                     listOf(
                         "样本" to (item.sampleCount?.toString() ?: "—"),
@@ -304,7 +321,13 @@ internal fun SavedSessionDetailScreen(
             }
         }
         item {
-            SectionCard("版本与来源", Modifier.padding(horizontal = 16.dp)) {
+            CollapsibleSectionCard(
+                title = "版本与来源",
+                summary = "${item.preprocessProfile ?: "未知预处理"} · ${item.protocolProfile ?: "未知协议"}",
+                expanded = isExpanded(SessionDetailSection.SOURCE),
+                onToggle = { toggle(SessionDetailSection.SOURCE) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
                 LabeledValue("Session ID", item.sessionId ?: "—")
                 LabeledValue("App", item.softVersion ?: "—")
                 LabeledValue("采集算法", item.algorithmVersion ?: "—")
@@ -312,15 +335,30 @@ internal fun SavedSessionDetailScreen(
                 LabeledValue("协议", item.protocolProfile ?: "—")
                 LabeledValue("传输 profile", item.transportProfile ?: "—")
                 Text(
-                    "这些值在录制开始时固化；检查、重放与 M6 离线分析不会回写源会话。",
+                    "这些值在录制开始时固化；检查、重放与离线分析不会回写源会话。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        item.participant?.let { participant ->
-            item {
-                SectionCard("被试资料快照", Modifier.padding(horizontal = 16.dp)) {
+        item {
+            val participant = item.participant
+            CollapsibleSectionCard(
+                title = "被试资料快照",
+                summary = participant?.let {
+                    "${it.subjectId ?: "未归档"} · ${it.sex ?: "性别—"} · ${it.ageYears?.let { age -> "$age 岁" } ?: "年龄—"}"
+                } ?: "当前会话没有 participant snapshot",
+                expanded = isExpanded(SessionDetailSection.PARTICIPANT),
+                onToggle = { toggle(SessionDetailSection.PARTICIPANT) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
+                if (participant == null) {
+                    Text(
+                        "该会话未保存被试资料；源会话保持只读。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
                     LabeledValue("subject", participant.subjectId ?: "—")
                     LabeledValue("profile revision", participant.profileRevisionId ?: "—")
                     LabeledValue("性别", participant.sex ?: "—")
@@ -335,18 +373,76 @@ internal fun SavedSessionDetailScreen(
                 }
             }
         }
-        if (item.bloodPressureCount > 0) {
-            item {
-                SectionCard("参考血压", Modifier.padding(horizontal = 16.dp)) {
-                    Text(
-                        "本会话保存了 ${item.bloodPressureCount} 组手工参考血压；详情波形以 sidecar 的 dialog-open source cursor 对齐。",
-                        style = MaterialTheme.typography.bodySmall,
+        item {
+            CollapsibleSectionCard(
+                title = "参考血压",
+                summary = "手工参考 ${item.bloodPressureCount} 组 · 预测算法未接入",
+                expanded = isExpanded(SessionDetailSection.BLOOD_PRESSURE),
+                onToggle = { toggle(SessionDetailSection.BLOOD_PRESSURE) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
+                var systolicText by remember(item.directory, item.systolicBp) {
+                    mutableStateOf(item.systolicBp?.toString().orEmpty())
+                }
+                var diastolicText by remember(item.directory, item.diastolicBp) {
+                    mutableStateOf(item.diastolicBp?.toString().orEmpty())
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = systolicText,
+                        onValueChange = { systolicText = it.filter(Char::isDigit) },
+                        label = { Text("SBP") },
+                        modifier = Modifier.weight(1f),
                     )
+                    OutlinedTextField(
+                        value = diastolicText,
+                        onValueChange = { diastolicText = it.filter(Char::isDigit) },
+                        label = { Text("DBP") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Button(
+                    onClick = {
+                        onUpdateBloodPressure(
+                            systolicText.toIntOrNull(),
+                            diastolicText.toIntOrNull(),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存会话级参考血压") }
+                when {
+                    detail.signal != null -> ReferenceBloodPressureComparisonPanel(
+                        trace = detail.signal,
+                        artifact = artifacts.firstOrNull(),
+                    )
+                    detail.isLoadingSignal -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Text("正在加载 PPG、参考 BP 与 1 Hz 对齐时间轴…")
+                    }
+                    detail.signalError != null -> StatusMessage("时间轴加载失败：${detail.signalError}", isError = true)
+                    else -> Text("当前 raw 没有可接受的完整样本。", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
         item {
-            SectionCard("完整性复核", Modifier.padding(horizontal = 16.dp)) {
+            val inspectionSummary = when {
+                detail.isInspecting -> "正在检查 raw / CSV / metadata"
+                detail.error != null -> "检查失败：${detail.error}"
+                detail.inspection == null -> "等待只读检查结果"
+                detail.inspection.findings.any { it.severity == CaptureInspectionSeverity.ERROR } -> "发现结构或计数错误"
+                detail.inspection.findings.isNotEmpty() -> "计数一致 · 有边界提示"
+                else -> "raw、CSV 与 metadata 一致"
+            }
+            CollapsibleSectionCard(
+                title = "完整性复核",
+                summary = inspectionSummary,
+                expanded = isExpanded(SessionDetailSection.INTEGRITY),
+                onToggle = { toggle(SessionDetailSection.INTEGRITY) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
                 when {
                     detail.isInspecting -> {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -382,7 +478,15 @@ internal fun SavedSessionDetailScreen(
             }
         }
         item {
-            SectionCard("raw 重放波形", Modifier.padding(horizontal = 16.dp)) {
+            CollapsibleSectionCard(
+                title = "波形重放",
+                summary = detail.signal?.let {
+                    "${it.timeSeconds.size} 点 · RAW / ZERO / FIXED 0.5–12 Hz"
+                } ?: if (detail.isLoadingSignal) "正在加载完整 signal" else "暂无可重放 signal",
+                expanded = isExpanded(SessionDetailSection.REPLAY),
+                onToggle = { toggle(SessionDetailSection.REPLAY) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
                 when {
                     detail.isLoadingSignal -> {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -408,11 +512,19 @@ internal fun SavedSessionDetailScreen(
                 onCancel = { onCancelAnalysis(item.directory) },
                 signal = detail.signal,
                 onOpenFullscreenWorkbench = onOpenFullscreenWorkbench,
+                expanded = isExpanded(SessionDetailSection.ANALYSIS),
+                onToggleExpanded = { toggle(SessionDetailSection.ANALYSIS) },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
         item {
-            SectionCard("导出与恢复", Modifier.padding(horizontal = 16.dp)) {
+            CollapsibleSectionCard(
+                title = "导出与恢复",
+                summary = if (item.recoveryCandidate) "可导出 · 可创建恢复副本" else "只读源会话 ZIP 导出",
+                expanded = isExpanded(SessionDetailSection.EXPORT),
+                onToggle = { toggle(SessionDetailSection.EXPORT) },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            ) {
                 Button(
                     onClick = { onRequestExport(item) },
                     enabled = !state.action.isRunning,
@@ -466,8 +578,7 @@ private fun ReplaySummary(replay: CupRawReplayReport) {
     )
 }
 
-private enum class AnalysisPage { OVERVIEW, WORKBENCH, HISTORY }
-private enum class WorkbenchStage { DIAGNOSTICS, PPG, SPECTRUM, CYCLE }
+private enum class AnalysisSection { SUMMARY, SIGNAL, SPECTRUM, CYCLE, DIAGNOSTICS }
 
 @Composable
 private fun AnalysisWorkbenchCard(
@@ -478,15 +589,31 @@ private fun AnalysisWorkbenchCard(
     onCancel: () -> Unit,
     signal: com.example.ppgcollector_android.data.session.CaptureSessionSignalTrace?,
     onOpenFullscreenWorkbench: () -> Unit,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var page by remember(item.directory) { mutableStateOf(AnalysisPage.OVERVIEW) }
-    var stage by remember(item.directory) { mutableStateOf(WorkbenchStage.DIAGNOSTICS) }
+    var section by remember(item.directory) { mutableStateOf(AnalysisSection.SUMMARY) }
     var selectedPath by remember(artifacts) { mutableStateOf(artifacts.firstOrNull()?.path) }
     val artifact = artifacts.firstOrNull { it.path == selectedPath } ?: artifacts.firstOrNull()
-    SectionCard("M6 离线分析", modifier) {
+    val summary = when (task?.status) {
+        SessionAnalysisTaskStatus.RUNNING -> "分析运行中 · ${task.progress?.let { "${(it.fractionCompleted * 100).toInt()}%" } ?: "准备中"}"
+        SessionAnalysisTaskStatus.FAILED -> "分析失败 · ${task.error ?: "未知原因"}"
+        else -> if (artifact == null) {
+            "尚无结果 · 可生成 0.5–12 Hz ZERO / FIXED"
+        } else {
+            "${artifacts.size} 个版本化结果 · ${artifact.report.preprocessProfile}"
+        }
+    }
+    CollapsibleSectionCard(
+        title = "离线分析",
+        summary = summary,
+        expanded = expanded,
+        onToggle = onToggleExpanded,
+        modifier = modifier,
+    ) {
         Text(
-            "从 raw 重放生成独立 JSON：稳定段、8 s / 2 s 窗口、频谱、峰与平均周期。",
+            "从 raw 重放生成独立 JSON：稳定段、8 s / 2 s 窗口、0.5–12 Hz ZERO、频谱、峰与平均周期。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -527,70 +654,50 @@ private fun AnalysisWorkbenchCard(
         }
         if (artifact == null) {
             Text("尚无分析结果。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            return@SectionCard
+            return@CollapsibleSectionCard
         }
-        SegmentedControls(
-            values = AnalysisPage.entries,
-            selected = page,
-            label = {
-                when (it) {
-                    AnalysisPage.OVERVIEW -> "概览"
-                    AnalysisPage.WORKBENCH -> "工作台"
-                    AnalysisPage.HISTORY -> "历史 ${artifacts.size}"
-                }
-            },
-            onSelect = { page = it },
-        )
-        when (page) {
-            AnalysisPage.OVERVIEW -> AnalysisOverview(artifact)
-            AnalysisPage.WORKBENCH -> {
-                SegmentedControls(
-                    values = WorkbenchStage.entries,
-                    selected = stage,
-                    label = {
-                        when (it) {
-                            WorkbenchStage.DIAGNOSTICS -> "诊断"
-                            WorkbenchStage.PPG -> "PPG"
-                            WorkbenchStage.SPECTRUM -> "频谱"
-                            WorkbenchStage.CYCLE -> "周期"
-                        }
-                    },
-                    onSelect = { stage = it },
-                )
-                when (stage) {
-                    WorkbenchStage.DIAGNOSTICS -> AnalysisDiagnostics(artifact)
-                    WorkbenchStage.PPG -> AnalysisPpg(artifact, signal)
-                    WorkbenchStage.SPECTRUM -> AnalysisSpectrum(artifact)
-                    WorkbenchStage.CYCLE -> AnalysisCycle(artifact)
-                }
-            }
-            AnalysisPage.HISTORY -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                artifacts.forEach { historyArtifact ->
-                    Card(
+        if (SessionDetailUiPolicy.showsArtifactSelector(artifacts.size)) {
+            Text("分析结果", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                artifacts.forEachIndexed { index, historyArtifact ->
+                    FilledTonalButton(
                         onClick = { selectedPath = historyArtifact.path },
-                        colors = CardDefaults.cardColors(
+                        colors = ButtonDefaults.filledTonalButtonColors(
                             containerColor = if (historyArtifact.path == artifact.path) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                MaterialTheme.colorScheme.surfaceVariant
                             },
                         ),
                     ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(historyArtifact.path.fileName.toString(), style = MaterialTheme.typography.labelLarge)
-                            Text(
-                                "${historyArtifact.report.analysisProfile} · ${formatInstant(historyArtifact.report.endedUtc)}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            Text(
-                                "${historyArtifact.report.metrics.acceptedWindowCount}/${historyArtifact.report.metrics.windowCount} 接受窗口 · " +
-                                    bpmText(historyArtifact.report.metrics.heartRateBpm),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                        Text("结果 ${index + 1} · ${formatInstant(historyArtifact.report.endedUtc)}")
                     }
                 }
             }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            AnalysisSection.entries.forEach { value ->
+                FilledTonalButton(
+                    onClick = { section = value },
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (value == section) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                ) { Text(analysisSectionLabel(value)) }
+            }
+        }
+        when (section) {
+            AnalysisSection.SUMMARY -> AnalysisOverview(artifact)
+            AnalysisSection.SIGNAL -> AnalysisPpg(artifact, signal)
+            AnalysisSection.SPECTRUM -> AnalysisSpectrum(artifact)
+            AnalysisSection.CYCLE -> AnalysisCycle(artifact)
+            AnalysisSection.DIAGNOSTICS -> AnalysisDiagnostics(artifact)
         }
         Text(
             "analysis_profile=${artifact.report.analysisProfile} · ${artifact.report.preprocessProfile}。" +
@@ -599,6 +706,14 @@ private fun AnalysisWorkbenchCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+private fun analysisSectionLabel(value: AnalysisSection): String = when (value) {
+    AnalysisSection.SUMMARY -> "摘要"
+    AnalysisSection.SIGNAL -> "信号与指标"
+    AnalysisSection.SPECTRUM -> "频谱"
+    AnalysisSection.CYCLE -> "周期"
+    AnalysisSection.DIAGNOSTICS -> "诊断"
 }
 
 @Composable
@@ -705,7 +820,7 @@ internal fun SessionComparisonScreen(
     ) {
         item { PageHeader("双会话对比", "最新版本化结果 · 原始幅值与归一化语义分离", onBack) }
         if (candidates.size < 2) {
-            item { EmptyState("至少需要两个分析会话", "先分别进入两个会话生成 M6 离线分析。") }
+            item { EmptyState("至少需要两个分析会话", "先分别进入两个会话生成离线分析。") }
             return@LazyColumn
         }
         item {
@@ -909,6 +1024,52 @@ private fun SectionCard(
 }
 
 @Composable
+private fun CollapsibleSectionCard(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth().semantics {
+            stateDescription = if (expanded) "已展开" else "已收起"
+        },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                    )
+                }
+                FilledTonalButton(onClick = onToggle) {
+                    Text(if (expanded) "收起" else "展开")
+                }
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                content()
+            }
+        }
+    }
+}
+
+@Composable
 private fun NoticeCard(message: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1000,28 +1161,6 @@ private fun AnalysisMetric(label: String, value: String, modifier: Modifier = Mo
         Column(Modifier.padding(10.dp)) {
             Text(label, style = MaterialTheme.typography.labelSmall)
             Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-    }
-}
-
-@Composable
-private fun <T> SegmentedControls(
-    values: List<T>,
-    selected: T,
-    label: (T) -> String,
-    onSelect: (T) -> Unit,
-) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        values.forEach { value ->
-            FilledTonalButton(
-                onClick = { onSelect(value) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = if (value == selected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                ),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-            ) { Text(label(value), style = MaterialTheme.typography.labelMedium) }
         }
     }
 }

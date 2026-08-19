@@ -35,6 +35,7 @@ import com.example.ppgcollector_android.data.session.CaptureStopReason
 import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
 import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
 import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
+import com.example.ppgcollector_android.data.session.CaptureRecordMode
 import java.nio.file.Files
 import java.time.Instant
 import java.util.UUID
@@ -225,6 +226,15 @@ class CaptureForegroundService : Service() {
                     notifyCharacteristicUuid = profile.notifyCharacteristicUuid,
                 ),
                 participant = participantFromIntent(intent),
+                systolicBp = intent.getIntExtra(EXTRA_SBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+                diastolicBp = intent.getIntExtra(EXTRA_DBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+                recordMode = intent.getStringExtra(EXTRA_RECORD_MODE)
+                    ?.let { runCatching { CaptureRecordMode.valueOf(it) }.getOrNull() }
+                    ?: CaptureRecordMode.MANUAL,
+                plannedDurationSeconds = intent.getIntExtra(
+                    EXTRA_PLANNED_DURATION_SECONDS,
+                    Int.MIN_VALUE,
+                ).takeIf { it != Int.MIN_VALUE },
             ),
             phase = phase,
             freshness = snapshot.freshness,
@@ -294,9 +304,16 @@ class CaptureForegroundService : Service() {
         const val EXTRA_PARTICIPANT_REVISION = "capture_participant_revision"
         const val EXTRA_PARTICIPANT_COMPLETE = "capture_participant_complete"
         const val EXTRA_PARTICIPANT_SEX = "capture_participant_sex"
+        const val EXTRA_PARTICIPANT_GENDER_CODE = "capture_participant_gender_code"
         const val EXTRA_PARTICIPANT_AGE = "capture_participant_age"
         const val EXTRA_PARTICIPANT_HEIGHT = "capture_participant_height"
         const val EXTRA_PARTICIPANT_WEIGHT = "capture_participant_weight"
+        const val EXTRA_PARTICIPANT_SMOKING = "capture_participant_smoking"
+        const val EXTRA_PARTICIPANT_DRINKING = "capture_participant_drinking"
+        const val EXTRA_SBP = "capture_sbp"
+        const val EXTRA_DBP = "capture_dbp"
+        const val EXTRA_RECORD_MODE = "capture_record_mode"
+        const val EXTRA_PLANNED_DURATION_SECONDS = "capture_planned_duration_seconds"
         const val EXTRA_PARTICIPANT_KEYS = "capture_participant_keys"
         const val EXTRA_PARTICIPANT_VALUES = "capture_participant_values"
         const val NOTIFICATION_CHANNEL_ID = "capture_recording"
@@ -309,11 +326,19 @@ class CaptureForegroundService : Service() {
             sessionName: String,
             deviceName: String? = null,
             participant: CaptureParticipantSnapshot? = null,
+            systolicBp: Int? = null,
+            diastolicBp: Int? = null,
+            recordMode: CaptureRecordMode = CaptureRecordMode.MANUAL,
+            plannedDurationSeconds: Int? = null,
         ): Intent =
             Intent(context, CaptureForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SESSION_NAME, sessionName)
                 if (deviceName != null) putExtra(EXTRA_DEVICE_NAME, deviceName)
+                systolicBp?.let { putExtra(EXTRA_SBP, it) }
+                diastolicBp?.let { putExtra(EXTRA_DBP, it) }
+                putExtra(EXTRA_RECORD_MODE, recordMode.name)
+                plannedDurationSeconds?.let { putExtra(EXTRA_PLANNED_DURATION_SECONDS, it) }
                 if (participant != null) {
                     putExtra(EXTRA_PARTICIPANT_PRESENT, true)
                     participant.subjectId?.let { putExtra(EXTRA_PARTICIPANT_SUBJECT, it) }
@@ -321,9 +346,12 @@ class CaptureForegroundService : Service() {
                     participant.profileRevisionId?.let { putExtra(EXTRA_PARTICIPANT_REVISION, it) }
                     putExtra(EXTRA_PARTICIPANT_COMPLETE, participant.profileComplete)
                     participant.sex?.let { putExtra(EXTRA_PARTICIPANT_SEX, it) }
+                    participant.genderCode?.let { putExtra(EXTRA_PARTICIPANT_GENDER_CODE, it) }
                     participant.ageYears?.let { putExtra(EXTRA_PARTICIPANT_AGE, it) }
                     participant.heightCm?.let { putExtra(EXTRA_PARTICIPANT_HEIGHT, it) }
                     participant.weightKg?.let { putExtra(EXTRA_PARTICIPANT_WEIGHT, it) }
+                    putExtra(EXTRA_PARTICIPANT_SMOKING, participant.smokingFreq)
+                    putExtra(EXTRA_PARTICIPANT_DRINKING, participant.drinkingFreq)
                     putStringArrayListExtra(EXTRA_PARTICIPANT_KEYS, ArrayList(participant.additionalFields.keys))
                     putStringArrayListExtra(EXTRA_PARTICIPANT_VALUES, ArrayList(participant.additionalFields.values))
                 }
@@ -352,9 +380,13 @@ class CaptureForegroundService : Service() {
             profileRevisionId = intent.getStringExtra(EXTRA_PARTICIPANT_REVISION),
             profileComplete = intent.getBooleanExtra(EXTRA_PARTICIPANT_COMPLETE, false),
             sex = intent.getStringExtra(EXTRA_PARTICIPANT_SEX),
+            genderCode = intent.getIntExtra(EXTRA_PARTICIPANT_GENDER_CODE, Int.MIN_VALUE)
+                .takeIf { it != Int.MIN_VALUE },
             ageYears = age,
             heightCm = height,
             weightKg = weight,
+            smokingFreq = intent.getStringExtra(EXTRA_PARTICIPANT_SMOKING).orEmpty(),
+            drinkingFreq = intent.getStringExtra(EXTRA_PARTICIPANT_DRINKING).orEmpty(),
             additionalFields = additional,
         )
     }

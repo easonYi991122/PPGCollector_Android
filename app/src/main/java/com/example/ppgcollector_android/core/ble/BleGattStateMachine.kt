@@ -1,6 +1,7 @@
 package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.protocol.NordicWireProbe
 import java.time.Instant
 
 data class BleRawNotificationChunk(
@@ -62,6 +63,10 @@ class CupBleGattStateMachine(
         private set
     var activeStreamProtocolMode: CupStreamProtocolMode? = null
         private set
+    var protocolProbePending: Boolean = false
+        private set
+    var protocolProbeTimedOut: Boolean = false
+        private set
     var discoveredServiceUuids: List<String> = emptyList()
         private set
     var discoveredCharacteristics: List<BleCharacteristicDiagnostic> = emptyList()
@@ -78,6 +83,9 @@ class CupBleGattStateMachine(
     private var notifyCharacteristicUuid: String? = null
     private var controlCharacteristicUuid: String? = null
     private var activeDeadline: BleConnectionDeadline? = null
+    private var nordicWireProbe: NordicWireProbe? = null
+    private val pendingNordicChunks = ArrayList<BleRawNotificationChunk>()
+    private var protocolProbeStartedAt: Double? = null
 
     init {
         transport.eventHandler = { event ->
@@ -112,6 +120,11 @@ class CupBleGattStateMachine(
         activeDeviceId = deviceId
         activeDeviceName = discovered.name
         activeStreamProtocolMode = discovered.streamProtocolMode
+        nordicWireProbe = if (discovered.name == "Nordic_UART_Service") NordicWireProbe() else null
+        protocolProbePending = nordicWireProbe != null
+        protocolProbeTimedOut = false
+        protocolProbeStartedAt = null
+        pendingNordicChunks.clear()
         activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
@@ -266,6 +279,8 @@ class CupBleGattStateMachine(
         cancelDeadline()
         activeDeviceId = null
         activeDeviceName = null
+        nordicWireProbe = null
+        pendingNordicChunks.clear()
         activeStreamProtocolMode = null
         phase = BleConnectionPhase.Failed(message ?: "无法连接设备。")
         lastError = phase.let { (it as BleConnectionPhase.Failed).message }
@@ -414,6 +429,36 @@ class CupBleGattStateMachine(
             receivedNotificationCount = diagnostics.receivedNotificationCount + 1,
             rawChunkCount = diagnostics.rawChunkCount + 1,
         )
+        if (nordicWireProbe != null && activeStreamProtocolMode == CupStreamProtocolMode.SENSOR_PACKET_168) {
+            if (protocolProbeStartedAt == null) protocolProbeStartedAt = now
+            if (now - protocolProbeStartedAt!! >= 2.0) protocolProbeTimedOut = true
+            pendingNordicChunks += BleRawNotificationChunk(
+                connectionGeneration = connectionGeneration,
+                hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
+                bytes = data.copyOf(),
+                streamProtocolMode = CupStreamProtocolMode.SENSOR_PACKET_168,
+            )
+            val probe = nordicWireProbe!!.feed(data)
+            val locked = probe.locked
+            if (locked == null) {
+                freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
+                phase = BleConnectionPhase.Receiving(event.deviceId)
+                return
+            }
+            activeStreamProtocolMode = locked
+            protocolProbePending = false
+            protocolProbeTimedOut = false
+            val replay = pendingNordicChunks.toList()
+            pendingNordicChunks.clear()
+            replay.forEach { chunk ->
+                onRawChunk?.invoke(chunk.copy(streamProtocolMode = locked))
+            }
+            nordicWireProbe = null
+            phase = BleConnectionPhase.Receiving(event.deviceId)
+            freshnessTracker.start(now)
+            freshness = freshnessTracker.freshness(now)
+            return
+        }
         onRawChunk?.invoke(
             BleRawNotificationChunk(
                 connectionGeneration = connectionGeneration,
@@ -425,6 +470,23 @@ class CupBleGattStateMachine(
         )
         phase = BleConnectionPhase.Receiving(event.deviceId)
         refreshFreshness(now)
+    }
+
+    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean {
+        if (activeDeviceName != "Nordic_UART_Service" ||
+            mode !in setOf(CupStreamProtocolMode.ADS1292R_120, CupStreamProtocolMode.SENSOR_PACKET_168)
+        ) return false
+        val probe = NordicWireProbe(framesToLock = 1)
+        pendingNordicChunks.forEach { probe.feed(it.bytes) }
+        if (probe.result.locked != mode) return false
+        activeStreamProtocolMode = mode
+        nordicWireProbe = null
+        protocolProbePending = false
+        protocolProbeTimedOut = false
+        val replay = pendingNordicChunks.toList()
+        pendingNordicChunks.clear()
+        replay.forEach { onRawChunk?.invoke(it.copy(streamProtocolMode = mode)) }
+        return true
     }
 
     private fun accepts(deviceId: String, expected: BleConnectionPhase): Boolean {
