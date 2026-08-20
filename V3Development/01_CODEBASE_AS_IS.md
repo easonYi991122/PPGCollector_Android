@@ -205,3 +205,10 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - 普通 sequence gap 会重置指标预处理、HR/SQI/Combo warmup并保留 segment marker，但不会清空 display causal/fixed 的有界显示状态。FIXED 在初始右侧上下文 warmup 时可先选择，准备完成自动切换；fixed 的断点按其延迟后的 source cursor 映射。
 - ECG wire/CSV 继续保留需求定义的原始 uint32。显示新增有状态 5:1 boxcar（500 Hz 每五点均值到 100 Hz），跨 BLE chunk 保持相位；显示点不会超出对应五个 raw 输入的最小/最大值。若同一时间的 `_ecg.csv` 已含尖峰，应转查开发板/ADS1292R 前端。
 - R7 完整门禁为 204 JVM tests、0 failure/skip，lint 0 error；Debug、AndroidTest、Release 与 release privacy/lifecycle/BLE contracts 均成功。真实设备上的帧时序、主观滚动流畅度和 ECG CSV 对点仍待测。
+
+## R7 后代码结构审计（2026-08-20）
+
+- `app/src/main/java` 共 76 个 Kotlin 文件、约 2.14 万行；`core/ble`、`core/protocol`、`core/signal`、`data/session` 的分包边界与当前项目规模相称。短文件主要承载单一协议、策略或文件契约，不适合为了减少文件数量而合并。
+- 明确的维护问题是采集页单文件过大而不是文件过多：`LiveCaptureScreen.kt` 原有 1287 行，同时承担页面编排、连接/波形区和完整录制表单，并保留一套无调用的旧表单实现。
+- 录制表单及输入辅助组件已移到 `CaptureSetupComponents.kt`，旧表单副本已删除；`LiveCaptureScreen.kt` 收敛到约 638 行，只保留页面编排、连接/实时波形和录制操作栏。调用参数、Compose key、状态所有权及 UI 文案均未改变。
+- 其余超千行文件集中在离线工作台、保存会话界面和离线分析器，各自仍是单一功能域；本次不做跨包搬迁或为了行数继续拆分，避免制造只转发一层的碎片文件。后续只有在这些功能发生实质开发时再按屏幕/算法阶段拆分。

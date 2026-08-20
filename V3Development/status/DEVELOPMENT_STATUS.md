@@ -18,6 +18,12 @@
 - `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；204 JVM tests、0 failure、0 skip，lint 0 error，Debug/AndroidTest/Release 构建和 release privacy/lifecycle/BLE contract 均通过。
 - 未执行真机与 Macrobenchmark。仍需真机复验：冷启动/未扫描滚动、记录表单首次出现、连续与带 gap 的 RAW/CAUSAL/FIXED、ECG 屏幕尖峰和 `_ecg.csv` 同时间点对照。
 
+## R7 后结构整理
+
+- 项目主代码规模为 76 个 Kotlin 文件、约 2.14 万行，现有按 BLE、协议、信号和会话数据分包的粒度合理；未做批量合并或跨包搬迁。
+- 将录制设置表单及输入辅助组件从 1287 行的 `LiveCaptureScreen.kt` 移到 `CaptureSetupComponents.kt`，并删除无调用的 `LegacyCaptureSetupCard`；采集页主文件降至约 638 行，运行时状态和 UI 调用契约不变。
+- `:app:compileDebugKotlin` 通过；完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 门禁通过，包含 Release 隐私、生命周期与 BLE transport contracts。
+
 ## R6 本轮落地
 
 - Android BLE transport 由应用创建专用 `HandlerThread`，Coordinator 用单一 owner lock 串行化平台事件、控制操作和 preview freshness；`ValueReceived` 不再把逐包诊断推回 Compose。Activity 不可见时 preview worker/clock 停止，录制 raw sink 仍独立接收。
