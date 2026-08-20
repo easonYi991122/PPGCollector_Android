@@ -24,6 +24,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
 import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
+import com.example.ppgcollector_android.data.session.bloodPressureValidationError
 import java.time.Instant
 
 @Composable
@@ -36,7 +37,6 @@ internal fun ManualBloodPressureDialog(
     var systolic by rememberSaveable { mutableStateOf("") }
     var diastolic by rememberSaveable { mutableStateOf("") }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
-    var unusualConfirmed by rememberSaveable { mutableStateOf(false) }
     val diastolicFocus = androidx.compose.runtime.remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     AlertDialog(
@@ -53,7 +53,6 @@ internal fun ManualBloodPressureDialog(
                     value = systolic,
                     onValueChange = {
                         systolic = it.filter(Char::isDigit)
-                        unusualConfirmed = false
                         error = null
                     },
                     label = { Text("收缩压 mmHg") },
@@ -69,7 +68,6 @@ internal fun ManualBloodPressureDialog(
                     value = diastolic,
                     onValueChange = {
                         diastolic = it.filter(Char::isDigit)
-                        unusualConfirmed = false
                         error = null
                     },
                     label = { Text("舒张压 mmHg") },
@@ -81,23 +79,22 @@ internal fun ManualBloodPressureDialog(
                     keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                     modifier = Modifier.fillMaxWidth().focusRequester(diastolicFocus),
                 )
-                error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+                val inlineError = bloodPressureValidationError(systolic, diastolic)
+                (error ?: inlineError)?.let {
+                    Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val sbp = systolic.toIntOrNull()
-                val dbp = diastolic.toIntOrNull()
-                when {
-                    sbp == null || dbp == null || sbp <= 0 || dbp <= 0 ->
-                        error = "请输入正整数血压"
-                    sbp !in 20..300 || dbp !in 10..250 ->
-                        error = "数值超出技术范围，请检查"
-                    sbp <= dbp && !unusualConfirmed -> {
-                        unusualConfirmed = true
-                        error = "收缩压通常应高于舒张压；再次点击“存储”确认原始输入"
-                    }
-                    else -> {
+            val sbp = systolic.toIntOrNull()
+            val dbp = diastolic.toIntOrNull()
+            val validationError = bloodPressureValidationError(systolic, diastolic)
+            TextButton(
+                enabled = sbp != null && dbp != null && validationError == null,
+                onClick = {
+                    if (sbp == null || dbp == null || validationError != null) {
+                        error = validationError ?: "请输入正整数血压"
+                    } else {
                         val accepted = onSave(
                             ManualBloodPressureEvent(
                                 reference = reference,
@@ -108,8 +105,8 @@ internal fun ManualBloodPressureDialog(
                         )
                         if (accepted) onDismiss() else error = "当前录制已结束，未保存"
                     }
-                }
-            }) { Text("存储") }
+                },
+            ) { Text("存储") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

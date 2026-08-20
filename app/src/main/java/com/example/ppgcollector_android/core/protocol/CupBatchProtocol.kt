@@ -55,10 +55,12 @@ data class CupBatchFrame(
     init {
         require(
             samples.size == CupBatchProtocolV1.samplesPerFrame ||
-                samples.size == CupBatchProtocolV1.legacySamplesPerFrame,
+                samples.size == CupBatchProtocolV1.legacySamplesPerFrame ||
+                samples.size == Ads1292rPacketProtocol.ppgSamplesPerFrame,
         ) {
-            "expected ${CupBatchProtocolV1.samplesPerFrame} current or " +
-                "${CupBatchProtocolV1.legacySamplesPerFrame} legacy samples, got ${samples.size}"
+            "expected ${CupBatchProtocolV1.samplesPerFrame} current, " +
+                "${CupBatchProtocolV1.legacySamplesPerFrame} legacy, or " +
+                "${Ads1292rPacketProtocol.ppgSamplesPerFrame} ads1292r PPG samples, got ${samples.size}"
         }
     }
 

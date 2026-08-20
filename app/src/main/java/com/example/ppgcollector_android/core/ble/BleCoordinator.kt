@@ -81,6 +81,7 @@ data class BleCoordinatorSnapshot(
     val activeStreamProtocolMode: CupStreamProtocolMode?,
     val protocolProbePending: Boolean = false,
     val protocolProbeTimedOut: Boolean = false,
+    val advertisedName: String? = null,
     val isScanning: Boolean,
     val discoveredDevices: List<DiscoveredBleDevice>,
     val discoveredServiceUuids: List<String>,
@@ -106,6 +107,8 @@ class BleCoordinator(
     private val ownerDispatcher: ((() -> Unit) -> Unit) = { action -> action() },
     profiles: List<CupBleDeviceProfile> = CupBleDeviceProfile.supportedBringUpProfiles,
 ) : AutoCloseable {
+    private val ownerLock = Any()
+    private var closed = false
     private val permissions = BlePermissionResultSeam(apiLevel)
     private val owner = CupBleGattStateMachine(
         transport = transport,
@@ -117,7 +120,10 @@ class BleCoordinator(
         onAcceptedFrame = ::handlePreviewAcceptedFrame,
         onClockTick = ::handlePreviewClockTick,
     )
+    private var copiedDiscoveredDevices: List<DiscoveredBleDevice> = emptyList()
+    private var copiedDiscoveredDevicesEpoch: Long = Long.MIN_VALUE
 
+    @Volatile
     var snapshot: BleCoordinatorSnapshot = snapshotNow()
         private set
 
@@ -135,10 +141,15 @@ class BleCoordinator(
 
     val previewFlow: StateFlow<BlePreviewSnapshot> = previewRuntime.snapshot
 
+    /** Debug/test-only counters; never collected by the root Compose tree. */
+    val previewDiagnostics: BlePreviewRuntimeDiagnostics
+        get() = previewRuntime.diagnostics()
+
     private var recordingRawSink: ((BleRawNotificationChunk) -> Unit)? = null
     private var previewGeneration = snapshot.connectionGeneration
     private var previewWasActive = false
     private var previewProtocolMode = snapshot.activeStreamProtocolMode
+    private var previewUiActive = true
 
     var onRawChunk: ((BleRawNotificationChunk) -> Unit)?
         get() = recordingRawSink
@@ -150,84 +161,143 @@ class BleCoordinator(
         // The coordinator is the sole event sink installed above the pure owner.
         owner.onRawChunk = ::dispatchRawChunk
         transport.eventHandler = { event ->
-            owner.handle(event, uptimeSeconds(), hostMonotonicNanos())
-            publish()
+            synchronized(ownerLock) {
+                if (closed) return@synchronized
+                owner.handle(event, uptimeSeconds(), hostMonotonicNanos())
+                val replay = owner.takeProtocolReplay()
+                if (event !is BleTransportEvent.ValueReceived || uiSliceChanged() || replay.isNotEmpty()) {
+                    publish()
+                }
+                // Probe bytes may already have been delivered once to the raw
+                // recording sink under the provisional mode. Replay them to
+                // the preview decoder only; a recording must never receive a
+                // second copy of the same notification.
+                replay.forEach(::dispatchReplayChunk)
+            }
         }
         // Match the platform transport contract: install the event sink before
         // activating the adapter so the initial availability event is observed.
         transport.activate()
     }
 
-    fun permissionRequest(): Set<String> = permissions.permissionsToRequest().also { publish() }
+    fun permissionRequest(): Set<String> = synchronized(ownerLock) {
+        permissions.permissionsToRequest().also { publish() }
+    }
 
     fun applyPermissionResult(grantsByManifestName: Map<String, Boolean>): BlePermissionSnapshot =
-        permissions.applyResult(grantsByManifestName).also { publish() }
+        synchronized(ownerLock) {
+            permissions.applyResult(grantsByManifestName).also { publish() }
+        }
 
     fun startScanning(clearPreviousResults: Boolean = false): BleCoordinatorAction {
-        if (!permissions.snapshot.canUseBle) {
-            permissionRequest()
-            return BleCoordinatorAction.PERMISSION_REQUIRED
+        return synchronized(ownerLock) {
+            if (!permissions.snapshot.canUseBle) {
+                permissions.permissionsToRequest()
+                publish()
+                return@synchronized BleCoordinatorAction.PERMISSION_REQUIRED
+            }
+            owner.startScanning(clearPreviousResults)
+            if (owner.availability != BluetoothAvailability.POWERED_ON) {
+                // Permission may have been granted after the initial activation;
+                // retry the adapter state query before waiting for scan readiness.
+                transport.activate()
+            }
+            publish()
+            BleCoordinatorAction.STARTED
         }
-        owner.startScanning(clearPreviousResults)
-        if (owner.availability != BluetoothAvailability.POWERED_ON) {
-            // Permission may have been granted after the initial activation;
-            // retry the adapter state query before waiting for scan readiness.
-            transport.activate()
-        }
-        publish()
-        return BleCoordinatorAction.STARTED
     }
 
     fun stopScanning() {
-        owner.stopScanning()
-        publish()
+        synchronized(ownerLock) {
+            owner.stopScanning()
+            publish()
+        }
     }
 
     fun connect(deviceId: String): BleCoordinatorAction {
-        if (!permissions.snapshot.canUseBle) {
-            permissionRequest()
-            return BleCoordinatorAction.PERMISSION_REQUIRED
+        return synchronized(ownerLock) {
+            if (!permissions.snapshot.canUseBle) {
+                permissions.permissionsToRequest()
+                publish()
+                return@synchronized BleCoordinatorAction.PERMISSION_REQUIRED
+            }
+            val started = owner.connect(deviceId)
+            publish()
+            if (started) BleCoordinatorAction.STARTED else BleCoordinatorAction.REJECTED
         }
-        val started = owner.connect(deviceId)
-        publish()
-        return if (started) BleCoordinatorAction.STARTED else BleCoordinatorAction.REJECTED
     }
 
     fun retryLastConnection(): BleCoordinatorAction {
-        if (!permissions.snapshot.canUseBle) {
-            permissionRequest()
-            return BleCoordinatorAction.PERMISSION_REQUIRED
+        return synchronized(ownerLock) {
+            if (!permissions.snapshot.canUseBle) {
+                permissions.permissionsToRequest()
+                publish()
+                return@synchronized BleCoordinatorAction.PERMISSION_REQUIRED
+            }
+            val started = owner.retryLastConnection()
+            publish()
+            if (started) BleCoordinatorAction.STARTED else BleCoordinatorAction.REJECTED
         }
-        val started = owner.retryLastConnection()
-        publish()
-        return if (started) BleCoordinatorAction.STARTED else BleCoordinatorAction.REJECTED
     }
 
     fun disconnect() {
-        owner.disconnect()
-        publish()
+        synchronized(ownerLock) {
+            owner.disconnect()
+            publish()
+        }
     }
 
-    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean =
-        owner.selectNordicProtocol(mode).also { publish() }
+    fun selectStreamProtocol(mode: CupStreamProtocolMode): Boolean {
+        return synchronized(ownerLock) {
+            val accepted = owner.selectStreamProtocol(mode)
+            if (accepted) {
+                val replay = owner.takeProtocolReplay()
+                publish()
+                replay.forEach(::dispatchReplayChunk)
+            }
+            accepted
+        }
+    }
+
+    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean = selectStreamProtocol(mode)
 
     fun refreshFreshness() {
-        owner.refreshFreshness(uptimeSeconds())
-        publish()
+        synchronized(ownerLock) {
+            owner.refreshFreshness(uptimeSeconds())
+            publish()
+        }
     }
 
     fun pollDeadline(): Boolean {
-        val expired = owner.pollDeadline(uptimeSeconds())
-        publish()
-        return expired
+        return synchronized(ownerLock) {
+            val expired = owner.pollDeadline(uptimeSeconds())
+            publish()
+            expired
+        }
     }
 
     fun markValidFrame() {
-        if (owner.markValidFrame(uptimeSeconds())) publish()
+        synchronized(ownerLock) {
+            if (owner.markValidFrame(uptimeSeconds())) publish()
+        }
+    }
+
+    /** Activity visibility seam; raw recording remains independent of preview/UI attachment. */
+    fun setPreviewUiActive(active: Boolean) {
+        synchronized(ownerLock) {
+            if (closed || previewUiActive == active) return
+            previewUiActive = active
+            if (!active) previewRuntime.suspend()
+        }
     }
 
     override fun close() {
+        synchronized(ownerLock) {
+            if (closed) return
+            closed = true
+        }
         previewRuntime.close()
+        transport.close()
     }
 
     private fun publish() {
@@ -235,9 +305,8 @@ class BleCoordinator(
         val previewActive = next.phase is BleConnectionPhase.Subscribed ||
             next.phase is BleConnectionPhase.Receiving
         val modeChanged = next.activeStreamProtocolMode != previewProtocolMode
-        if (next.connectionGeneration != previewGeneration ||
-            (!previewActive && previewWasActive)
-        ) {
+        val becameInactive = !previewActive && previewWasActive
+        if (next.connectionGeneration != previewGeneration || becameInactive) {
             previewRuntime.reset(
                 next.connectionGeneration,
                 next.activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
@@ -247,9 +316,11 @@ class BleCoordinator(
             previewRuntime.reset(
                 next.connectionGeneration,
                 next.activeStreamProtocolMode ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
-                clearQueuedChunks = false,
+                clearQueuedChunks = true,
             )
         }
+        if (becameInactive) previewRuntime.suspend()
+        if (!previewUiActive) previewRuntime.suspend()
         previewProtocolMode = next.activeStreamProtocolMode
         previewWasActive = previewActive
         snapshot = next
@@ -257,23 +328,30 @@ class BleCoordinator(
     }
 
     private fun dispatchRawChunk(chunk: BleRawNotificationChunk) {
-        previewRuntime.offer(chunk)
+        if (previewUiActive) previewRuntime.offer(chunk)
         recordingRawSink?.invoke(chunk)
     }
 
+    private fun dispatchReplayChunk(chunk: BleRawNotificationChunk) {
+        previewRuntime.offer(chunk)
+    }
+
     private fun handlePreviewAcceptedFrame(generation: Long) {
-        ownerDispatcher {
-            if (owner.connectionGeneration != generation) return@ownerDispatcher
+        synchronized(ownerLock) {
+            if (closed) return
+            if (owner.connectionGeneration != generation) return
             if (owner.markValidFrame(uptimeSeconds())) publish()
         }
     }
 
     private fun handlePreviewClockTick(generation: Long) {
-        ownerDispatcher {
-            if (owner.connectionGeneration != generation) return@ownerDispatcher
+        synchronized(ownerLock) {
+            if (closed) return
+            if (owner.connectionGeneration != generation) return
             val previous = owner.freshness
             val current = owner.refreshFreshness(uptimeSeconds())
-            if (current != previous) publish()
+            val probeChanged = owner.pollProtocolProbe(uptimeSeconds())
+            if (current != previous || probeChanged) publish()
         }
     }
 
@@ -286,8 +364,9 @@ class BleCoordinator(
         activeStreamProtocolMode = owner.activeStreamProtocolMode,
         protocolProbePending = owner.protocolProbePending,
         protocolProbeTimedOut = owner.protocolProbeTimedOut,
+        advertisedName = owner.advertisedName,
         isScanning = owner.isScanning,
-        discoveredDevices = owner.discoveredDevices.toList(),
+        discoveredDevices = devicesForSnapshot(),
         discoveredServiceUuids = owner.discoveredServiceUuids,
         discoveredCharacteristics = owner.discoveredCharacteristics,
         freshness = owner.freshness,
@@ -295,4 +374,30 @@ class BleCoordinator(
         diagnostics = owner.diagnostics,
         attemptDiagnostics = owner.attemptDiagnostics,
     )
+
+    private fun devicesForSnapshot(): List<DiscoveredBleDevice> {
+        val epoch = owner.discoveredDevicesEpoch
+        if (epoch != copiedDiscoveredDevicesEpoch) {
+            copiedDiscoveredDevices = owner.discoveredDevices.toList()
+            copiedDiscoveredDevicesEpoch = epoch
+        }
+        return copiedDiscoveredDevices
+    }
+
+    private fun uiSliceChanged(): Boolean {
+        val previous = snapshot
+        return previous.phase != owner.phase ||
+            previous.freshness != owner.freshness ||
+            previous.activeStreamProtocolMode != owner.activeStreamProtocolMode ||
+            previous.protocolProbePending != owner.protocolProbePending ||
+            previous.protocolProbeTimedOut != owner.protocolProbeTimedOut ||
+            previous.isScanning != owner.isScanning ||
+            previous.lastError != owner.lastError ||
+            previous.availability != owner.availability ||
+            previous.advertisedName != owner.advertisedName ||
+            previous.connectionGeneration != owner.connectionGeneration ||
+            previous.permission != permissions.snapshot ||
+            previous.activeProfile != owner.activeProfile ||
+            copiedDiscoveredDevicesEpoch != owner.discoveredDevicesEpoch
+    }
 }

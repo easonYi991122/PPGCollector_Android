@@ -18,9 +18,9 @@
 
 ## 协议与信号
 
-- CUP 指尖：168-byte batch，`AB BA` / `CD DC`，function/length + u8 seq，RED/IR 各 20 样本/帧，100 Hz。广播名 `CUP*` 在连接开始时锁定此模式。
-- 广播名精确 `Nordic_UART_Service` 走 NUS UUID，连接方案保留。今日直播帧是 168-byte sensor packet（无 function/length，u32 LE seq，RED/IR 各 20）。V3.0 在**同一身份**上增加 ads1292r 120-byte，不重做扫描/订阅；R4 必须继续支持这条 168 直播路径，不能默认全部切到 120。
-- 两种 168-byte 帧总长相同，解码器必须按连接身份显式选择，禁止用 payload 在 CUP batch 与 Nordic sensor 之间猜测。120 vs 168 可以按帧头到帧尾距离区分，仅用于 Nordic 身份的探测。
+- CUP 指尖：168-byte batch，`AB BA` / `CD DC`，function/length + u8 seq，RED/IR 各 20 样本/帧，100 Hz。广播名 `CUP*` **默认**连接开始即按 batch 预览。若 batch 无接受帧（例如 CUP 名模拟腕带发 ads1292r 120），用与 Nordic 相同的帧几何探测 120，并允许手动覆盖。CUP 锁定 168 时必须保持 `BATCH_COMPATIBLE`，禁止切到 Nordic sensor packet。
+- 广播名精确 `Nordic_UART_Service` 走 NUS UUID，连接方案保留。该身份上同时存在 168-byte sensor packet 与 ads1292r 120-byte；靠帧几何探测锁定，不能默认全部切到 120。
+- 两种 168-byte 帧总长相同，解码器必须按连接身份显式选择，禁止用 payload 在 CUP batch 与 Nordic sensor 之间猜测。120 vs 168 可以按帧头到帧尾距离区分几何（footer 在 118 还是 166），但 168 几何必须再映射到 CUP batch 或 Nordic sensor，不得互猜。
 - 同一时刻只维持一条 GATT 连接（状态机 `activeDeviceId`）。这已经构成「不能同时测」的底层约束。
 - 实时波形显示滤波（0.5–12 Hz）与指标预处理（现 0.6–4 Hz）分开；显示变换不写回落盘。
 - 序列 gap / 重复 / 乱序：重复和乱序拒绝；gap 打断连续窗口。

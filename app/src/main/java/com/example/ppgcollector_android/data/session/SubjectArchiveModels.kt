@@ -57,11 +57,21 @@ object SubjectArchiveRepository {
         val grouped = LinkedHashMap<String, MutableList<SubjectArchiveSession>>()
         val unclassified = ArrayList<StoredCaptureSession>()
         sessions.forEach { session ->
+            // The prefix is part of the directory/base-name identity. Metadata
+            // predates MB and stores only subject+sequence, so constructing a
+            // CanonicalSessionIdentity from metadata alone silently defaults
+            // every MB session to PPG.
+            val parsedName = SessionNamePolicy.parseCanonical(session.baseName)
             val identity = session.metadata?.let { metadata ->
                 if (metadata.canonicalSubjectId != null && metadata.canonicalSequence != null) {
-                    CanonicalSessionIdentity(metadata.canonicalSubjectId, metadata.canonicalSequence)
+                    val prefix = parsedName?.prefix ?: SessionNamePrefix.PPG
+                    CanonicalSessionIdentity(
+                        subject = metadata.canonicalSubjectId,
+                        sequence = metadata.canonicalSequence,
+                        prefix = prefix,
+                    )
                 } else null
-            } ?: SessionNamePolicy.parseCanonical(session.baseName)
+            } ?: parsedName
             if (identity == null || identity.subject.isBlank()) {
                 unclassified += session
             } else {
@@ -131,19 +141,31 @@ object SubjectArchiveRepository {
     private fun heartRateFromEvidence(session: StoredCaptureSession): Double? {
         val metrics = CaptureSessionRepository.expectedFiles(session.directory).metrics
         if (metrics != null && java.nio.file.Files.isRegularFile(metrics)) {
-            val valid = runCatching {
-                val lines = java.nio.file.Files.readAllLines(metrics)
-                val header = lines.firstOrNull()?.let(::parseSessionCsvFields).orEmpty()
-                val valueIndex = header.indexOf("heart_rate_bpm")
-                val validIndex = header.indexOf("heart_rate_valid")
-                lines.drop(1).mapNotNull { line ->
-                    val fields = parseSessionCsvFields(line)
-                    if (valueIndex >= 0 && validIndex >= 0 && fields.getOrNull(validIndex) == "true") {
-                        fields.getOrNull(valueIndex)?.toDoubleOrNull()?.takeIf(Double::isFinite)
-                    } else null
+            val average = runCatching {
+                java.nio.file.Files.newBufferedReader(metrics).use { reader ->
+                    val header = reader.readLine()?.let(::parseSessionCsvFields).orEmpty()
+                    val valueIndex = header.indexOf("heart_rate_bpm")
+                    val validIndex = header.indexOf("heart_rate_valid")
+                    if (valueIndex < 0 || validIndex < 0) return@use null
+                    var count = 0L
+                    var sum = 0.0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isBlank()) continue
+                        val fields = parseSessionCsvFields(line)
+                        if (fields.getOrNull(validIndex) == "true") {
+                            val value = fields.getOrNull(valueIndex)?.toDoubleOrNull()
+                                ?.takeIf(Double::isFinite)
+                            if (value != null) {
+                                sum += value
+                                count++
+                            }
+                        }
+                    }
+                    if (count == 0L) null else sum / count
                 }
-            }.getOrNull().orEmpty()
-            if (valid.isNotEmpty()) return valid.average()
+            }.getOrNull()
+            if (average != null) return average
         }
         return runCatching {
             CaptureSessionOfflineAnalysisService.listArtifacts(session)

@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ppgcollector_android.core.ble.BleCoordinatorAction
 import com.example.ppgcollector_android.core.ble.BleCoordinatorSnapshot
+import com.example.ppgcollector_android.core.ble.BleAdvertisedIdentity
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
@@ -75,6 +76,8 @@ import com.example.ppgcollector_android.data.session.bloodPressureValidationErro
 import com.example.ppgcollector_android.data.session.SubjectProfileStore
 import com.example.ppgcollector_android.data.session.SessionNamePrefix
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @Composable
@@ -104,7 +107,7 @@ internal fun LiveCaptureScreen(
     onStopScan: () -> Unit,
     onConnect: (String) -> BleCoordinatorAction,
     onDisconnect: () -> Unit,
-    onSelectNordicProtocol: (CupStreamProtocolMode) -> Unit,
+    onSelectStreamProtocol: (CupStreamProtocolMode) -> Unit,
     onOpenSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -154,7 +157,7 @@ internal fun LiveCaptureScreen(
                         )
                     },
                     onDisconnect = onDisconnect,
-                    onSelectNordicProtocol = onSelectNordicProtocol,
+                    onSelectStreamProtocol = onSelectStreamProtocol,
                 )
             }
             if (!recordingActive || effectiveDensity == CaptureContentDensity.DETAILED) {
@@ -181,22 +184,42 @@ internal fun LiveCaptureScreen(
                 )
             }
             if (!recordingActive) {
-                item(key = "capture-setup") {
-                    CaptureSetupCard(
+                item(key = "capture-setup-mode") {
+                    CaptureSetupModeCard(
                         captureStatus = captureStatus,
-                        sessionName = sessionName,
-                        participantDraft = participantDraft,
                         sessionPrefix = sessionPrefix,
                         recordMode = recordMode,
                         plannedDurationText = plannedDurationText,
-                        sessionNameIsValid = sessionNameIsValid,
-                        captureGate = captureGate,
-                        onSessionNameChange = onSessionNameChange,
                         onSessionPrefixChange = onSessionPrefixChange,
                         onRecordModeChange = onRecordModeChange,
                         onPlannedDurationChange = onPlannedDurationChange,
-                        onParticipantDraftChange = onParticipantDraftChange,
+                    )
+                }
+                item(key = "capture-setup-name") {
+                    CaptureSessionNameCard(
+                        sessionName = sessionName,
+                        sessionNameIsValid = sessionNameIsValid,
+                        onSessionNameChange = onSessionNameChange,
                         onUseSuggestedName = onUseSuggestedName,
+                    )
+                }
+                item(key = "capture-setup-participant") {
+                    CaptureParticipantCard(
+                        participantDraft = participantDraft,
+                        sessionNameIsValid = sessionNameIsValid,
+                        onParticipantDraftChange = onParticipantDraftChange,
+                    )
+                }
+                item(key = "capture-setup-reference") {
+                    CaptureReferenceCard(
+                        participantDraft = participantDraft,
+                        sessionNameIsValid = sessionNameIsValid,
+                        onParticipantDraftChange = onParticipantDraftChange,
+                    )
+                }
+                item(key = "capture-setup-start") {
+                    CaptureStartCard(
+                        captureGate = captureGate,
                         onStartCapture = {
                             recordingDensity = CaptureUiPolicy.reduce(
                                 recordingDensity,
@@ -256,7 +279,7 @@ private fun ConnectionSummaryCard(
     density: CaptureContentDensity,
     onToggleDensity: () -> Unit,
     onDisconnect: () -> Unit,
-    onSelectNordicProtocol: (CupStreamProtocolMode) -> Unit,
+    onSelectStreamProtocol: (CupStreamProtocolMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -311,21 +334,28 @@ private fun ConnectionSummaryCard(
                     }
                 }
             }
-            if (snapshot.protocolProbePending) {
+            if (snapshot.protocolProbePending || snapshot.protocolProbeTimedOut) {
                 Text(
                     if (snapshot.protocolProbeTimedOut) "无法识别数据协议" else "正在识别数据协议…",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val cupIdentity = BleAdvertisedIdentity.isCup(snapshot.advertisedName)
+                val secondMode = if (cupIdentity) {
+                    CupStreamProtocolMode.BATCH_COMPATIBLE
+                } else {
+                    CupStreamProtocolMode.SENSOR_PACKET_168
+                }
+                val secondLabel = if (cupIdentity) "CUP PPG (168)" else "Nordic PPG (168)"
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        onClick = { onSelectNordicProtocol(CupStreamProtocolMode.ADS1292R_120) },
+                        onClick = { onSelectStreamProtocol(CupStreamProtocolMode.ADS1292R_120) },
                         modifier = Modifier.weight(1f),
                     ) { Text("腕部 ECG (120)") }
                     OutlinedButton(
-                        onClick = { onSelectNordicProtocol(CupStreamProtocolMode.SENSOR_PACKET_168) },
+                        onClick = { onSelectStreamProtocol(secondMode) },
                         modifier = Modifier.weight(1f),
-                    ) { Text("Nordic PPG (168)") }
+                    ) { Text(secondLabel) }
                 }
             }
             if (!recordingActive || density == CaptureContentDensity.DETAILED) {
@@ -406,13 +436,18 @@ private fun LiveSignalCard(
 ) {
     val captureWaveform by captureWaveformState.collectAsStateWithLifecycle()
     val captureAnalysis by captureAnalysisState.collectAsStateWithLifecycle()
-    val preview by previewState.collectAsStateWithLifecycle()
+    val previewWaveform by remember(previewState) {
+        previewState.map { it.waveform }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = LiveWaveformSnapshot())
+    val previewMetrics by remember(previewState) {
+        previewState.map { it.lastAnalysis?.snapshot }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = null)
     val waveform = if (recordingActive && captureWaveform.acceptedSampleCount > 0) {
         captureWaveform
     } else {
-        preview.waveform
+        previewWaveform
     }
-    val metrics = if (recordingActive) captureAnalysis.lastResult?.snapshot else preview.lastAnalysis?.snapshot
+    val metrics = if (recordingActive) captureAnalysis.lastResult?.snapshot else previewMetrics
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -431,13 +466,36 @@ private fun LiveSignalCard(
                     FreshnessPill(freshness)
                 }
             }
-            LiveWaveformAndMetrics(
-                waveform = waveform,
-                metrics = metrics,
-                displayMode = displayMode,
-                density = density,
-                onDisplayModeChange = onDisplayModeChange,
-            )
+            if (!shouldComposeLiveSignalDetails(waveform.red.size, waveform.ir.size)) {
+                // Keep the disconnected page cheap. Canvas paths, filter mode
+                // controls and metric tiles are first composed only after the
+                // first accepted data, instead of during initial list scroll.
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("等待设备数据", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "连接并收到有效 PPG 后显示 RAW、CAUSAL、FIXED 与实时指标。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                LiveWaveformAndMetrics(
+                    waveform = waveform,
+                    metrics = metrics,
+                    displayMode = displayMode,
+                    density = density,
+                    onDisplayModeChange = onDisplayModeChange,
+                )
+            }
         }
     }
 }
@@ -480,7 +538,293 @@ private fun RecordingActionBar(
 }
 
 @Composable
-private fun CaptureSetupCard(
+private fun CaptureSetupModeCard(
+    captureStatus: CaptureServiceStatusObservation,
+    sessionPrefix: SessionNamePrefix,
+    recordMode: CaptureRecordMode,
+    plannedDurationText: String,
+    onSessionPrefixChange: (SessionNamePrefix) -> Unit,
+    onRecordModeChange: (CaptureRecordMode) -> Unit,
+    onPlannedDurationChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("数据记录", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    captureStatus.recording.state.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text("设备类型", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SessionNamePrefix.entries.forEach { prefix ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.semantics { contentDescription = prefix.displayName },
+                    ) {
+                        RadioButton(
+                            selected = sessionPrefix == prefix,
+                            onClick = { onSessionPrefixChange(prefix) },
+                            enabled = !captureStatus.recording.state.isRecordingState(),
+                        )
+                        Text(prefix.displayName)
+                    }
+                }
+            }
+            Text("录制模式", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CaptureRecordMode.entries.forEach { mode ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = recordMode == mode,
+                            onClick = { onRecordModeChange(mode) },
+                        )
+                        Text(if (mode == CaptureRecordMode.TIMED) "定时录制" else "手动录制")
+                    }
+                }
+            }
+            if (recordMode == CaptureRecordMode.TIMED) {
+                val durationError = CaptureRecordModePolicy.durationError(recordMode, plannedDurationText)
+                BringIntoViewTextField(
+                    value = plannedDurationText,
+                    onValueChange = onPlannedDurationChange,
+                    label = "录制时长（秒）",
+                    supportingText = durationError ?: "范围 10–3600 秒，默认 60 秒",
+                    isError = durationError != null,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Next,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptureSessionNameCard(
+    sessionName: String,
+    sessionNameIsValid: Boolean,
+    onSessionNameChange: (String) -> Unit,
+    onUseSuggestedName: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            BringIntoViewTextField(
+                value = sessionName,
+                onValueChange = onSessionNameChange,
+                label = "录制名称",
+                supportingText = if (sessionNameIsValid) {
+                    "仅支持字母、数字、下划线和短横线"
+                } else {
+                    "名称语法无效或已存在"
+                },
+                isError = !sessionNameIsValid,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "建议名可直接采用，也可自由修改",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onUseSuggestedName, modifier = Modifier.sizeIn(minHeight = 48.dp)) {
+                    Text("使用建议名")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CaptureParticipantCard(
+    participantDraft: CaptureParticipantDraft,
+    sessionNameIsValid: Boolean,
+    onParticipantDraftChange: (CaptureParticipantDraft) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val ageFocus = remember { FocusRequester() }
+    val heightFocus = remember { FocusRequester() }
+    val weightFocus = remember { FocusRequester() }
+    var smokingMenuExpanded by remember { mutableStateOf(false) }
+    var drinkingMenuExpanded by remember { mutableStateOf(false) }
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                if (sessionNameIsValid) "被试资料（可在停止前继续修改）" else "名称合法且不重复后可填写被试资料",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text("性别（必选）", style = MaterialTheme.typography.labelLarge)
+            Row {
+                CaptureParticipantDraft.genderOptions.forEach { gender ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = participantDraft.sex == gender,
+                            onClick = { onParticipantDraftChange(participantDraft.copy(sex = gender)) },
+                            enabled = sessionNameIsValid,
+                        )
+                        Text(gender)
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BringIntoViewTextField(
+                    value = participantDraft.ageYears,
+                    onValueChange = { onParticipantDraftChange(participantDraft.copy(ageYears = it.filter(Char::isDigit))) },
+                    label = "年龄",
+                    enabled = sessionNameIsValid,
+                    focusRequester = ageFocus,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { heightFocus.requestFocus() }),
+                    modifier = Modifier.weight(1f),
+                )
+                BringIntoViewTextField(
+                    value = participantDraft.heightCm,
+                    onValueChange = { onParticipantDraftChange(participantDraft.copy(heightCm = decimalInput(it))) },
+                    label = "身高 cm",
+                    enabled = sessionNameIsValid,
+                    focusRequester = heightFocus,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { weightFocus.requestFocus() }),
+                    modifier = Modifier.weight(1f),
+                )
+                BringIntoViewTextField(
+                    value = participantDraft.weightKg,
+                    onValueChange = { onParticipantDraftChange(participantDraft.copy(weightKg = decimalInput(it))) },
+                    label = "体重 kg",
+                    enabled = sessionNameIsValid,
+                    focusRequester = weightFocus,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            FrequencyMenu(
+                label = "吸烟频率（可选）",
+                value = participantDraft.smokingFreq,
+                options = CaptureParticipantDraft.smokingOptions,
+                expanded = smokingMenuExpanded,
+                onExpandedChange = { smokingMenuExpanded = it },
+                enabled = sessionNameIsValid,
+                onSelected = { onParticipantDraftChange(participantDraft.copy(smokingFreq = it)) },
+            )
+            FrequencyMenu(
+                label = "饮酒频率（可选）",
+                value = participantDraft.drinkingFreq,
+                options = CaptureParticipantDraft.drinkingOptions,
+                expanded = drinkingMenuExpanded,
+                onExpandedChange = { drinkingMenuExpanded = it },
+                enabled = sessionNameIsValid,
+                onSelected = { onParticipantDraftChange(participantDraft.copy(drinkingFreq = it)) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureReferenceCard(
+    participantDraft: CaptureParticipantDraft,
+    sessionNameIsValid: Boolean,
+    onParticipantDraftChange: (CaptureParticipantDraft) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val focusManager = LocalFocusManager.current
+    val notesFocus = remember { FocusRequester() }
+    val pressureError = bloodPressureValidationError(participantDraft.systolicBp, participantDraft.diastolicBp)
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("参考血压与备注（均为人工输入）", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BringIntoViewTextField(
+                    value = participantDraft.systolicBp,
+                    onValueChange = { onParticipantDraftChange(participantDraft.copy(systolicBp = it.filter(Char::isDigit))) },
+                    label = "收缩压 mmHg（可选）",
+                    enabled = sessionNameIsValid,
+                    isError = pressureError != null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                BringIntoViewTextField(
+                    value = participantDraft.diastolicBp,
+                    onValueChange = { onParticipantDraftChange(participantDraft.copy(diastolicBp = it.filter(Char::isDigit))) },
+                    label = "舒张压 mmHg（可选）",
+                    enabled = sessionNameIsValid,
+                    isError = pressureError != null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            pressureError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            BringIntoViewTextField(
+                value = participantDraft.additionalFields["notes"].orEmpty(),
+                onValueChange = { value ->
+                    val boundedValue = value.take(SubjectProfileStore.maximumFieldValueLength)
+                    val fields = participantDraft.additionalFields.toMutableMap().apply {
+                        if (boundedValue.isBlank()) remove("notes") else put("notes", boundedValue)
+                    }
+                    onParticipantDraftChange(participantDraft.copy(additionalFields = fields))
+                },
+                label = "其它信息（可选）",
+                enabled = sessionNameIsValid,
+                focusRequester = notesFocus,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureStartCard(
+    captureGate: CaptureGateUiState,
+    onStartCapture: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onStartCapture,
+                enabled = captureGate.canStart,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            ) { Text("开始录制") }
+            if (captureGate.canStart) {
+                Text("✓ 可以开始录制", color = MaterialTheme.colorScheme.tertiary)
+            } else {
+                Text("开始录制前还需满足：")
+                captureGate.messages.forEach { Text("• $it") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegacyCaptureSetupCard(
     captureStatus: CaptureServiceStatusObservation,
     sessionName: String,
     participantDraft: CaptureParticipantDraft,

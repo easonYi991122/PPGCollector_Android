@@ -52,6 +52,21 @@ class SubjectArchiveRepositoryTest {
         }
     }
 
+    @Test
+    fun metadataBackedMbSessionKeepsMbPrefix() {
+        val root = Files.createTempDirectory("subject-archive-mb")
+        val sessions = root.resolve("sessions")
+        val subjects = root.resolve("subjects")
+        try {
+            writeSession(sessions, "MB-subject-1", "mb", withRaw = true)
+            val entry = SubjectArchiveRepository.rebuild(sessions, subjects)
+                .groups.single().sessions.single()
+            assertEquals(SessionNamePrefix.MB, entry.identity.prefix)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun writeSession(root: java.nio.file.Path, baseName: String, id: String, withRaw: Boolean) {
         val writer = CaptureSessionWriter(
             CaptureSessionConfiguration(

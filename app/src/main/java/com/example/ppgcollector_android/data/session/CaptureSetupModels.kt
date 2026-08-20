@@ -1,6 +1,16 @@
 package com.example.ppgcollector_android.data.session
 
 /** Editable capture identity form. Text is kept as text until start validation. */
+enum class CaptureParticipantValidationCategory {
+    PROFILE,
+    REFERENCE_BLOOD_PRESSURE,
+}
+
+data class CaptureParticipantValidationIssue(
+    val category: CaptureParticipantValidationCategory,
+    val message: String,
+)
+
 data class CaptureParticipantDraft(
     val sex: String = "",
     val ageYears: String = "",
@@ -33,21 +43,41 @@ data class CaptureParticipantDraft(
             heightCm.toDoubleOrNull()?.let { it > 0.0 } == true &&
             weightKg.toDoubleOrNull()?.let { it > 0.0 } == true
 
-    fun validationErrors(): List<String> = buildList {
-        if (sex !in genderOptions) add("性别需选择男或女")
+    fun validationIssues(): List<CaptureParticipantValidationIssue> = buildList {
+        fun profile(message: String) = add(
+            CaptureParticipantValidationIssue(
+                CaptureParticipantValidationCategory.PROFILE,
+                message,
+            ),
+        )
+        if (sex !in genderOptions) profile("性别需选择男或女")
         val age = ageYears.toIntOrNull()
-        if (age == null || age !in 0..150) add("年龄需为 0–150 的整数")
+        if (age == null || age !in 0..150) profile("年龄需为 0–150 的整数")
         val height = heightCm.toDoubleOrNull()
-        if (height == null || !height.isFinite() || height <= 0.0) add("身高需为正数")
+        if (height == null || !height.isFinite() || height <= 0.0) profile("身高需为正数")
         val weight = weightKg.toDoubleOrNull()
-        if (weight == null || !weight.isFinite() || weight <= 0.0) add("体重需为正数")
+        if (weight == null || !weight.isFinite() || weight <= 0.0) profile("体重需为正数")
         if (additionalFields.size > SubjectProfileStore.maximumAdditionalFields) {
-            add("扩展资料过多")
+            profile("扩展资料过多")
         }
-        if (smokingFreq !in smokingOptions) add("吸烟频率取值无效")
-        if (drinkingFreq !in drinkingOptions) add("饮酒频率取值无效")
-        bloodPressureValidationError(systolicBp, diastolicBp)?.let { add(it) }
+        if (smokingFreq !in smokingOptions) profile("吸烟频率取值无效")
+        if (drinkingFreq !in drinkingOptions) profile("饮酒频率取值无效")
+        bloodPressureValidationError(systolicBp, diastolicBp)?.let {
+            add(
+                CaptureParticipantValidationIssue(
+                    CaptureParticipantValidationCategory.REFERENCE_BLOOD_PRESSURE,
+                    it,
+                ),
+            )
+        }
     }
+
+    fun validationErrors(): List<String> = validationIssues().map { it.message }
+
+    /** Start gating intentionally excludes optional/manual reference BP issues. */
+    fun blockingValidationErrors(): List<String> = validationIssues()
+        .filter { it.category != CaptureParticipantValidationCategory.REFERENCE_BLOOD_PRESSURE }
+        .map { it.message }
 
     fun toSnapshot(
         identity: CanonicalSessionIdentity?,

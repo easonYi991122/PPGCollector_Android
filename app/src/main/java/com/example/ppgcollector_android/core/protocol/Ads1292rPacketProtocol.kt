@@ -76,7 +76,7 @@ object Ads1292rPacketProtocol {
 class Ads1292rStreamDecoder(
     private val maxPendingBytes: Int = Ads1292rPacketProtocol.frameLength * 3,
 ) {
-    private val buffer = ArrayList<Byte>(maxPendingBytes)
+    private val buffer = ByteRingBuffer(maxPendingBytes)
     var stats: Ads1292rDecoderStats = Ads1292rDecoderStats()
         private set
 
@@ -92,7 +92,7 @@ class Ads1292rStreamDecoder(
             }
             if (header > 0) discard(header)
             if (buffer.size < Ads1292rPacketProtocol.frameLength) break
-            val wire = buffer.take(Ads1292rPacketProtocol.frameLength).toByteArray()
+            val wire = buffer.toByteArray(Ads1292rPacketProtocol.frameLength)
             if (!wire.copyOfRange(118, 120).contentEquals(Ads1292rPacketProtocol.footer)) {
                 stats = stats.copy(invalidTails = stats.invalidTails + 1)
                 discard(1)
@@ -110,7 +110,7 @@ class Ads1292rStreamDecoder(
                 lastSequence = packet.sequenceNumber,
             )
             decoded += packet
-            repeat(Ads1292rPacketProtocol.frameLength) { buffer.removeAt(0) }
+            buffer.removeFirst(Ads1292rPacketProtocol.frameLength)
         }
         if (buffer.size > maxPendingBytes) discard(buffer.size - maxPendingBytes)
         return decoded
@@ -129,7 +129,7 @@ class Ads1292rStreamDecoder(
 
     private fun discard(count: Int) {
         if (count <= 0) return
-        repeat(count.coerceAtMost(buffer.size)) { buffer.removeAt(0) }
+        buffer.removeFirst(count)
         stats = stats.copy(discardedBytes = stats.discardedBytes + count)
     }
 }

@@ -47,28 +47,33 @@ object CaptureBloodPressureSeries {
 
     fun read(path: Path): List<ManualBloodPressureEvent> {
         if (!java.nio.file.Files.isRegularFile(path)) return emptyList()
-        val lines = java.nio.file.Files.readAllLines(path)
-        require(lines.firstOrNull() == header.trimEnd('\n')) { "unexpected blood-pressure header" }
-        return lines.drop(1).filter { it.isNotBlank() }.map { line ->
-            val fields = parseSessionCsvFields(line.removeSuffix("\r"))
-            require(fields.size == columns.size) { "expected ${columns.size} blood-pressure fields" }
-            require(fields[0] == schemaVersion) { "unsupported blood-pressure schema" }
-            ManualBloodPressureEvent(
-                reference = CaptureReferenceTimestamp(
-                    sessionId = fields[1],
-                    // v1 sidecar predates a persisted generation column; the
-                    // session id and source cursor remain the stable join key.
-                    connectionGeneration = 0L,
-                    eventIndex = fields[2].toLong(),
-                    sourceSampleIndex = fields[3].toLong(),
-                    sourceTimeSeconds = fields[4].toDouble(),
-                    dialogOpenHostMonotonicNanoseconds = fields[5].toULong(),
-                    dialogOpenUtc = Instant.parse(fields[6]),
-                ),
-                savedUtc = Instant.parse(fields[7]),
-                systolicMmHg = fields[8].toInt(),
-                diastolicMmHg = fields[9].toInt(),
-            )
+        java.nio.file.Files.newBufferedReader(path).use { reader ->
+            require(reader.readLine() == header.trimEnd('\n')) { "unexpected blood-pressure header" }
+            val result = ArrayList<ManualBloodPressureEvent>()
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (line.isBlank()) continue
+                val fields = parseSessionCsvFields(line.removeSuffix("\r"))
+                require(fields.size == columns.size) { "expected ${columns.size} blood-pressure fields" }
+                require(fields[0] == schemaVersion) { "unsupported blood-pressure schema" }
+                result += ManualBloodPressureEvent(
+                    reference = CaptureReferenceTimestamp(
+                        sessionId = fields[1],
+                        // v1 sidecar predates a persisted generation column; the
+                        // session id and source cursor remain the stable join key.
+                        connectionGeneration = 0L,
+                        eventIndex = fields[2].toLong(),
+                        sourceSampleIndex = fields[3].toLong(),
+                        sourceTimeSeconds = fields[4].toDouble(),
+                        dialogOpenHostMonotonicNanoseconds = fields[5].toULong(),
+                        dialogOpenUtc = Instant.parse(fields[6]),
+                    ),
+                    savedUtc = Instant.parse(fields[7]),
+                    systolicMmHg = fields[8].toInt(),
+                    diastolicMmHg = fields[9].toInt(),
+                )
+            }
+            return result
         }
     }
 
@@ -91,6 +96,7 @@ object CaptureBloodPressureSeries {
             val systolic = fields[8].toIntOrNull() ?: return@scanSessionSidecar "invalid systolic"
             val diastolic = fields[9].toIntOrNull() ?: return@scanSessionSidecar "invalid diastolic"
             if (systolic <= 0 || diastolic <= 0) return@scanSessionSidecar "blood pressure must be positive"
+            if (systolic <= diastolic) return@scanSessionSidecar "systolic must be greater than diastolic"
             if (previous != null && event <= (previous[2].toLongOrNull() ?: -1L)) {
                 return@scanSessionSidecar "event_index is not increasing"
             }

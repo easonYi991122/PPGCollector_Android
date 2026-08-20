@@ -9,6 +9,7 @@ import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
 import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
@@ -28,6 +29,25 @@ data class BlePreviewSnapshot(
     val processedSampleCount: Long = 0,
     val droppedChunkCount: Long = 0,
     val lastError: String? = null,
+)
+
+data class BlePreviewRuntimeDiagnostics(
+    val connectionGeneration: Long,
+    val queueDepth: Int,
+    val analysisQueueDepth: Int,
+    val droppedChunkCount: Long,
+    val processedSampleCount: Long,
+    val continuityEpoch: Long,
+    val gapCount: Long,
+    val receivedFrameCount: Int,
+    val missingFrameCount: Int,
+    val duplicateFrameCount: Int,
+    val outOfOrderFrameCount: Int,
+    val previewWorkerActive: Boolean,
+    val analysisWorkerActive: Boolean,
+    val clockTickCount: Long,
+    val waveformEmissionCount: Long,
+    val metricEmissionCount: Long,
 )
 
 /** App-scope, bounded preview pipeline. It never writes session files. */
@@ -58,24 +78,55 @@ class BlePreviewRuntime(
     private var acceptedSampleIndex = 0L
     private var stopRequested = false
     private var lastClockTickNanos = System.nanoTime()
+    private var clockTickCount = 0L
+    private var waveformEmissionCount = 0L
+    private var metricEmissionCount = 0L
     private var decoder = CupBatchStreamDecoder()
     private var adsDecoder = Ads1292rStreamDecoder()
     private var sequenceTracker = CupFrameSequenceTracker()
     private var signalRuntime = LivePpgSignalRuntime()
-    private val worker = thread(start = true, isDaemon = true, name = "ppg-ble-preview") { loop() }
+    private val analysisQueue = ArrayBlockingQueue<LiveMetricAnalysisRequest>(1)
+    private var worker: Thread? = null
+    private var analysisWorker: Thread? = null
+    private var closed = false
 
     val snapshot: StateFlow<BlePreviewSnapshot> = _snapshot.asStateFlow()
 
+    fun diagnostics(): BlePreviewRuntimeDiagnostics = synchronized(lock) {
+        BlePreviewRuntimeDiagnostics(
+            connectionGeneration = activeGeneration,
+            queueDepth = queue.size,
+            analysisQueueDepth = analysisQueue.size,
+            droppedChunkCount = droppedChunkCount,
+            processedSampleCount = acceptedSampleIndex,
+            continuityEpoch = signalRuntime.currentContinuityEpoch,
+            gapCount = signalRuntime.gapCountValue,
+            receivedFrameCount = sequenceTracker.stats.receivedFrames,
+            missingFrameCount = sequenceTracker.stats.missingFrames,
+            duplicateFrameCount = sequenceTracker.stats.duplicateFrames,
+            outOfOrderFrameCount = sequenceTracker.stats.outOfOrderFrames,
+            previewWorkerActive = worker?.isAlive == true,
+            analysisWorkerActive = analysisWorker?.isAlive == true,
+            clockTickCount = clockTickCount,
+            waveformEmissionCount = waveformEmissionCount,
+            metricEmissionCount = metricEmissionCount,
+        )
+    }
+
     fun offer(chunk: BleRawNotificationChunk): Boolean {
         val copied = chunk.copyOfBytes()
-        val accepted = queue.offer(
-            Input(
-                copied.connectionGeneration,
-                copied.hostMonotonicNanos,
-                copied.bytes,
-                copied.streamProtocolMode,
-            ),
-        )
+        val accepted = synchronized(lock) {
+            if (closed) return@synchronized false
+            ensureWorkersLocked()
+            queue.offer(
+                Input(
+                    copied.connectionGeneration,
+                    copied.hostMonotonicNanos,
+                    copied.bytes,
+                    copied.streamProtocolMode,
+                ),
+            )
+        }
         if (!accepted) {
             synchronized(lock) {
                 droppedChunkCount++
@@ -94,6 +145,7 @@ class BlePreviewRuntime(
         clearQueuedChunks: Boolean = true,
     ) {
         synchronized(lock) {
+            if (closed) return
             activeGeneration = generation
             activeStreamProtocolMode = streamProtocolMode
             if (clearQueuedChunks) queue.clear()
@@ -107,35 +159,60 @@ class BlePreviewRuntime(
         }
     }
 
+    /** Stop idle preview work without blocking the BLE owner or UI thread. */
+    fun suspend() {
+        synchronized(lock) {
+            stopRequested = true
+            queue.clear()
+            analysisQueue.clear()
+        }
+    }
+
     override fun close() {
-        synchronized(lock) { stopRequested = true }
-        worker.join(2_000)
+        val workers = synchronized(lock) {
+            closed = true
+            stopRequested = true
+            queue.clear()
+            analysisQueue.clear()
+            listOfNotNull(worker, analysisWorker)
+        }
+        workers.forEach { it.join(2_000) }
+        synchronized(lock) {
+            worker = null
+            analysisWorker = null
+        }
     }
 
     private fun loop() {
-        while (true) {
-            val input = queue.poll(100, TimeUnit.MILLISECONDS)
-            if (input != null) process(input)
-            val now = System.nanoTime()
-            var tickGeneration: Long? = null
-            var shouldStop = false
-            synchronized(lock) {
-                signalRuntime.poll(now, Instant.now())?.let { publishWaveform(it) }
-                if (_snapshot.value.processedSampleCount > 0 &&
-                    now - lastClockTickNanos >= clockTickIntervalNanos
-                ) {
-                    lastClockTickNanos = now
-                    tickGeneration = activeGeneration
+        try {
+            while (true) {
+                val input = queue.poll(100, TimeUnit.MILLISECONDS)
+                if (input != null) process(input)
+                val now = System.nanoTime()
+                var tickGeneration: Long? = null
+                var shouldStop = false
+                synchronized(lock) {
+                    signalRuntime.poll(now, Instant.now())?.let { publishWaveform(it) }
+                    if (now - lastClockTickNanos >= clockTickIntervalNanos) {
+                        lastClockTickNanos = now
+                        clockTickCount++
+                        tickGeneration = activeGeneration
+                    }
+                    shouldStop = stopRequested && queue.isEmpty()
                 }
-                shouldStop = stopRequested && queue.isEmpty()
+                tickGeneration?.let { generation -> runCatching { onClockTick(generation) } }
+                if (shouldStop) return
             }
-            tickGeneration?.let { generation -> runCatching { onClockTick(generation) } }
-            if (shouldStop) return
+        } finally {
+            synchronized(lock) {
+                if (worker === Thread.currentThread()) worker = null
+            }
         }
     }
 
     private fun process(input: Input) {
         var acceptedFrame = false
+        var metricRequest: LiveMetricAnalysisRequest? = null
         synchronized(lock) {
             if (input.generation != activeGeneration) return
             if (input.streamProtocolMode != activeStreamProtocolMode) {
@@ -145,6 +222,7 @@ class BlePreviewRuntime(
                 return
             }
             try {
+                val acceptedEcgSamples = ArrayList<UInt>()
                 val events = if (activeStreamProtocolMode == CupStreamProtocolMode.ADS1292R_120) {
                     adsDecoder.feed(input.bytes).map { packet ->
                         val frame = CupBatchFrame(
@@ -156,12 +234,13 @@ class BlePreviewRuntime(
                             },
                         )
                         val sequence = sequenceTracker.observe(frame)
-                        signalRuntime.ingestEcgDisplaySamples(packet.ecg)
+                        val accepted = sequence !is CupSequenceEvent.Duplicate &&
+                            sequence !is CupSequenceEvent.OutOfOrder
+                        if (accepted) acceptedEcgSamples += packet.ecg
                         CupDecodedFrameEvent(
                             frame = frame,
                             sequenceEvent = sequence,
-                            isAccepted = sequence !is CupSequenceEvent.Duplicate &&
-                                sequence !is CupSequenceEvent.OutOfOrder,
+                            isAccepted = accepted,
                         )
                     }
                 } else decoder.feed(input.bytes).map { frame ->
@@ -180,27 +259,72 @@ class BlePreviewRuntime(
                     acceptedSampleStartIndex = acceptedBefore,
                     measuredAt = Instant.now(),
                     nowNanos = System.nanoTime(),
+                    acceptedEcgSamples = acceptedEcgSamples,
                 )
-                signal.waveform?.let { publishWaveform(it) }
-                val request = signal.metricRequest
                 acceptedSampleIndex += events.filter { it.isAccepted }
                     .sumOf { it.frame.samples.size.toLong() }
-                val next = _snapshot.value.copy(
-                    processedSampleCount = acceptedSampleIndex,
-                    lastError = null,
-                )
-                _snapshot.value = if (request == null) next
-                else next.copy(lastAnalysis = LiveMetricAnalyzer.analyze(request))
+                signal.waveform?.let { publishWaveform(it) }
+                metricRequest = signal.metricRequest
             } catch (error: Throwable) {
                 _snapshot.value = _snapshot.value.copy(
                     lastError = error.message ?: error::class.simpleName,
                 )
             }
         }
+        metricRequest?.let(::enqueueAnalysis)
         if (acceptedFrame) runCatching { onAcceptedFrame(input.generation) }
     }
 
+    private fun analysisLoop() {
+        try {
+            while (true) {
+                val request = analysisQueue.poll(100, TimeUnit.MILLISECONDS)
+                val shouldStop = synchronized(lock) { stopRequested && analysisQueue.isEmpty() }
+                if (request != null) {
+                    val result = runCatching { LiveMetricAnalyzer.analyze(request) }.getOrNull() ?: continue
+                    synchronized(lock) {
+                        if (!stopRequested && signalRuntime.isCurrent(request)) {
+                            _snapshot.value = _snapshot.value.copy(lastAnalysis = result)
+                        }
+                    }
+                } else if (shouldStop) {
+                    return
+                }
+            }
+        } finally {
+            synchronized(lock) {
+                if (analysisWorker === Thread.currentThread()) analysisWorker = null
+            }
+        }
+    }
+
+    private fun ensureWorkersLocked() {
+        check(!closed) { "preview runtime is closed" }
+        stopRequested = false
+        if (worker?.isAlive != true) {
+            worker = thread(start = true, isDaemon = true, name = "ppg-ble-preview") { loop() }
+        }
+        if (analysisWorker?.isAlive != true) {
+            analysisWorker = thread(start = true, isDaemon = true, name = "ppg-ble-preview-metrics") {
+                analysisLoop()
+            }
+        }
+    }
+
+    private fun enqueueAnalysis(request: LiveMetricAnalysisRequest) {
+        synchronized(lock) { metricEmissionCount++ }
+        if (!analysisQueue.offer(request)) {
+            analysisQueue.poll()
+            analysisQueue.offer(request)
+        }
+    }
+
     private fun publishWaveform(snapshot: LiveWaveformSnapshot) {
-        _snapshot.value = _snapshot.value.copy(waveform = snapshot)
+        waveformEmissionCount++
+        _snapshot.value = _snapshot.value.copy(
+            waveform = snapshot,
+            processedSampleCount = acceptedSampleIndex,
+            lastError = null,
+        )
     }
 }

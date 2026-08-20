@@ -2887,6 +2887,48 @@ Run the integrated release gate, then use an emulator/device when available to v
 
 - 执行 emulator/真机门禁：Saved Sessions 视图切换与选择/删除确认、compact capture 同屏、IME/focus/TalkBack/dynamic font、SAF 大批量；在 API 33+ 设备生成 Baseline Profile 并用 Macrobenchmark 比较启动、切页、列表滚动和录制波形帧时间，再执行 2 h CPU/heap/功耗测试。
 
+## 2026-08-09 · M7.7 · User, feature, parameter and export documentation
+
+### 本轮目标
+
+- 在不改 runtime/schema/算法的前提下，从当前 Kotlin/Compose 实现提取四份全面但精简的使用文档，使操作人员和数据使用者无需从迁移规划反推产品行为。
+- 复用现有 `REALTIME_AND_STORAGE.md` 作为开发者调用链，不再复制一份同类长文；更新 MigrationPlanning 入口和双层状态。
+
+### 需求/参考/Android 目标
+
+- Requirement: 用户要求的使用文档、功能介绍、滤波与分析参数、导出格式说明；内容必须来自实际代码。
+- Primary source: `LiveCaptureScreen`、`LiveWaveformComponents`、`Sessions*`、`SubjectArchiveScreen`、`SessionSignalWorkbench`；`core/signal/*`；`data/session/CaptureCsv`、`CaptureMetricSeries`、`CaptureBloodPressureSeries`、`CupRawFile`、metadata/profile/offline-analysis/export services。
+- Documentation target: 根目录 `USER_GUIDE.md`、`FEATURE_OVERVIEW.md`、`FILTER_AND_ANALYSIS_PARAMETERS.md`、`EXPORT_DATA_FORMAT.md`；既有 `REALTIME_AND_STORAGE.md`、MigrationPlanning README/brief 与双层 status。
+- Non-goals: 不修改应用代码，不改 CUPRAW1/CSV/JSON schema、滤波器或 UI；不把用户的人工检查扩大为可重复的长稳、可访问性、性能或发布证据。
+
+### 实现事实
+
+- 使用手册覆盖权限/连接、RAW/CAUSAL/FIXED、命名/建议名、subject profile、录制、非阻塞多组参考 BP、停止、Saved Sessions 双视图/选择/导出/删除、详情/恢复/离线工作台和数据保留。
+- 功能介绍按设备/协议、实时显示、五指标、身份资料、参考 BP、档案、复核恢复、重放分析和资源边界整理当前能力；明确 bring-up transport、provisional SQI/R/PI、SpO₂/BP/IMU/云同步等非能力。
+- 参数文档逐项固化 100 Hz、800/100、RAW plot transform、0.5–12 Hz causal、201-tap/100-sample fixed-lag、实时指标 0.6–4 Hz、HR/SQI/R/PI 门限、离线稳定段/8 s–2 s 窗口/聚类/频谱/周期和 120/80 UI-only BP 占位。
+- 导出文档区分单会话与 archive ZIP，列出 CUPRAW1 record、25 列 sample CSV、27 列 metrics、10 列 reference BP、session/profile/archive manifest/analysis JSON，并明确 source cursor、valid/provisional、SHA-256、可选 sidecar和 `analysis/` 当前不随 ZIP 导出的边界。
+- `REALTIME_AND_STORAGE.md` 保留为开发者 production 调用链，并更新 M7.7 基线与四份短文档入口；MigrationPlanning README 将使用/数据文档和迁移文档分组。
+
+### 验证
+
+- 只读交叉核对：schema/profile ID、25/27/10 列数、0.5–12 与 0.6–4 频带、800/100 cadence、稳定段/窗口门限、1,500,000-sample cap、ZIP tree 与 Kotlin 常量一致。
+- 文档检查：Markdown 相对链接逐一解析为仓库内存在路径；新文档无尾随空白，`git diff --check` 通过。
+- Fresh 综合命令：`env JAVA_HOME=/Applications/Android\ Studio.app/Contents/jbr/Contents/Home ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`。首次沙箱内尝试在 Gradle cache lock 前因权限退出，获准后相同命令实际运行；结果 `BUILD FAILED in 42s`、111 actionable tasks（23 executed、88 up-to-date），171 tests / 2 failures。
+- 失败 1：`OfflinePpgAnalysisTest.stableSegmentsExcludeContactChangeAndRecoverDominantRate` 在第 179 行期望 `selectedPolarity=negative`，实际为 `positive`；其它断言未继续执行。
+- 失败 2：`OfflineBloodPressurePreviewTest.fallbackUsesEightSecondWarmupOneHertzCadenceAndResetsAtGap` 期望 `[799,899,999,1099,1999,2099,2199,2299]`，实际每个 1,200-sample 连续段还包含末尾 `[1199,2399]`。
+- 由于 `:app:testDebugUnitTest` 失败，全命令没有形成 lint/privacy 全绿结论；本轮是文档任务，未越权修改算法或测试期望。用户反馈人工实机查验基本无问题，但缺少设备/API、用例清单、时长和日志；仅记为主流程人工反馈。
+
+### 风险与决策变化
+
+- 资料四字段在 UI 中是默认完整性字段，但当前 start gate 不因资料不完整而阻断；文档按真实行为明确说明，避免把产品期望写成已实现强制校验。
+- `PPG-subject-seq` 是全新安装时的可编辑示例，语法允许但不是 canonical 数值序号；文档要求替换为实际 subject 和整数 seq。
+- 当前两类 ZIP 都不包含 `analysis/`。文档明确这一事实；未来若要标准导出离线结果，需升级 exporter/manifest 合同并补兼容测试。
+- 用户人工检查降低了当前 UI 主流程的已知风险，但不关闭 `D-001`～`D-016` 中需要硬件矩阵、产品输入或正式发布资产的项目。
+
+### 下一轮
+
+- 先依据 M7.7 polarity 合同和 BP placeholder 连续段端点合同，判定是实现回归还是陈旧测试期望；修正后重跑完全相同的综合命令。自动化恢复全绿后，再处理 2 小时长稳、API/厂商矩阵、TalkBack/动态字号、SAF 大批量/取消、权限撤销、Macrobenchmark、正式 identity/signing 和真实模型/标定证据。
+
 ## 后续记录模板（复制后追加到文件末尾）
 
 ```text

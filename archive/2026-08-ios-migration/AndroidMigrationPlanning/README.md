@@ -4,6 +4,16 @@
 
 ## 从这里开始
 
+### 使用与数据文档
+
+1. [使用手册](../USER_GUIDE.md)：连接、录制、参考血压、会话管理、离线分析与导出的实际操作。
+2. [功能介绍](../FEATURE_OVERVIEW.md)：当前已实现能力、结果语义和产品边界。
+3. [滤波与分析参数](../FILTER_AND_ANALYSIS_PARAMETERS.md)：实时显示、实时指标、重放和离线分析的实际 profile 与门限。
+4. [导出数据格式](../EXPORT_DATA_FORMAT.md)：ZIP 层级、CUPRAW1、CSV、JSON、时间轴与关联方法。
+5. [实时与存储实现指南](../REALTIME_AND_STORAGE.md)：面向开发者的 production 调用链和代码索引。
+
+### 开发与迁移文档
+
 1. [Codex Agent 移植入口](00_AGENT_MIGRATION_BRIEF.md)：每轮/上下文压缩后必读的目标 prompt、当前事实、版本映射、契约和工作流程。
 2. [简版开发状态](status/DEVELOPMENT_STATUS.md)：当前版本、已交付能力、下一步和开放阻塞。
 3. [详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)：只追加实际工作和验证证据。
@@ -15,6 +25,7 @@
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：开工前必须确认的事项、风险、缓解与负责人建议。
 10. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：RAW 显示反相、PI/指标时间轴、手工参考血压、自由命名/被试资料、档案/批量导出、0.5～12 Hz fixed-lag 与最终 UI 收敛。
 11. [M7.6 Compose UI 与性能收敛规划](docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md)：已保存会话统一骨架、录制态信息密度、状态/重组边界、无障碍与 Baseline Profile；M7.6 UI 冲突以此为准。
+12. [M7.7 实时指标、会话详情与对齐时间轴规划](docs/11_M7_7_SESSION_DETAIL_AND_TIMELINE_PLAN.md)：五指标完整呈现、详情默认折叠、离线 ZERO/FIXED 0.5～12 Hz、PPG/指标/BP 共享时间窗与离线分析信息架构；相关 UI/详情冲突以此为准。
 
 ## 目录约定
 

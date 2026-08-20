@@ -18,6 +18,9 @@ object CaptureSessionMetadataEditor {
         }
         require(systolic == null || systolic in 20..300) { "systolic must be 20..300" }
         require(diastolic == null || diastolic in 10..250) { "diastolic must be 10..250" }
+        require(systolic == null || (diastolic != null && systolic > diastolic)) {
+            "systolic must be greater than diastolic"
+        }
         val files = CaptureSessionRepository.expectedFiles(directory)
         require(Files.isRegularFile(files.metadata)) { "session metadata is missing" }
         val current = CaptureSessionMetadataCodec.decode(files.metadata)

@@ -1,8 +1,11 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.data.session.CaptureStartContext
@@ -245,6 +248,214 @@ class BleCoordinatorTest {
             coordinator.close()
         }
     }
+
+    @Test
+    fun cupAdvertised120LocksAndPublishesEcgPreview() {
+        val transport = FakeBleTransport()
+        val coordinator = grantedCoordinator(transport)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, coordinator.snapshot.activeStreamProtocolMode)
+            assertFalse(coordinator.snapshot.protocolProbePending)
+            repeat(3) { index ->
+                transport.emit(
+                    BleTransportEvent.ValueReceived(
+                        deviceId,
+                        CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                        Ads1292rPacketProtocol.encode(adsPacket(index.toUInt())),
+                        null,
+                    ),
+                )
+            }
+            assertEquals(CupStreamProtocolMode.ADS1292R_120, coordinator.snapshot.activeStreamProtocolMode)
+            awaitTrue { coordinator.snapshot.freshness == StreamFreshness.FRESH }
+            awaitTrue { coordinator.previewFlow.value.waveform.ecg.isNotEmpty() }
+            val waveform = coordinator.previewFlow.value.waveform
+            assertTrue(waveform.ecg.isNotEmpty())
+            assertTrue(waveform.red.isNotEmpty())
+            assertEquals(waveform.red.size, waveform.ecg.size)
+            assertFalse(coordinator.snapshot.protocolProbePending)
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    @Test
+    fun cupAdvertisedBatchStaysFreshWithoutEcgOrOverride() {
+        val transport = FakeBleTransport()
+        val coordinator = grantedCoordinator(transport)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    encodeCupBatchFrame(batchFrame(1u)),
+                    null,
+                ),
+            )
+            awaitTrue { coordinator.snapshot.freshness == StreamFreshness.FRESH }
+            assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, coordinator.snapshot.activeStreamProtocolMode)
+            assertFalse(coordinator.snapshot.protocolProbePending)
+            assertFalse(coordinator.snapshot.protocolProbeTimedOut)
+            awaitTrue { coordinator.previewFlow.value.waveform.red.isNotEmpty() }
+            assertTrue(coordinator.previewFlow.value.waveform.ecg.isEmpty())
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    @Test
+    fun diagnosticsOnlyValueReceivedDoesNotPublishUiSnapshot() {
+        val transport = FakeBleTransport()
+        val coordinator = grantedCoordinator(transport)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    byteArrayOf(1, 2, 3),
+                    null,
+                ),
+            )
+            val afterFirst = coordinator.snapshot
+            assertEquals(BleConnectionPhase.Receiving(deviceId), afterFirst.phase)
+            repeat(12) {
+                transport.emit(
+                    BleTransportEvent.ValueReceived(
+                        deviceId,
+                        CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                        byteArrayOf(4, 5, 6),
+                        null,
+                    ),
+                )
+            }
+            assertEquals(afterFirst, coordinator.snapshot)
+            val uiBefore = afterFirst.copy(
+                diagnostics = BleGattDiagnostics(),
+                attemptDiagnostics = BleConnectionAttemptDiagnostics(),
+            )
+            val uiAfter = coordinator.snapshot.copy(
+                diagnostics = BleGattDiagnostics(),
+                attemptDiagnostics = BleConnectionAttemptDiagnostics(),
+            )
+            assertEquals(uiBefore, uiAfter)
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    @Test
+    fun detachedPreviewStopsWorkerWhileTransportCanResumeOnNextChunk() {
+        val transport = FakeBleTransport()
+        val coordinator = grantedCoordinator(transport)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    encodeCupBatchFrame(batchFrame(1u)),
+                    null,
+                ),
+            )
+            awaitTrue { coordinator.previewDiagnostics.previewWorkerActive }
+            coordinator.setPreviewUiActive(false)
+            awaitTrue { !coordinator.previewDiagnostics.previewWorkerActive }
+            val detachedSamples = coordinator.previewDiagnostics.processedSampleCount
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    encodeCupBatchFrame(batchFrame(2u)),
+                    null,
+                ),
+            )
+            Thread.sleep(80)
+            assertEquals(detachedSamples, coordinator.previewDiagnostics.processedSampleCount)
+            coordinator.setPreviewUiActive(true)
+            transport.emit(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    encodeCupBatchFrame(batchFrame(3u)),
+                    null,
+                ),
+            )
+            awaitTrue { coordinator.previewDiagnostics.previewWorkerActive }
+        } finally {
+            coordinator.close()
+        }
+    }
+
+    private fun grantedCoordinator(transport: FakeBleTransport): BleCoordinator {
+        val coordinator = BleCoordinator(transport, apiLevel = 33)
+        coordinator.applyPermissionResult(
+            mapOf(
+                "android.permission.BLUETOOTH_SCAN" to true,
+                "android.permission.BLUETOOTH_CONNECT" to true,
+            ),
+        )
+        transport.emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON))
+        return coordinator
+    }
+
+    private fun subscribe(
+        coordinator: BleCoordinator,
+        transport: FakeBleTransport,
+        advertisedName: String,
+    ) {
+        transport.emit(
+            BleTransportEvent.Discovered(
+                BleTransportDiscovery(deviceId, advertisedName, -40, true, Instant.EPOCH),
+            ),
+        )
+        assertEquals(BleCoordinatorAction.STARTED, coordinator.connect(deviceId))
+        transport.emit(BleTransportEvent.Connected(deviceId))
+        val profile = CupBleDeviceProfile.cupNusBringUp
+        transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+        transport.emit(
+            BleTransportEvent.CharacteristicsDiscovered(
+                deviceId = deviceId,
+                serviceUuid = profile.serviceUuid,
+                characteristics = listOf(
+                    BleTransportCharacteristic(
+                        uuid = profile.notifyCharacteristicUuid,
+                        properties = listOf("notify"),
+                        supportsNotifications = true,
+                        isNotifying = false,
+                    ),
+                ),
+                errorMessage = null,
+            ),
+        )
+        transport.emit(
+            BleTransportEvent.NotificationStateChanged(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                true,
+                null,
+            ),
+        )
+    }
+
+    private fun adsPacket(sequence: UInt) = Ads1292rPacket(
+        sequenceNumber = sequence,
+        ecg = List(20) { it.toUInt() },
+        red = List(4) { 100u + it.toUInt() },
+        ir = List(4) { 200u + it.toUInt() },
+    )
+
+    private fun batchFrame(sequence: UByte) = CupBatchFrame(
+        sequence = sequence,
+        samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
+            CupPpgSample(
+                red = (10_000 + index).toUInt(),
+                ir = (20_000 + index).toUInt(),
+            )
+        },
+    )
 
     private fun awaitTrue(predicate: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)

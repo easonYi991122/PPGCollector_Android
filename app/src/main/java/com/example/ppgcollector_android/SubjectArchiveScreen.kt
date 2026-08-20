@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
 import com.example.ppgcollector_android.data.session.SubjectArchiveGroup
+import com.example.ppgcollector_android.data.session.SessionNamePrefix
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -51,6 +52,13 @@ private sealed interface ArchiveListEntry {
         override val stableKey: String = "session:${session.directory}"
     }
 
+    data class PrefixHeader(
+        val subject: String,
+        val prefix: SessionNamePrefix,
+    ) : ArchiveListEntry {
+        override val stableKey: String = "prefix:$subject:${prefix.wireValue}"
+    }
+
     data class UnclassifiedHeader(val count: Int) : ArchiveListEntry {
         override val stableKey: String = "unclassified-header"
     }
@@ -71,17 +79,22 @@ internal fun SubjectArchiveContent(
             state.archive.groups.forEach { group ->
                 add(ArchiveListEntry.Subject(group))
                 if (group.summary.subject in expandedSubjects) {
-                    group.sessions.forEach { session ->
-                        add(
-                            ArchiveListEntry.Session(
-                                session = session.session,
-                                subject = group.summary.subject,
-                                sequenceLabel = "seq ${session.identity.sequence}",
-                            ),
-                        )
+                    group.sessions.groupBy { it.identity.prefix }
+                        .toSortedMap(compareBy { it.wireValue })
+                        .forEach { (prefix, sessions) ->
+                            add(ArchiveListEntry.PrefixHeader(group.summary.subject, prefix))
+                            sessions.forEach { session ->
+                                add(
+                                    ArchiveListEntry.Session(
+                                        session = session.session,
+                                        subject = group.summary.subject,
+                                        sequenceLabel = "${prefix.wireValue} · seq ${session.identity.sequence}",
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
-            }
             if (state.archive.unclassified.isNotEmpty()) {
                 add(ArchiveListEntry.UnclassifiedHeader(state.archive.unclassified.size))
                 state.archive.unclassified.forEach { session ->
@@ -131,6 +144,13 @@ internal fun SubjectArchiveContent(
                     selected = entry.group.summary.subject in state.archiveSelectedSubjects,
                     onToggleExpanded = { onToggleExpanded(entry.group.summary.subject) },
                     onToggleSelected = { onToggleSubject(entry.group.summary.subject) },
+                )
+
+                is ArchiveListEntry.PrefixHeader -> Text(
+                    "${entry.prefix.wireValue} · ${entry.prefix.displayName}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 8.dp, top = 4.dp),
                 )
 
                 is ArchiveListEntry.Session -> ArchiveSessionRow(

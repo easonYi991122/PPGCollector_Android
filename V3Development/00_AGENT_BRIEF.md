@@ -1,6 +1,6 @@
 # V3.0 Agent 工作约定
 
-本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；**`V3.R4.1` 是额外插入的一轮**，收口 R4 直播缺口、ECG 实时显示、采集页卡顿与 R1–R3 口径修正，必须在 R5 之前完成。这不是 iOS 移植任务。
+本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；后来插入 **`V3.R4.1`**、**`V3.R5.1`**，并追加生命周期/录制稳定性 **`V3.R6`** 与真机显示回归修正 **`V3.R7`**。这不是 iOS 移植任务。
 
 ## 每轮开工必读
 
@@ -30,15 +30,15 @@
 - 提交说明格式：`V3.Rn <本轮主题>`，一两句话写清为什么。
 - 不要把未校准的 SpO2 / 预测血压宣称为有效结果。V3.0 的参考血压是人工填写，不是模型输出。
 - 不要把综合 SQI 的显示状态伪装成已改变 `{stem}.csv` 的 `sqi` 列口径（见 rebase 决策）。
-- CUP 168-byte batch 与 Nordic 168-byte sensor packet **都继续作为直播协议**；R4 只在 `Nordic_UART_Service` 身份上增加 `ads1292r` 120-byte。CUP 仍按广播名锁定 batch，禁止改成 ECG 帧。Nordic 的 120/168 无法靠广播名区分，按 R4 的帧几何探测锁定，不要把全部 Nordic 默认切到 120。
+- CUP 168-byte batch 与 Nordic 168-byte sensor packet **都继续作为直播协议**。ads1292r 120-byte 可出现在 `Nordic_UART_Service` **以及 CUP 名前缀的开发板**上。CUP **默认**立刻按 batch 解码；仅当 batch 无接受帧时用帧几何探测 120，并允许手动覆盖。锁定 168 时 CUP 必须保持 `BATCH_COMPATIBLE`，禁止把 CUP 名切到 Nordic sensor packet。Nordic 的 120/168 仍靠几何探测，不要把全部 Nordic 默认切到 120。两种 168 不得靠 payload 互猜。
 - `references/需求V3.0/` 是只读参考，不要改算法 Python 来「迁就」Kotlin；Kotlin 应对齐 Python 口径。
 
 ## 版本标识
 
 | 标识 | 含义 |
 |---|---|
-| V3.R1 … V3.R4、V3.R4.1、V3.R5 | 开发轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；当前待执行 **V3.R4.1** |
-| 当前代码基线 | R1–R4 骨架已合入：MB 命名、定时录制、综合 SQI 显示近似、ads1292r 协议/writer；**Nordic 120 预览未切解码器，不能按 R4 验收视为闭环** |
+| V3.R1 … V3.R4、V3.R4.1、V3.R5、V3.R5.1、V3.R6、V3.R7 | 开发轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R7 JVM/Release 门禁已通过，真机与 Macrobenchmark 仍待测 |
+| 当前代码基线 | R1–R7 已落地；BLE、录制、连续性、实时显示、主线程 I/O 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
 
 ## 证据优先级（本阶段）
 

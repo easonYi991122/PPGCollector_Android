@@ -1,12 +1,12 @@
 # PPGCollector Android 实时数据处理与数据存储实现指南
 
-日期：2026-08-08
+日期：2026-08-09
 
-代码基线：2026-08-08 M7.5 命名归一化、Saved Sessions 双视图/选择工具栏与录制态 UI 收敛实现
+代码基线：2026-08-09 M7.7 实时五指标、会话详情折叠、ZERO/FIXED 0.5–12 Hz 与对齐时间轴实现
 
-适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL 0.5–12 Hz/fixed-lag candidate 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/subject archive/analysis 文件链路，以及 M7.5 的命名归一化、Saved Sessions 档案/逐文件视图和录制态紧凑 UI。
+适用范围：当前 NUS/FFF0 bring-up transport、batch 与 sensor-packet 两个 168-byte planar PPG 协议、历史 408-byte raw 回放兼容、实时取负 raw 后的 RAW/CAUSAL/FIXED 0.5–12 Hz 波形、HR/SQI/R/PI 指标、`CUPRAW1`/25 列 CSV/session v2/metrics/BP sidecar/participant profile/subject archive/analysis 文件链路，以及 M7.7 的 Saved Sessions 双视图、录制态紧凑 UI、详情折叠和 PPG/指标/BP 对齐时间轴。
 
-本文描述的是当前仓库中已经实现的行为，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。真机 IME/TalkBack/SAF/长稳仍不是本地构建证据的一部分。
+本文描述的是当前仓库中已经实现的开发者调用链，不是理想化设计。实时链路和录制链路共享协议、sequence 与信号语义，但各自拥有独立、有界的 decoder/runtime 状态；录制始终以原始 BLE notification 为真源。面向操作、能力、参数和导出读取的短文档分别见 [使用手册](USER_GUIDE.md)、[功能介绍](FEATURE_OVERVIEW.md)、[滤波与分析参数](FILTER_AND_ANALYSIS_PARAMETERS.md) 和 [导出数据格式](EXPORT_DATA_FORMAT.md)。
 
 ## 1. 总体结论
 

@@ -11,7 +11,7 @@ class CupBatchStreamDecoder(
         }
     }
 
-    private val buffer = ArrayList<Byte>(maxPendingBytes)
+    private val buffer = ByteRingBuffer(maxPendingBytes)
     private var detectedDataLength: Int? = null
     var stats: CupDecoderStats = CupDecoderStats()
         private set
@@ -50,10 +50,10 @@ class CupBatchStreamDecoder(
                     discardFirst(1)
                     continue
                 }
-                val wire = buffer.subList(0, CupSensorPacketProtocolV1.frameLength).toByteArray()
+                val wire = buffer.toByteArray(CupSensorPacketProtocolV1.frameLength)
                 frames += decodeCupSensorPacketFrame(wire)
                 stats = stats.withFrame()
-                buffer.subList(0, CupSensorPacketProtocolV1.frameLength).clear()
+                buffer.removeFirst(CupSensorPacketProtocolV1.frameLength)
                 continue
             }
             if (buffer.size < 5) break
@@ -70,7 +70,7 @@ class CupBatchStreamDecoder(
                     discardFirst(1)
                     continue
                 }
-                buffer.subList(0, CupBatchProtocolV1.auxiliaryFrameLength).clear()
+                buffer.removeFirst(CupBatchProtocolV1.auxiliaryFrameLength)
                 stats = stats.withAuxiliaryFrame()
                 continue
             }
@@ -100,11 +100,11 @@ class CupBatchStreamDecoder(
                 continue
             }
 
-            val wire = buffer.subList(0, totalLength).toByteArray()
+            val wire = buffer.toByteArray(totalLength)
             frames += decodeCupBatchFrame(wire)
             detectedDataLength = dataLength
             stats = stats.withFrame()
-            buffer.subList(0, totalLength).clear()
+            buffer.removeFirst(totalLength)
         }
 
         trimPendingBuffer()
@@ -134,7 +134,7 @@ class CupBatchStreamDecoder(
 
     private fun discardFirst(count: Int) {
         if (count <= 0) return
-        buffer.subList(0, count).clear()
+        buffer.removeFirst(count)
         stats = stats.withDiscarded(count)
     }
 

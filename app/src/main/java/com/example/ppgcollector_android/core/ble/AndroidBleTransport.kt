@@ -33,6 +33,7 @@ import java.util.UUID
 class AndroidBleTransport(
     context: Context,
     private val profile: CupBleDeviceProfile = CupBleDeviceProfile.cupNusBringUp,
+    /** Ordered BLE callback lane; the application supplies a HandlerThread handler. */
     private val mainHandler: Handler = Handler(Looper.getMainLooper()),
     private val monotonicNanos: () -> Long = System::nanoTime,
     private val scanTimeoutMillis: Long = DEFAULT_SCAN_TIMEOUT_MILLIS,
@@ -401,13 +402,14 @@ class AndroidBleTransport(
         }
     }
 
-    fun close() {
+    override fun close() {
         post {
-            stopScanning()
+            finishScanning()
             pendingDescriptors.clear()
             gattsById.values.toList().forEach {
                 releaseGatt(it.device.address, it, disconnect = true)
             }
+            mainHandler.removeCallbacksAndMessages(null)
         }
     }
 

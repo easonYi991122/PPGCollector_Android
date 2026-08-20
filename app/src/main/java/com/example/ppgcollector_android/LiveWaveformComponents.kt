@@ -70,27 +70,22 @@ internal fun LiveWaveformAndMetrics(
         displayCausal.second.size == waveform.ir.size && displayCausal.first.isNotEmpty()
     val fixedLagAvailable = waveform.fixedLagRed.size == waveform.fixedLagIr.size &&
         waveform.fixedLagRed.isNotEmpty()
-    val effectiveMode = when (displayMode) {
-        LiveWaveformDisplayMode.FIXED_LAG -> when {
-            fixedLagAvailable -> LiveWaveformDisplayMode.FIXED_LAG
-            causalAvailable -> LiveWaveformDisplayMode.CAUSAL
-            else -> LiveWaveformDisplayMode.RAW
-        }
-        LiveWaveformDisplayMode.CAUSAL -> if (causalAvailable) {
-            LiveWaveformDisplayMode.CAUSAL
-        } else {
-            LiveWaveformDisplayMode.RAW
-        }
-        LiveWaveformDisplayMode.RAW -> LiveWaveformDisplayMode.RAW
-    }
+    val modeResolution = resolveLiveWaveformMode(
+        requested = displayMode,
+        causalAvailable = causalAvailable,
+        fixedLagAvailable = fixedLagAvailable,
+    )
+    val effectiveMode = modeResolution.effective
     val rawDisplay = remember(
         waveform.generation,
         waveform.publicationSequence,
         waveform.red,
         waveform.ir,
     ) {
-        PpgDisplayTransform.rawPeakUpForPlot(waveform.red) to
-            PpgDisplayTransform.rawPeakUpForPlot(waveform.ir)
+        // Live RAW must be time-invariant: recomputing a fitted trend for every
+        // growing/sliding viewport makes already received samples visibly move.
+        PpgDisplayTransform.liveRawPeakUp(waveform.red) to
+            PpgDisplayTransform.liveRawPeakUp(waveform.ir)
     }
     val red = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> displayCausal.first
@@ -107,26 +102,36 @@ internal fun LiveWaveformAndMetrics(
     } else {
         0
     }
+    val ppgSegmentBreaks = displaySegmentBreakIndices(waveform, effectiveMode)
     val modeDescription = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.5–12 Hz，取负 raw 后滤波"
         LiveWaveformDisplayMode.FIXED_LAG ->
             "fixed-lag 0.5–12 Hz，约 ${waveform.fixedLagLatencySamples / 100.0} 秒延迟"
-        LiveWaveformDisplayMode.RAW -> "原始 ADC 仅显示取负并移除可视化线性趋势"
+        LiveWaveformDisplayMode.RAW -> "原始 ADC 仅显示取负"
     }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(if (density == CaptureContentDensity.COMPACT) 8.dp else 12.dp)) {
         WaveformModeSelector(
-            selected = effectiveMode,
+            selected = modeResolution.requested,
             causalAvailable = causalAvailable,
             fixedLagAvailable = fixedLagAvailable,
             onSelected = onDisplayModeChange,
         )
+        if (modeResolution.isWarming) {
+            Text(
+                "FIXED 正在建立约 ${waveform.fixedLagLatencySamples / 100.0} 秒的右侧上下文；" +
+                    "准备完成后自动切换。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         WaveformPanel(
             label = "RED",
             color = Color(0xFFD32F2F),
             values = red,
             publicationSequence = waveform.publicationSequence,
             excludedLeadingSampleCount = settlingSamples,
+            segmentBreakSampleIndices = ppgSegmentBreaks,
             semanticsDetail = modeDescription,
             compact = density == CaptureContentDensity.COMPACT,
         )
@@ -136,17 +141,23 @@ internal fun LiveWaveformAndMetrics(
             values = ir,
             publicationSequence = waveform.publicationSequence,
             excludedLeadingSampleCount = settlingSamples,
+            segmentBreakSampleIndices = ppgSegmentBreaks,
             semanticsDetail = modeDescription,
             compact = density == CaptureContentDensity.COMPACT,
         )
         if (waveform.ecg.isNotEmpty()) {
             WaveformPanel(
-                label = "ECG · 500 Hz",
+                label = "ECG",
                 color = Color(0xFF6A1B9A),
                 values = waveform.ecg,
                 publicationSequence = waveform.publicationSequence,
                 excludedLeadingSampleCount = 0,
-                semanticsDetail = "ADS1292R 原始 ADC，未取负",
+                segmentBreakSampleIndices = waveform.segmentBreakSampleIndices.map { breakIndex ->
+                    if (waveform.red.isEmpty()) breakIndex
+                    else (breakIndex.toDouble() * waveform.ecg.size / waveform.red.size)
+                        .toInt()
+                },
+                semanticsDetail = "ADS1292R 每 5 点均值显示，未取负；落盘仍为原始 ADC",
                 compact = density == CaptureContentDensity.COMPACT,
             )
         }
@@ -170,6 +181,24 @@ internal fun LiveWaveformAndMetrics(
     }
 }
 
+internal fun displaySegmentBreakIndices(
+    waveform: LiveWaveformSnapshot,
+    mode: LiveWaveformDisplayMode,
+): List<Int> {
+    if (mode != LiveWaveformDisplayMode.FIXED_LAG) {
+        return waveform.segmentBreakSampleIndices.toList()
+    }
+    val rawStart = waveform.sourceSampleStartIndex ?: return emptyList()
+    val fixedStart = waveform.fixedLagSourceSampleStartIndex ?: return emptyList()
+    val fixedEnd = waveform.fixedLagSourceSampleEndIndex ?: return emptyList()
+    return buildList {
+        waveform.segmentBreakSampleIndices.forEach { rawOffset ->
+            val sourceIndex = rawStart + rawOffset
+            if (sourceIndex in fixedStart..fixedEnd) add((sourceIndex - fixedStart).toInt())
+        }
+    }
+}
+
 @Composable
 private fun WaveformModeSelector(
     selected: LiveWaveformDisplayMode,
@@ -186,7 +215,9 @@ private fun WaveformModeSelector(
             val enabled = when (mode) {
                 LiveWaveformDisplayMode.RAW -> true
                 LiveWaveformDisplayMode.CAUSAL -> causalAvailable
-                LiveWaveformDisplayMode.FIXED_LAG -> fixedLagAvailable
+                // FIXED is a valid user choice during its initial right-context
+                // warmup; availability controls the plotted fallback, not input.
+                LiveWaveformDisplayMode.FIXED_LAG -> true
             }
             val buttonModifier = Modifier
                 .weight(1f)
@@ -197,7 +228,11 @@ private fun WaveformModeSelector(
                     contentDescription = when (mode) {
                         LiveWaveformDisplayMode.RAW -> "RAW 原始显示"
                         LiveWaveformDisplayMode.CAUSAL -> "CAUSAL 因果 0.5 到 12 赫兹"
-                        LiveWaveformDisplayMode.FIXED_LAG -> "FIXED 固定延迟 0.5 到 12 赫兹"
+                        LiveWaveformDisplayMode.FIXED_LAG -> if (fixedLagAvailable) {
+                            "FIXED 固定延迟 0.5 到 12 赫兹"
+                        } else {
+                            "FIXED 固定延迟 0.5 到 12 赫兹，正在准备"
+                        }
                     }
                 }
             if (mode == selected) {
@@ -226,6 +261,7 @@ private fun WaveformPanel(
     values: DoubleArray,
     publicationSequence: Long,
     excludedLeadingSampleCount: Int,
+    segmentBreakSampleIndices: List<Int>,
     semanticsDetail: String,
     compact: Boolean,
     modifier: Modifier = Modifier,
@@ -268,6 +304,9 @@ private fun WaveformPanel(
                         val scale = verticalRange
                         val path = if (scale != null && plot.points.isNotEmpty()) {
                             val span = (scale.upper - scale.lower).coerceAtLeast(1e-9)
+                            val breaks = segmentBreakSampleIndices.sorted()
+                            var nextBreak = 0
+                            var previousOffset: Int? = null
                             Path().apply {
                                 plot.points.forEachIndexed { index, point ->
                                     val x = if (values.size <= 1) size.width / 2f else {
@@ -275,7 +314,16 @@ private fun WaveformPanel(
                                     }
                                     val y = ((scale.upper - point.value) / span * size.height)
                                         .toFloat().coerceIn(0f, size.height)
-                                    if (index == 0) moveTo(x, y) else lineTo(x, y)
+                                    while (nextBreak < breaks.size &&
+                                        breaks[nextBreak] <= (previousOffset ?: Int.MIN_VALUE)
+                                    ) {
+                                        nextBreak++
+                                    }
+                                    val crossesBreak = nextBreak < breaks.size &&
+                                        breaks[nextBreak] in ((previousOffset ?: point.offset) + 1)..point.offset
+                                    if (index == 0 || crossesBreak) moveTo(x, y) else lineTo(x, y)
+                                    if (crossesBreak) nextBreak++
+                                    previousOffset = point.offset
                                 }
                             }
                         } else null
@@ -300,6 +348,18 @@ private fun WaveformPanel(
                                     color,
                                     style = Stroke(1.75.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
                                 )
+                            }
+                            segmentBreakSampleIndices.forEach { breakIndex ->
+                                if (values.size > 1) {
+                                    val x = breakIndex.coerceIn(0, values.lastIndex).toFloat() /
+                                        values.lastIndex.toFloat() * size.width
+                                    drawLine(
+                                        color.copy(alpha = 0.45f),
+                                        Offset(x, 0f),
+                                        Offset(x, size.height),
+                                        strokeWidth = 1.dp.toPx(),
+                                    )
+                                }
                             }
                         }
                     },
@@ -329,7 +389,7 @@ private fun waveformDetailText(
             "${waveform.fixedLagSourceSampleStartIndex ?: "—"}–${waveform.fixedLagSourceSampleEndIndex ?: "—"} · " +
             "约 ${"%.2f".format(Locale.ROOT, waveform.fixedLagLatencySamples / 100.0)} 秒延迟"
     LiveWaveformDisplayMode.RAW ->
-        "100 Hz accepted RAW · 显示取负并移除可视化线性趋势；落盘仍为原始 ADC"
+        "100 Hz accepted RAW · 显示仅取负；落盘仍为原始 ADC"
 }
 
 internal fun waveformContentDescription(label: String, sampleCount: Int, detail: String? = null): String =

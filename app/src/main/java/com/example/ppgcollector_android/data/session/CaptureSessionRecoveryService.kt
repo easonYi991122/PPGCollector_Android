@@ -170,6 +170,9 @@ object CaptureSessionRecoveryService {
             val bloodPressureScan = sourceFiles.bloodPressure?.let { path ->
                 if (!Files.isRegularFile(path)) null else CaptureBloodPressureSeries.scan(path)
             }
+            val ecgScan = sourceFiles.ecg?.let { path ->
+                if (!Files.isRegularFile(path)) null else CaptureEcgCsv.scan(path)
+            }
             val destinationFiles = SessionFileSet(
                 raw = staging.resolve("$requestedBaseName.cupraw"),
                 csv = staging.resolve("$requestedBaseName.csv"),
@@ -180,7 +183,7 @@ object CaptureSessionRecoveryService {
                 bloodPressure = sourceFiles.bloodPressure?.takeIf { bloodPressureScan != null }?.let {
                     staging.resolve("$requestedBaseName.blood-pressure.csv")
                 },
-                ecg = sourceFiles.ecg?.takeIf(Files::isRegularFile)?.let {
+                ecg = sourceFiles.ecg?.takeIf { ecgScan != null }?.let {
                     staging.resolve("${requestedBaseName}_ecg.csv")
                 },
             )
@@ -196,8 +199,8 @@ object CaptureSessionRecoveryService {
                     destinationFiles.bloodPressure,
                 )
             }
-            if (destinationFiles.ecg != null) {
-                Files.copy(sourceFiles.ecg!!, destinationFiles.ecg, StandardCopyOption.COPY_ATTRIBUTES)
+            if (destinationFiles.ecg != null && ecgScan != null) {
+                copyPrefix(sourceFiles.ecg!!, ecgScan.validByteCount, destinationFiles.ecg)
             }
 
             val sourceMetadataBytes = if (Files.isRegularFile(sourceFiles.metadata)) {

@@ -96,6 +96,7 @@ interface BleTransport {
     fun discoverServices(deviceId: String)
     fun discoverCharacteristics(characteristicUuids: List<String>, serviceUuid: String, deviceId: String)
     fun setNotificationsEnabled(enabled: Boolean, characteristicUuid: String, deviceId: String)
+    fun close() = Unit
 }
 
 class FakeBleTransport : BleTransport {

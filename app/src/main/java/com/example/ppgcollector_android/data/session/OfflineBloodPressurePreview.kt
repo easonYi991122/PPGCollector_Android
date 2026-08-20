@@ -65,8 +65,12 @@ object OfflineBloodPressurePreviewFactory {
             for (index in 1..timeSeconds.size) {
                 val boundary = index == timeSeconds.size || breaks[index]
                 if (!boundary) continue
-                var sourceIndex = runStart + warmupSamples - 1
-                while (sourceIndex < index) {
+                val firstWarmPoint = runStart + warmupSamples - 1
+                var sourceIndex = firstWarmPoint
+                var firstPoint = true
+                while (sourceIndex < index &&
+                    (firstPoint || sourceIndex + cadenceSamples < index)
+                ) {
                     val time = timeSeconds[sourceIndex]
                     if (time.isFinite()) {
                         add(
@@ -79,6 +83,7 @@ object OfflineBloodPressurePreviewFactory {
                         )
                     }
                     sourceIndex += cadenceSamples
+                    firstPoint = false
                 }
                 runStart = index
             }

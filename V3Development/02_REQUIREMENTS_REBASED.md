@@ -127,10 +127,11 @@ sbp/dbp、吸烟、饮酒**不拦截**。
 
 **要做（R4）：**
 
-- 连接：仍 NUS + `Nordic_UART_Service`（及现有 CUP 扫描）。CUP 路径不改，连接开始即锁定 batch。
+- 连接：仍 NUS + `Nordic_UART_Service`（及现有 CUP 扫描）。CUP **默认**连接开始即按 batch 预览。
 - 新模式 `ADS1292R_120`：帧 120 B，`AB BA` + u32 seq + ECG×20 + RED×4 + IR×4 + `CD DC`；小端；25 帧/s；ECG 500 Hz，PPG 100 Hz。
 - **三条直播协议都要能采：** CUP batch 168、Nordic sensor 168、ads1292r 120。禁止把 `Nordic_UART_Service` 一律默认切到 120（会弄坏仍吐 168 的 Nordic 设备）。168 sensor 解码器不仅留给旧 cupraw 回放，也留给新的 Nordic 168 录制。
 - **Nordic 120 vs 168 的选择：** 不能靠设备身份。不要用命名表单的指尖/腕部前缀去绑解码器（需求 1.3：前缀由用户选，与线协议无关）。R4 采用 **帧几何探测 + 超时手动覆盖**，详见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md) V3.R4。
+- **R5.1：** ads1292r 120 也会出现在 **CUP 广播名的开发板**上（模拟腕带走 CUP 身份、payload 却是 120 字节）。CUP 不得一开始就当 ECG；仅当 batch 无接受帧时探测 120 / 出示手动覆盖。CUP 的 168 锁定仍是 `BATCH_COMPATIBLE`，禁止把 CUP 名切到 `SENSOR_PACKET_168`。
 - 可录制仍只看 PPG 新鲜度；探测未锁定前视为非 FRESH。ECG 丢帧只计数。
 - 实时增加 ECG 波形（并列或通道切换）；显示可抽点，落盘原样 ADC、不取负。无 ECG 协议不画第三条。
 - `{stem}_ecg.csv` + metadata 指针；CUP 与 Nordic 168 会话 `ecg_file=null`。

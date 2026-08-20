@@ -30,6 +30,7 @@ data class CaptureSessionInspection(
     val findings: List<CaptureInspectionFinding>,
     val metrics: CaptureSidecarScanReport? = null,
     val bloodPressure: CaptureSidecarScanReport? = null,
+    val ecg: CaptureSidecarScanReport? = null,
 ) {
     val isVerifiedConsistent: Boolean
         get() = findings.isEmpty() &&
@@ -38,10 +39,15 @@ data class CaptureSessionInspection(
             csv.hasTruncatedFinalLine == false &&
             (metrics == null || (metrics.isStructurallyValid && !metrics.hasTruncatedFinalLine)) &&
             (bloodPressure == null ||
-                (bloodPressure.isStructurallyValid && !bloodPressure.hasTruncatedFinalLine))
+                (bloodPressure.isStructurallyValid && !bloodPressure.hasTruncatedFinalLine)) &&
+            (ecg == null || (ecg.isStructurallyValid && !ecg.hasTruncatedFinalLine))
 
     val hasRecoverableTail: Boolean
-        get() = replay?.tailIssue != null || csv?.hasTruncatedFinalLine == true
+        get() = replay?.tailIssue != null ||
+            csv?.hasTruncatedFinalLine == true ||
+            metrics?.hasTruncatedFinalLine == true ||
+            bloodPressure?.hasTruncatedFinalLine == true ||
+            ecg?.hasTruncatedFinalLine == true
 }
 
 object CaptureSessionInspectionService {
@@ -116,6 +122,13 @@ object CaptureSessionInspectionService {
             findings,
             "blood-pressure",
         )
+        val ecg = scanOptionalSidecar(
+            files.ecg,
+            CaptureEcgCsv.header,
+            findings,
+            "ecg",
+            scanner = CaptureEcgCsv::scan,
+        )
 
         if (metadata != null) {
             if (!metadata.complete) {
@@ -150,13 +163,41 @@ object CaptureSessionInspectionService {
                     "blood-pressure rows ${bloodPressure.completeDataRowCount} do not match metadata ${metadata.writer.bloodPressureRows}",
                 )
             }
+            if (ecg != null) {
+                if (ecg.sessionId != null && ecg.sessionId != metadata.sessionId) {
+                    findings += finding(
+                        "ecg-session-id",
+                        CaptureInspectionSeverity.ERROR,
+                        "ECG session_id does not match metadata",
+                    )
+                }
+                val ecgRate = metadata.ecgSampleRateHz
+                val expectedRows = if (metadata.sampleRateHz > 0 &&
+                    ecgRate != null && ecgRate % metadata.sampleRateHz == 0
+                ) {
+                    metadata.sampleCount * (ecgRate / metadata.sampleRateHz)
+                } else null
+                if (expectedRows != null && ecg.completeDataRowCount != expectedRows) {
+                    findings += finding(
+                        "ecg-row-count",
+                        CaptureInspectionSeverity.ERROR,
+                        "ECG rows ${ecg.completeDataRowCount} do not match metadata-derived $expectedRows",
+                    )
+                }
+            } else if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                findings += finding(
+                    "ecg-missing",
+                    CaptureInspectionSeverity.ERROR,
+                    "ADS1292R session is missing its ECG sidecar",
+                )
+            }
         }
         if (replay != null && csv != null && replay.acceptedSamples != csv.completeDataRowCount) {
             findings += finding("raw-csv-sample-count", CaptureInspectionSeverity.ERROR,
                 "replayed samples ${replay.acceptedSamples} do not match CSV rows ${csv.completeDataRowCount}")
         }
 
-        return CaptureSessionInspection(replay, csv, metadata, findings, metrics, bloodPressure)
+        return CaptureSessionInspection(replay, csv, metadata, findings, metrics, bloodPressure, ecg)
     }
 
     fun scanCsv(path: Path): CaptureCsvScanReport {
@@ -253,6 +294,7 @@ object CaptureSessionInspectionService {
         expectedHeader: String,
         findings: MutableList<CaptureInspectionFinding>,
         label: String,
+        scanner: ((Path) -> CaptureSidecarScanReport)? = null,
     ): CaptureSidecarScanReport? {
         if (path == null) return null
         if (!Files.isRegularFile(path)) {
@@ -264,7 +306,7 @@ object CaptureSessionInspectionService {
             return null
         }
         return try {
-            val report = if (label == "metrics") {
+            val report = scanner?.invoke(path) ?: if (label == "metrics") {
                 CaptureMetricSeries.scan(path)
             } else {
                 CaptureBloodPressureSeries.scan(path)

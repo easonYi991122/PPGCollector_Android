@@ -185,9 +185,60 @@ object ComboSqi {
         if (amplitude <= 1e-9) return Triple(null, null, null)
         val derivative = values.zipWithNext().map { (a, b) -> abs(b - a) / amplitude * 100.0 }
         val steepness = derivative.take(max(1, (fs * 0.08).toInt())).maxOrNull() ?: 0.0
-        val height = (amplitude * 0.5 / amplitude).coerceIn(0.0, 1.0)
+        val peaks = pressurePeaks(values, fs)
+        val height = pressurePeakHeight(values, peaks, fs)
         val severity = ((steepness - 2.4) / 3.6).coerceIn(0.0, 1.0)
         return Triple(severity, height, steepness)
+    }
+
+    /**
+     * Estimates the reference implementation's P2/P1 height ratio.  The old
+     * placeholder used `amplitude * 0.5 / amplitude`, making the pressure
+     * gate permanently true whenever the other three gates happened to pass.
+     * This bounded local implementation uses the same 80 ms–0.6 s
+     * physiological window and normalizes against the beat's own trough.
+     */
+    private fun pressurePeakHeight(values: List<Double>, peaks: List<Int>, fs: Int): Double {
+        if (peaks.size < 2) return 1.0
+        val ratios = ArrayList<Double>()
+        peaks.zipWithNext().forEach { (peak, nextPeak) ->
+            val beatLength = nextPeak - peak
+            if (beatLength <= 0) return@forEach
+            val end = min(nextPeak, min(values.lastIndex, peak + min((beatLength * 0.8).toInt(), (fs * 0.6).toInt())))
+            val start = min(values.lastIndex, peak + max(1, (fs * 0.08).toInt()))
+            if (end <= start) return@forEach
+            val trough = values.subList(peak, nextPeak + 1).minOrNull() ?: return@forEach
+            val p1Height = values[peak] - trough
+            if (p1Height <= 1e-9) return@forEach
+            val candidate = (start until end).maxByOrNull { values[it] }
+            val p2Height = candidate?.let { (values[it] - trough) / p1Height } ?: 0.0
+            ratios += p2Height.coerceIn(0.0, 1.0)
+        }
+        return ratios.sorted().let { sorted ->
+            if (sorted.isEmpty()) 0.0 else sorted[sorted.size / 2]
+        }
+    }
+
+    private fun pressurePeaks(values: List<Double>, fs: Int): List<Int> {
+        if (values.size < 3) return emptyList()
+        val mean = values.average()
+        val deviation = sqrt(values.sumOf { (it - mean) * (it - mean) } / values.size)
+        if (deviation <= 1e-9) return emptyList()
+        val threshold = mean + deviation * 0.5
+        val minimumDistance = max(1, (fs * 60.0 / 180.0).toInt())
+        var lastPeak = -minimumDistance
+        return buildList {
+            for (index in 1 until values.lastIndex) {
+                if (values[index] >= threshold &&
+                    values[index] >= values[index - 1] &&
+                    values[index] >= values[index + 1] &&
+                    index - lastPeak >= minimumDistance
+                ) {
+                    add(index)
+                    lastPeak = index
+                }
+            }
+        }
     }
 
     private fun formatScore(value: Double) = "%.2f".format(java.util.Locale.ROOT, value)

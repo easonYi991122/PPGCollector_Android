@@ -13,8 +13,9 @@ data class LivePpgIngestResult(
  * Single causal PPG state owner for one ordered live stream.
  *
  * Raw and causal waveform snapshots and 800/100 metric requests are derived
- * from the same preprocessors and bounded rings. A discontinuity resets all
- * four channels atomically so display and metrics cannot span a gap.
+ * from the same preprocessors and bounded rings. A discontinuity resets the
+ * processing state, while keeping the bounded display history so one missing
+ * packet cannot make all three live windows look newly connected.
  */
 class LivePpgSignalRuntime(
     val profile: LiveMetricRuntimeProfile = LiveMetricRuntimeProfile.iosBaseline01,
@@ -41,6 +42,7 @@ class LivePpgSignalRuntime(
     private var displayCausalRedFilter = CausalPpgDisplayFilterRuntime()
     private var displayCausalIrFilter = CausalPpgDisplayFilterRuntime()
     private var fixedLagRuntime = FixedLagPpgFilterRuntime()
+    private var ecgDisplayDownsampler = EcgDisplayDownsampler()
     private val fixedLagSamples = ArrayDeque<FixedLagPpgSample>(profile.windowSampleCount)
     private var ringStart = 0
     private var ringSize = 0
@@ -49,10 +51,14 @@ class LivePpgSignalRuntime(
     private var nextAcceptedSampleIndex = 0L
     private var acceptedSampleCount = 0L
     private var continuousSampleCount = 0L
+    private var displayContinuousSampleCount = 0L
     private var nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()
     private var metricEpoch = 0L
     private var publicationSequence = 0L
     private var nextPublishNanos: Long? = null
+    private var continuityEpoch = 0L
+    private var gapCount = 0L
+    private val segmentBreaks = ArrayDeque<Long>()
     private val refreshIntervalNanos = 1_000_000_000L / refreshRateHz.toLong()
 
     var generation: Long = 0L
@@ -64,22 +70,32 @@ class LivePpgSignalRuntime(
         get() = ringSize
     val continuousSamples: Long
         get() = continuousSampleCount
+    val currentContinuityEpoch: Long
+        get() = continuityEpoch
+    val gapCountValue: Long
+        get() = gapCount
 
     fun ingest(
         decodedFrames: List<CupDecodedFrameEvent>,
         acceptedSampleStartIndex: Long,
         measuredAt: Instant,
         nowNanos: Long,
+        acceptedEcgSamples: List<UInt> = emptyList(),
     ): LivePpgIngestResult {
         if (acceptedSampleStartIndex != nextAcceptedSampleIndex) {
-            invalidateContinuity(acceptedSampleStartIndex)
+            invalidateContinuity(acceptedSampleStartIndex, resetDisplayFilters = true)
         }
 
         var analysisIsDue = false
         for (decoded in decodedFrames) {
             if (!decoded.isAccepted) continue
             if (decoded.sequenceEvent is CupSequenceEvent.Gap) {
-                invalidateContinuity(nextAcceptedSampleIndex)
+                gapCount++
+                markSegmentBreak(nextAcceptedSampleIndex)
+                // A missing wire frame invalidates metrics, but it must not
+                // repeatedly restart presentation-only filters. The segment
+                // marker communicates the discontinuity to the plot.
+                invalidateContinuity(nextAcceptedSampleIndex, resetDisplayFilters = false)
             }
             for (sample in decoded.frame.samples) {
                 val rawRedValue = sample.red.toDouble()
@@ -89,7 +105,10 @@ class LivePpgSignalRuntime(
                 val red = redPreprocessor.process(rawRedValue).sample
                 val ir = irPreprocessor.process(rawIrValue).sample
                 if (red == null || ir == null) {
-                    invalidateContinuity(nextAcceptedSampleIndex + 1L)
+                    invalidateContinuity(
+                        nextAcceptedSampleIndex + 1L,
+                        resetDisplayFilters = true,
+                    )
                     acceptedSampleCount++
                     continue
                 }
@@ -115,6 +134,7 @@ class LivePpgSignalRuntime(
                 nextAcceptedSampleIndex++
                 acceptedSampleCount++
                 continuousSampleCount++
+                displayContinuousSampleCount++
             }
             while (continuousSampleCount >= nextAnalysisContinuousSampleCount) {
                 analysisIsDue = true
@@ -122,27 +142,31 @@ class LivePpgSignalRuntime(
             }
         }
 
+        // ECG is appended only after the same sequence gate has accepted its
+        // corresponding PPG packet. This keeps the first ECG snapshot atomic
+        // with RED/IR instead of publishing a transient two-window state.
+        if (acceptedEcgSamples.isNotEmpty()) ingestEcgDisplaySamples(acceptedEcgSamples)
         if (ringSize > 0 && nextPublishNanos == null) nextPublishNanos = nowNanos
         return LivePpgIngestResult(
             waveform = publishIfDue(nowNanos, measuredAt),
-            metricRequest = if (analysisIsDue) metricRequest(measuredAt) else null,
+            metricRequest = if (analysisIsDue &&
+                continuousSampleCount >= profile.windowSampleCount
+            ) metricRequest(measuredAt) else null,
         )
     }
 
     fun poll(nowNanos: Long, measuredAt: Instant): LiveWaveformSnapshot? =
         publishIfDue(nowNanos, measuredAt)
 
-    /** Display-only ECG path: retain one sample per five 500 Hz ADC samples. */
+    /** Display-only ECG path: average each five 500 Hz ADC samples into one point. */
     fun ingestEcgDisplaySamples(samples: List<UInt>) {
-        samples.forEachIndexed { index, sample ->
-            if (index % 5 == 0) {
-                val writeIndex = (ecgRingStart + ecgRingSize) % profile.windowSampleCount
-                displayEcg[writeIndex] = sample.toDouble()
-                if (ecgRingSize < profile.windowSampleCount) {
-                    ecgRingSize++
-                } else {
-                    ecgRingStart = (ecgRingStart + 1) % profile.windowSampleCount
-                }
+        ecgDisplayDownsampler.ingest(samples).forEach { sample ->
+            val writeIndex = (ecgRingStart + ecgRingSize) % profile.windowSampleCount
+            displayEcg[writeIndex] = sample
+            if (ecgRingSize < profile.windowSampleCount) {
+                ecgRingSize++
+            } else {
+                ecgRingStart = (ecgRingStart + 1) % profile.windowSampleCount
             }
         }
     }
@@ -158,10 +182,16 @@ class LivePpgSignalRuntime(
         request.generation == generation && request.requestSequence == requestSequence
 
     fun reset() {
+        ringStart = 0
+        ringSize = 0
+        ecgRingStart = 0
+        ecgRingSize = 0
         acceptedSampleCount = 0L
         publicationSequence = 0L
         requestSequence = 0L
-        invalidateContinuity(0L)
+        gapCount = 0L
+        segmentBreaks.clear()
+        invalidateContinuity(0L, resetDisplayFilters = true)
     }
 
     private fun metricRequest(measuredAt: Instant): LiveMetricAnalysisRequest? {
@@ -196,7 +226,8 @@ class LivePpgSignalRuntime(
     }
 
     private fun snapshot(measuredAt: Instant): LiveWaveformSnapshot {
-        val firstContinuousOffset = continuousSampleCount - ringSize.toLong()
+        val firstContinuousOffset =
+            (displayContinuousSampleCount - ringSize.toLong()).coerceAtLeast(0L)
         val settlingTarget = (profile.sampleRateHz * 2).toLong()
         val settlingSamples = (settlingTarget - firstContinuousOffset)
             .coerceIn(0L, ringSize.toLong())
@@ -218,6 +249,12 @@ class LivePpgSignalRuntime(
             displayCausalIr = copyRing(displayCausalIr),
             displayCausalProfile = displayCausalRedFilter.profile.identifier,
             continuousSampleCount = continuousSampleCount,
+            continuityEpoch = continuityEpoch,
+            gapCount = gapCount,
+            segmentBreakSampleIndices = segmentBreaks
+                .filter { it >= nextAcceptedSampleIndex - ringSize && it <= nextAcceptedSampleIndex }
+                .map { (it - (nextAcceptedSampleIndex - ringSize)).toInt() }
+                .toIntArray(),
             metricWarmupSampleCount = profile.windowSampleCount,
             settlingSampleCount = settlingSamples,
             fixedLagRed = fixedLagSamples.map { it.red }.toDoubleArray(),
@@ -261,23 +298,40 @@ class LivePpgSignalRuntime(
         return result
     }
 
-    private fun invalidateContinuity(nextIndex: Long) {
+    private fun invalidateContinuity(
+        nextIndex: Long,
+        resetDisplayFilters: Boolean,
+    ) {
         redPreprocessor.reset()
         irPreprocessor.reset()
-        displayCausalRedFilter.reset()
-        displayCausalIrFilter.reset()
-        fixedLagRuntime.reset(nextIndex)
-        fixedLagSamples.clear()
-        ringStart = 0
-        ringSize = 0
-        ecgRingStart = 0
-        ecgRingSize = 0
+        if (resetDisplayFilters) {
+            ringStart = 0
+            ringSize = 0
+            ecgRingStart = 0
+            ecgRingSize = 0
+            segmentBreaks.clear()
+            nextPublishNanos = null
+            displayCausalRedFilter.reset()
+            displayCausalIrFilter.reset()
+            fixedLagRuntime.reset(nextIndex)
+            fixedLagSamples.clear()
+            ecgDisplayDownsampler.reset()
+            displayContinuousSampleCount = 0L
+        }
         nextAcceptedSampleIndex = nextIndex
         continuousSampleCount = 0L
         nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()
         metricEpoch = 0L
-        nextPublishNanos = null
+        continuityEpoch++
         generation++
+    }
+
+    private fun markSegmentBreak(sourceSampleIndex: Long) {
+        if (segmentBreaks.lastOrNull() != sourceSampleIndex) segmentBreaks.addLast(sourceSampleIndex)
+        val minimumVisible = sourceSampleIndex - profile.windowSampleCount - 1L
+        while (segmentBreaks.firstOrNull()?.let { it < minimumVisible } == true) {
+            segmentBreaks.removeFirst()
+        }
     }
 
     private fun copyEcg(): DoubleArray {

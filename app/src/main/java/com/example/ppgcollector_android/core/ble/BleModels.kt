@@ -3,6 +3,14 @@ package com.example.ppgcollector_android.core.ble
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.time.Instant
 
+object BleAdvertisedIdentity {
+    const val NORDIC_UART_SERVICE = "Nordic_UART_Service"
+
+    fun isNordic(name: String?): Boolean = name == NORDIC_UART_SERVICE
+
+    fun isCup(name: String?): Boolean = name != null && name.startsWith("CUP")
+}
+
 data class CupAdvertisedProtocolVariant(
     val exactAdvertisedName: String,
     val streamProtocolMode: CupStreamProtocolMode,
@@ -39,7 +47,7 @@ data class CupBleDeviceProfile(
             isPassiveStream = true,
             additionalAdvertisedVariants = listOf(
                 CupAdvertisedProtocolVariant(
-                    exactAdvertisedName = "Nordic_UART_Service",
+                    exactAdvertisedName = BleAdvertisedIdentity.NORDIC_UART_SERVICE,
                     streamProtocolMode = CupStreamProtocolMode.SENSOR_PACKET_168,
                 ),
             ),

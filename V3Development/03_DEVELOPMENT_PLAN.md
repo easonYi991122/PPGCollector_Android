@@ -1,9 +1,9 @@
 # V3.0 开发方案
 
-原约束：编码工作不超过五轮（`V3.R1` … `V3.R5`）。  
-**V3.R4.1** 是在 R4 验收缺口、ECG 实时显示、采集页卡顿、以及 R1–R3 口径偏差确认之后，额外插入的一轮（仍在 R5 之前）。每轮交付可 JVM 验收的增量。需求依据 [`02_REQUIREMENTS_REBASED.md`](02_REQUIREMENTS_REBASED.md)，代码基线见 [`01_CODEBASE_AS_IS.md`](01_CODEBASE_AS_IS.md)。
+原计划约束是编码工作不超过五轮（`V3.R1` … `V3.R5`）；后续已因复验插入 R4.1/R5.1，并按稳定性审计追加 R6。R6 真机复验暴露实时显示回归与残留空闲卡顿，因此继续追加 R7，不把自动化门禁通过等同于真机体验完成。
+**V3.R4.1** 插在 R4 与 R5 之间。**V3.R5.1** 是 R4.1/R5 代码提交后，针对真机/CUP 名模拟腕带复验发现的直播缺口（采集页仍卡顿、ECG 在 CUP 身份上不可用）追加的修正轮。**V3.R6** 是对 M7.6 之后增量的稳定性审计轮，收口生命周期卡死、录制/波形连续性、主线程 I/O 与 R1–R5 文件/业务契约缺口。每轮交付可 JVM 验收的增量。需求依据 [`02_REQUIREMENTS_REBASED.md`](02_REQUIREMENTS_REBASED.md)，代码基线见 [`01_CODEBASE_AS_IS.md`](01_CODEBASE_AS_IS.md)。
 
-轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`。
+轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`。
 
 ---
 
@@ -16,6 +16,9 @@ R3 综合 SQI 显示状态机（对齐 combo_sqi.py）
 R4 腕部 ads1292r + 保留既有两条 168 直播协议
 R4.1 收口 R4 直播/文件缺口 + ECG 实时可视化 + 采集页卡顿 + R1–R3 口径修正
 R5 回看改血压、档案/导出、兼容收口
+R5.1 CUP/ECG 协议探测修正 + 采集页卡顿收口
+R6 生命周期/录制稳定性 + 主线程与连续性收口 + M7.6 后逻辑缺陷修正
+R7 恢复 M7.6 实时显示语义 + 空闲采集页轻量化 + ECG 显示抗混叠
 ```
 
 | 轮 | 主题 | 主风险 | 可独立演示 |
@@ -26,10 +29,13 @@ R5 回看改血压、档案/导出、兼容收口
 | R4 | ECG 协议 | 三条直播协议隔离；Nordic 120/168 无类型码 | fake 120 显示 ECG 并落 `_ecg.csv`；同身份 fake 168 仍按 sensor packet 采、无 ECG 文件；CUP 回归仍绿 |
 | R4.1 | 直播收口 / ECG 显示 / 卡顿 | 120 预览未切解码器则永远非 FRESH；显示缓冲不得改落盘 | Nordic 120 可开始录制；采集页 RED/IR/ECG 并列；空闲连接不再整页 25 Hz 重组 |
 | R5 | 回看与导出 | 旧会话缺新键 | 详情改 sbp/dbp；ZIP 含 ECG；档案分 PPG/MB |
+| R5.1 | CUP 上 ECG + 卡顿收口 | CUP 名模拟腕带走 batch 会把 120 帧当废帧；R4.1 卡顿治理未真正切断主线程 publish | CUP 名前缀设备可锁定 ads1292r 120 并显示 ECG；手动覆盖可见；空闲预览不再按 notify 重组整页 |
+| R6 | 生命周期、录制与 M7.6 后稳定性 | BLE/协议工作仍占主线程；缺帧会清空三窗；恢复前台叠加全量文件扫描；多项 R5 契约未闭环 | fake BLE 连续/缺帧/后台恢复均不重置或卡死；录制可正确结束；全量 JVM 0 失败；MB/BP/ECG 文件契约回归通过 |
+| R7 | 实时显示回归与空闲 UI 卡顿 | R6 把显示历史与滤波连续性拆成不一致状态；空闲页仍首组装完整图表/表单；ECG 硬抽点会混叠 | RAW 不再随视窗重拟合漂移；CAUSAL/FIXED 在普通序号 gap 后保持可用；空闲页无图表重绘负担；ECG 显示不生成抽点伪峰 |
 
-依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。
+依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。**R5.1 依赖 R4.1 的 120 decoder / ECG 显示环 / uiSnapshotFlow 骨架。R6 依赖先保全 R5.1 当前工作区并形成可回退基线；不得在未区分用户已有修改时覆盖或回滚。**
 
-**当前待执行轮次：`V3.R4.1`。** 不要从 R5 开工；R4 本章验收项未闭环。
+**当前轮次：`V3.R7` 代码与 JVM/Release 门禁已完成；真机滚动、三种显示模式与 ECG CSV 对点仍待复验。**
 
 ---
 
@@ -341,7 +347,8 @@ R4 编码已交付协议骨架，但**不能按本章验收视为闭环**。状�
 
 2. **探测超时与手动覆盖**  
    - 订阅后 2 s（与现有新鲜度窗一致）仍无独占锁定：保持非 FRESH；文案「无法识别数据协议」。  
-   - 仅 `Nordic_UART_Service` 连接显示手动覆盖：「腕部 ECG (120)」/「Nordic PPG (168)」。选中后仍须用该长度做几何校验再锁定；失败保持 pending。CUP 永不出现此控件、永不跑 probe。  
+   - 仅 `Nordic_UART_Service` 连接显示手动覆盖：「腕部 ECG (120)」/「Nordic PPG (168)」。选中后仍须用该长度做几何校验再锁定；失败保持 pending。  
+   - **R5.1 已修正：** 上条「CUP 永不出现此控件、永不跑 probe」作废。CUP 默认仍立刻按 batch 预览；batch 无接受帧时用同一套帧几何探测 120，超时出示「腕部 ECG (120) / CUP PPG (168)」。详见 **V3.R5.1**。  
    - 锁定前 UI：「正在识别数据协议…」（可挂在连接摘要 / 新鲜度旁，不要只改扫描列表）。  
    - 上次成功 Nordic 锁定只作先验（先核对该帧长），**必须**再过几何匹配。
 
@@ -557,6 +564,320 @@ R5 的档案 PPG/MB 分节、回看改 sbp/dbp、批量 ZIP 目录树、ECG-SQI�
 
 ---
 
+## V3.R5.1 修正：CUP 身份上的 ads1292r 探测、手动覆盖、采集页卡顿收口
+
+### 2026-08-20 复验结论（以源码为准）
+
+R4.1 / R5 已提交骨架，但**采集页仍卡、ECG 在 CUP 名设备上不可用**。状态文档不得再把 R4.1 卡顿项与「仅 Nordic 才探测」写成已验收。
+
+#### ECG 读不到 / 显示不出来 / 没有手动选择 — 根因
+
+用户用 **CUP 广播名的模拟腕带开发板** 发 ads1292r 120 字节帧（每 40 ms 一帧：ECG×20 + RED×4 + IR×4，头 `AB BA`、尾 `CD DC`）。这与 `Ads1292rPacketProtocol` 布局一致，**不是协议实现错了**。
+
+现行锁定把探测绑死在精确名：
+
+```text
+connect(): nordicWireProbe = (name == "Nordic_UART_Service") ? NordicWireProbe() : null
+handleValue(): 仅当 probe != null && mode == SENSOR_PACKET_168 才探测
+selectNordicProtocol(): 若 name != "Nordic_UART_Service" 直接 false
+```
+
+CUP 前缀设备 `streamProtocolMode = BATCH_COMPATIBLE`，120 帧被 `CupBatchStreamDecoder` 当成非法 function（byte2 是 seq 低字节，不是 `0x15`），逐字节丢弃，**永远没有接受帧 → 不 FRESH → 不显示 ECG**。`protocolProbePending` 对 CUP 恒 false，连接摘要上的「腕部 ECG (120)」按钮不会出现。
+
+R4.1 原文「CUP 永不 probe」在正式 CUP 指尖 168 上仍正确，但**不能**覆盖「CUP 名 + ads1292r 120 固件」的开发板。本轮改掉这条禁令，改为：**CUP 默认 batch；batch 无接受帧时用同一套帧几何探测 120，并给出手动覆盖。**
+
+Nordic 路径保持：120 vs **sensor packet 168**（不是 CUP batch）。CUP 锁定 168 时必须是 `BATCH_COMPATIBLE`，禁止把 CUP 名设备切到 `SENSOR_PACKET_168`。
+
+#### 采集页仍卡顿 — 根因（R4.1 C 未收口）
+
+| 项 | 代码现状 | 为何仍卡 |
+|---|---|---|
+| 主线程每包 `publish()` | `BleCoordinator` 的 `transport.eventHandler` 在每次 `ValueReceived` 后无条件 `publish()`；`snapshotNow()` 每次 `discoveredDevices.toList()` | GATT notify 在主线程；25 Hz 120 流或失败 batch 丢字节时同样每包跑一遍 |
+| `markValidFrame` 每帧都 publish | `CupBleGattStateMachine.markValidFrame` **恒 `return true`**；`handlePreviewAcceptedFrame` 因此每次跳回主线程 | `uiSnapshotFlow` 即使 `distinctUntilChanged` 也会在主线程做 snapshot 拷贝 |
+| 预览 StateFlow 每包变 | `BlePreviewRuntime.process` 每次接受都写 `processedSampleCount`；`LiveSignalCard` collect 整个 `previewState` | 波形 5 Hz，卡片仍按帧率重组 |
+| 分析仍在 preview 锁内 | `LiveMetricAnalyzer.analyze` 与 `poll` 同一 `synchronized(lock)` | 1 Hz DFT/SQI 堵住 5 Hz 发布 |
+| 门控仍跟全量 service state | `combine(..., serviceClient.state, ...)` 含 waveform；`evaluateGate` 仍每发射 `Files.list` | 预览/录制波形变化会扫盘 |
+| 探测 UI 第二钮写死 Nordic 168 | CUP 即使 pending 也会把覆盖目标设成 sensor packet | CUP 开发板手动选 168 会解错 |
+
+`uiSnapshotFlow` 把 diagnostics 置空是必要的，**不够**。
+
+---
+
+### 目标
+
+1. **CUP 前缀与 Nordic 精确名都能锁定 ads1292r 120**，RED/IR/ECG 三窗可见，落盘仍是 500 Hz `{stem}_ecg.csv`。  
+2. **CUP 默认仍是 batch 168**；仅当 PPG-only 解码没有接受帧时才切 120 或出示手动覆盖。正式 CUP 指尖回归不得误锁 ECG。  
+3. **真正切断采集页与 notify 同频的主线程重组与扫盘。**
+
+本轮不做：回看工作台 ECG、改 CSV `sqi`、按 `PPG-`/`MB-` 选协议、把全部 CUP 默认切到 120。
+
+---
+
+### A. 协议探测：CUP 默认 batch，失效则测 120
+
+帧几何（与固件一致，不要改 `Ads1292rPacketProtocol` 布局）：
+
+```text
+120 B packed: AB BA | u32le seq | u32le ecg[20] | u32le red[4] | u32le ir[4] | CD DC
+发送：40 ms / 帧 → PPG 100 Hz，ECG 500 Hz
+```
+
+168 B 只看尾偏移区分几何（118 vs 166），**解码器按广播身份映射**：
+
+| 广播身份 | 120 几何锁定 | 168 几何锁定 / 默认 |
+|---|---|---|
+| 精确名 `Nordic_UART_Service` | `ADS1292R_120` | `SENSOR_PACKET_168`（现网） |
+| 名称前缀 `CUP`（含 NUS 与 FFF0） | `ADS1292R_120` | `BATCH_COMPATIBLE` |
+
+**CUP 连接时序（必须按此实现）：**
+
+1. `connect()`：`activeStreamProtocolMode = BATCH_COMPATIBLE`；**立刻**按 batch 预览（正式 CUP 不能先卡 2 s）。同时创建几何 probe，`protocolProbePending = false`。  
+2. 每个 notify：原始字节 **拷贝两路**——一路 `CupBatchStreamDecoder`，一路 `NordicWireProbe`（或改名为 `WireGeometryProbe`，逻辑仍是 120 vs 168 尾）。  
+3. **先有接受的 batch 帧**：取消 probe，保持 batch，不出现手动覆盖。  
+4. **连续 3 个独占 120 票且尚无接受 batch 帧**：锁定 `ADS1292R_120`，`previewRuntime.reset(generation, ADS1292R_120)`，按 120 **回放 pending 原始块**，之后 `markValidFrame` 可 FRESH。  
+5. **订阅后 2 s 仍无接受 batch 帧且未锁 120**：`protocolProbeTimedOut = true`，`protocolProbePending = true`，新鲜度保持非 FRESH，文案「无法识别数据协议」，出示手动覆盖。  
+6. 超时后继续缓冲；用户选 120 须再过 120 几何校验；选 CUP 168 强制 `BATCH_COMPATIBLE` 并回放。失败保持 pending。
+
+**Nordic 连接时序：** 保持 R4.1：连接即 pending，不先当 CUP batch 解；3 票锁 120 或 sensor 168；2 s 超时 + 手动「腕部 ECG (120) / Nordic PPG (168)」。
+
+**手动覆盖 UI**（`ConnectionSummaryCard`）：
+
+- 在 `protocolProbePending || protocolProbeTimedOut` 时显示（CUP 超时后也会进这里）。  
+- 第一钮永远「腕部 ECG (120)」→ `ADS1292R_120`。  
+- 第二钮：CUP 身份「CUP PPG (168)」→ `BATCH_COMPATIBLE`；Nordic「Nordic PPG (168)」→ `SENSOR_PACKET_168`。  
+- 把 `selectNordicProtocol` 改名为 `selectStreamProtocol`（或保留旧名但去掉 `name == Nordic_UART_Service` 限制，按上表映射）。
+
+**禁止：**
+
+- 用 120 解析器啃已锁定的 CUP 168。  
+- 把 CUP 名设备锁成 `SENSOR_PACKET_168`。  
+- 按会话名前缀 `PPG-`/`MB-` 选解码器。
+
+**探测几何口径**（补 R4.1 未完）：两票同时成立丢 1 字节不计命中；缓冲区不足以否定 168 时不投 120；有界缓冲。
+
+---
+
+### B. 采集页卡顿收口（在 A 之后立刻做，避免 25 Hz 120 让卡顿更明显）
+
+1. **主线程 publish 门闩**  
+   - `eventHandler` 在 `ValueReceived` 上 **不要**无条件 `publish()`。只在 UI 切片变化时发布：`phase`、`freshness`、`activeStreamProtocolMode`、`protocolProbePending/TimedOut`、`isScanning`、设备列表内容、`lastError`。  
+   - `snapshotNow()` 不要每包 `toList()`；设备列表仅在发现/连接变化时拷贝。  
+   - `markValidFrame` 仅当 freshness **值改变**时返回 true（对齐 `handlePreviewClockTick`）。  
+   - 根组合继续只 collect `uiSnapshotFlow`。diagnostics / characteristics 永不进入该切片。
+
+2. **预览 StateFlow 降频**  
+   - `BlePreviewRuntime` 不得因 `processedSampleCount++` 发布。波形只在既有 5 Hz `poll`/`publishIfDue` 时发布；指标 1 Hz。  
+   - `LiveSignalCard` collect 波形用 `waveform.publicationSequence`，指标用 analysis epoch，不要整份 `BlePreviewSnapshot`。  
+   - `LiveMetricAnalyzer.analyze` 移出 preview 锁（独立队列/线程），失败不影响 `poll`。
+
+3. **门控**  
+   - `combine` 用 `serviceStatus`（或 recording state 枚举），**禁止** `serviceClient.state`（内含 waveform）。  
+   - BLE 侧只订阅 `phase+freshness`（已 `distinctUntilChanged`）。  
+   - `Files.list` / `getFileStore`：名称变更、resume、或 ≤1 Hz。`_participantDraft` 保留在 combine。
+
+4. **绘制**  
+   - 保持 `plot` 点预算 ≤400；ECG 仍 5:1 + 5 Hz。锁定 120 后第三窗标签改为「ECG」，不要写「500 Hz」以免暗示全速率上屏。
+
+5. **验收（JVM）**  
+   - 仅 diagnostics/rawChunkCount +1 → UI snapshot equals 不变，且 `publish`/gate 的 `listSessions` 不增加。  
+   - 预览 25 个 120 帧 / 1 s → 波形 `publicationSequence` 约 5，不是 25。  
+   - CUP 名 + fake 120：3 帧内锁 120，ECG 显示长度约为 PPG 的同时长（5:1），可 FRESH。  
+   - CUP 名 + fake batch 168：无第三窗、无 `_ecg.csv`，不出现「无法识别」。  
+   - Nordic 168/120 回归仍绿。
+
+---
+
+### 主改文件
+
+- `BleGattStateMachine.kt` / `BleCoordinator.kt` / `BlePreviewRuntime.kt` / `BleModels.kt`  
+- `NordicWireProbe.kt`（可改名 `WireGeometryProbe`，保留旧测试别名）  
+- `LiveCaptureScreen.kt` / `MainActivity.kt` / `CaptureServiceViewModel.kt`  
+- `LivePpgSignalRuntime.kt` / `LiveWaveformComponents.kt`  
+- 测试：`NordicWireProbeTest`、CUP 名前缀 + 120 锁定、CUP batch 不误锁、coordinator UI equals、preview 发布节拍
+
+### 本轮不做
+
+R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档案 UI 若仍缺 PPG/MB 小节，单列状态，不在本轮顺手大改。Combo SQI Python 全量对齐仍不在本轮。
+
+---
+
+## V3.R6 稳定性收口：生命周期、录制连续性、主线程与 M7.6 后逻辑缺陷
+
+### 审计基线与结论范围（2026-08-20）
+
+- 审计范围：`2997db7 feat(M7.6)` 之后的已提交增量，直到 `2fc100d`，再加当前未提交的 R5.1 工作区。开始编码前必须先保全当前工作区，记录基线 commit/patch；不得用 reset/checkout 覆盖用户已有修改。
+- 已阅读 V3 brief、as-is、rebased requirements、状态文档与 R1–R5.1 计划，并沿 `MainActivity → ViewModel → BleCoordinator/Transport → preview/recording runtime → writer/repository/archive` 检查实际源码。
+- 当前 `:app:testDebugUnitTest` 实跑为 **194 tests / 2 failed**：`OfflinePpgAnalysisTest.stableSegmentsExcludeContactChangeAndRecoverDominantRate` 与 `OfflineBloodPressurePreviewTest.fallbackUsesEightSecondWarmupOneHertzCadenceAndResetsAtGap`。R6 不允许继续把它们作为已知例外。
+- 静态代码可以直接证明“哪些路径会阻塞/重置”，但无法仅凭源码证明真机当时究竟是序号缺口、队列拥塞还是连接 generation 改变。因此 R6 必须先补有界轨迹与 fake BLE 复现，再按轨迹落修复；禁止只凭 UI 观感改延时或扩大缓冲区。
+
+### 已知现象的根因分层
+
+| 现象 | 代码直接证据 | 结论 / 仍需验证 |
+|---|---|---|
+| 未扫描、未显示波形也卡 | `CaptureViewModel` 初始化建议名称、名称校验、subject profile 回填、`CaptureGateDiskCache.snapshot()` 的 `Files.list/getFileStore` 都可能在 Main；`CaptureSetupCard` 是一个进入可见区时一次性首组装的大型 Lazy item；应用级 preview 两个线程空闲轮询并周期把 clock tick 投回 Main | 主线程文件 I/O + 巨型首组装是直接缺陷；“连接再断开后消失”与文件缓存、首次 Compose/JIT/资源预热完成相符，但须用 frame trace/StrictMode 确认各自占比 |
+| 滑到“数据记录”窗口弹出前卡 | `CaptureSetupCard` 把命名、被试、生活方式、血压、时长、门控和多组 Material 输入控件放在同一 `LazyColumn.item` | 进入预取/视口时整棵子树同时测量、组装；应拆为有稳定 key 的多个 lazy item，并延迟非首屏区块 |
+| 后台再唤出卡死 | `AndroidBleTransport` 把扫描/GATT/notify 事件投到主 `Handler`，状态机、probe 和字节解码随后也在 Main；非录制时应用级 BLE/preview 仍可运行。与此同时 `MainActivity.onStart()` 无条件 `sessionsViewModel.refresh()`，它会重复列会话、扫描旧 BP、列 artifact、再次 rebuild archive，并对 metrics 使用 `readAllLines` | 高概率是恢复时 Main 的 BLE backlog 与大规模 I/O/分配竞争；须用后台前后队列深度、Main dispatch latency、refresh pass 计数确认，不能只在 UI 层加 debounce |
+| PPG 约 1 s 后出现 ECG，随后三窗清空并循环 | preview 中 ADS 包先写 ECG，再做序号事件；`LivePpgSignalRuntime` 对任意 `Gap` 调 `invalidateContinuity()`，会清空 RED/IR/ECG 环、滤波器、指标 warmup 和发布时间；录制 analysis 又在生成 PPG snapshot **之后**才写 ECG | “一个缺帧导致三窗回到刚收到数据状态”是直接原因；当前代码在同一 generation 锁定协议后不会自行来回切换，反复重置不能先归因于协议模式抖动。缺帧由真丢包、主线程积压还是 probe/replay 边界触发，先靠轨迹确认 |
+| 录制进度/界面与 notify 同频 | `CaptureRecordingController.onRawChunk()` 每个原始块都 `publish(CaptureRecordingSnapshot)`，worker 同一块还会多次 publish；`CaptureServiceStatusObservation` 又包含持续变化的完整 recording snapshot | R5.1 只降了 preview 发布频率，录制路径仍会把 service/root UI 拉回包频率；必须拆 status 与 progress 并限频 |
+| ADS 录制连续性不可信 | ADS recording 分支创建了 `CupFrameSequenceTracker` 却不使用，每个包强制 `Continuous/isAccepted=true`；preview 则拒绝 duplicate/out-of-order，二者口径不一致 | 重复/乱序 ADS 会进入派生 PPG/ECG CSV，缺帧统计也不正确；raw 仍应原样保留，但派生文件必须使用同一序号策略 |
+| 断流后录制可能永不结束 | service/controller 没有对连接断开、generation 改变或长期 stale 做录制终止；定时录制只按已接受样本计时，断流后计时会一直暂停 | “样本时钟暂停”本身正确，但必须有明确的断开/长期断流 finalization 策略，不能无限处于 RECORDING |
+
+### M7.6 之后额外发现的逻辑/契约缺陷
+
+| 优先级 | 缺陷 | 修正方向 |
+|---|---|---|
+| P0 | `CaptureStartGate` 用错误文案是否以“血压”开头来排除 BP；“收缩压须高于舒张压”不以该词开头，会错误阻塞开始 | 使用结构化字段/错误类型，不得用中文文案判断业务类别；参考 BP 仍不是开始门控条件 |
+| P0 | ADS writer 未把 `observedSamplesPerFrame` 设为 4，metadata 会回落成 batch 的 20 | 按锁定协议写准确的 PPG samples/frame、ECG samples/frame/row count，并补文件契约测试 |
+| P0 | service/controller 二次 start gate 没带 participant；ViewModel 又会在 FGS 真正 start 成功前先保存 profile revision | service 端重验同一不可绕过字段；把 profile 持久化放进“录制已接受”后的事务，失败开始不得制造 revision |
+| P1 | `SubjectArchiveRepository` 从 metadata 重建 `CanonicalSessionIdentity(subject, seq)` 时使用默认 PPG，导致 `MB-*` 被归到 PPG，ZIP 路径也随之错 | 身份优先从 baseName 解析完整 prefix，并与 metadata subject/seq 交叉校验；必要的新 metadata 键只能 optional decode |
+| P1 | 档案界面仍未真正显示 PPG/MB 小节；会话详情的 BP 摘要仍偏向旧 blood-pressure event count，新的 session-level sbp/dbp 展示/校验未闭环 | 完成 R5 原验收：按 prefix 分节；优先展示 session-level BP，旧 event 仅作为历史；编辑器复用范围与 `SBP > DBP` 校验 |
+| P1 | optional ECG 只进入文件清单/复制，inspection 尚未校验 ECG CSV header、session_id、时间单调性和行数；损坏 ECG 可能被当作完整会话 | 增加 optional sidecar scanner；缺 ECG 对 PPG-only 合法，有 ECG 时必须过契约；recovery/export 共用 inspection 结果 |
+| P1 | Combo SQI 的压力高度 `amplitude * 0.5 / amplitude` 恒等于 0.5，而阈值为 0.32，压力分支不会按参考实现触发；整体仍未完成 Python 跨语言金标 | 以只读参考 Python 生成 fixture，逐字段对齐预处理、压力/运动/异常决策和 debounce；禁止改 Python 迎合 Kotlin |
+| P1 | 当前两项离线 JVM 金标失败 | 先判定是生产回归还是 fixture/测试契约过期；只能以需求与参考实现为准，修完后全量测试不得排除 |
+| P2 | `SessionsViewModel.refresh()` 同一轮多次扫描 sessions/profile/BP/artifact，archive HR 对大 metrics 用 `readAllLines`；导出还会预 hash 后再复制 | 建单次不可变 catalog snapshot，流式聚合大 CSV，复用已扫描结果；导出总大小预计算一次并在复制时增量 hash |
+| P2 | 录中手动血压旧 dialog/callback 仍残留；扫描/详情部分文案仍带旧 CUP-only 或旧 BP 语义 | 删除不可达入口与状态，统一 V3 文案和无障碍描述，不改变 CSV `sqi` 口径 |
+
+### 目标
+
+1. 空闲采集页、滚动到记录表单、后台/前台切换不再发生主线程文件 I/O、notify 同频重组或无界消息积压。
+2. CUP batch 168、Nordic sensor 168、ads1292r 120 三条协议都遵循“一个连接 generation 内只锁一次；一个接受决定同时作用于 RED/IR/ECG”；缺帧不再把可视波形全部清空。
+3. 录制使用与 preview 相同的序号/协议口径，持续状态低频发布，断开/长期断流可确定性结束并留下可恢复、可检查的文件。
+4. 关闭上述 M7.6 后业务/文件缺陷，恢复全量 JVM 0 failure；不把未校准 SpO2/预测血压包装成有效结果。
+
+### 建议执行顺序（同一 R6 内按门闩推进）
+
+`A 复现与轨迹 → B BLE 线程/生命周期 → C 连续性与协议原子化 → D UI/磁盘 → E 录制事务/结束 → F 业务和文件契约 → G 全量验收`
+
+前一步的 fake/JVM 契约未绿，不进入下一步。R6 可以拆成多个小提交，但对外仍是一个轮次；不要把性能重构、算法修正和档案修正压成一个不可审查提交。
+
+### A. 先补可复现轨迹与回归夹具
+
+1. 增加仅用于诊断/测试的**有界环形轨迹**，记录 `connectionGeneration`、协议锁定/手动覆盖、notify 单调时间、完整 32-bit sequence、sequence decision、queue depth/drop、continuity reset reason、录制 state/stop reason。不得把逐包轨迹塞进 Compose 收集的 StateFlow，也不得无界写日志/文件。
+2. 为 `AndroidBleTransport/BleCoordinator` 增加可注入 serial dispatcher、虚拟时钟与 fake lifecycle；测试能够模拟碎片化 notify、合包、重复、乱序、单帧/多帧 gap、disconnect/reconnect、后台/前台。
+3. 先写一个复现现象的 120 流：启动为两窗，锁 ADS 后三窗；注入一个 gap，当前基线测试应证明三窗被清空。修复后的契约改为“显示历史保留且分段，指标 warmup 重置”。
+4. 增加发布/磁盘计数器：transport 事件数、state-machine work 数、UI slice emission、waveform emission、metric emission、recording status/progress emission、session catalog scan pass。只在 debug/test 暴露。
+5. Debug 构建启用可控 StrictMode/主线程慢 dispatch 标记，覆盖 `Files.list/readAllLines/getFileStore/profile read`；正式构建不弹开发诊断。
+
+### B. BLE 串行线程与生命周期策略
+
+1. **移出 Main：**平台回调只立即复制必要字段/bytes，然后进入一个专用 `HandlerThread` 或 single-thread coroutine dispatcher；扫描/GATT 状态机、wire probe、stream decoder、sequence tracker 都在该串行域执行。Main 只处理权限、导航和低频不可变 UI slice。
+2. **队列分级且有界：**连接/断开/协议选择等控制事件不得被 preview 数据淹没；录制 raw sink 保持 loss-intolerant（满则明确 `RESOURCE_PRESSURE` 停录），preview 可丢旧保新并统计 drop。禁止靠扩大无界队列掩盖消费不足。
+3. **消除字节级二次复杂度：**`NordicWireProbe` / `Ads1292rStreamDecoder` 不再用 `ArrayList<Byte>` + 头部 `removeAt(0)`；改为有界 ByteArray ring/读写 offset，限制 pending replay 字节数并只回放一次。
+4. **明确生命周期：**
+   - 未扫描、未连接、未录制：不启动 preview/analysis worker，不投 clock tick 到 Main。
+   - 已连接但 Activity 不可见且未录制：保留最小连接状态或按既定产品策略暂停 preview，停止 UI 波形/指标 publication；恢复时只交付最新 bounded snapshot，绝不回放 UI backlog。
+   - 正在录制：FGS 与 BLE 数据串行域在后台继续，UI collector 可解绑；回前台只 rebind 当前状态，不重建 decoder/sequence tracker。
+   - disconnect/close：取消 timeout/callback，清空对应 generation 队列并退出 worker；旧 generation 事件不得污染新连接。
+5. 一个 generation 内协议从 pending/default 到 locked 最多一次；只有 disconnect/new generation 或显式且校验通过的手动覆盖可以 reset/replay。把 mode lock、continuity epoch、UI publication epoch 分开，不再用一个 generation 表达三种语义。
+
+### C. RED/IR/ECG 原子连续性与显示语义
+
+1. 把 ADS packet 处理改成单事务：**先**完成 sequence decision；duplicate/out-of-order 三通道都不进入派生显示/CSV；accepted packet 再一次性写入 RED×4、IR×4、ECG×20，并在三通道写完后生成同一 waveform snapshot。
+2. preview 与 recording 共用序号决策 helper，按完整 32-bit sequence 处理 wrap/gap/duplicate/out-of-order。raw sidecar 仍保留收到的原始字节；派生 PPG/ECG、accepted sample clock、missing/invalid metadata 只按接受事件推进。
+3. `Gap` 分开处理两种连续性：
+   - **显示连续性：**保留已有 ring，并插入 segment/gap marker，使绘图断线而不是回到 4 个点；RED/IR/ECG 使用同一 marker。
+   - **算法连续性：**重置预处理滤波状态、fixed-lag、HR/SQI/Combo warmup 与 timed-analysis epoch；下一段达到连续窗口前显示 warming/unknown。
+   - 单纯 gap 不增加 connection generation，也不清空三个显示环；真正连接/协议 generation 改变才清空会话级显示。
+4. 修正 recording analysis 当前“先发布 PPG、后写 ECG”的顺序；首个含 ECG 的 snapshot 必须同时包含三通道，不能产生人为的两窗→三窗闪烁。
+5. 增加至少 10,000 帧 fake 持续流，以及碎片/合包/gap/duplicate/out-of-order 组合；断言协议不振荡、队列有界、accepted/missing 数、三个通道时长比例和 continuity epoch 一致。
+
+### D. Compose 状态切片与磁盘访问收口
+
+1. 将 `CaptureSetupCard` 拆为多个有稳定 key 的 top-level lazy item（命名、基本资料、生活方式/参考 BP、录制模式、门控/开始），默认只组装即将可见的区块；不嵌套同方向滚动容器。各输入组件只收集自己的最小 StateFlow，回调用稳定引用。
+2. root composable 只收集页面选择、连接 UI slice 与录制 state 枚举；波形 5 Hz、指标 1 Hz、录制 progress（≤5 Hz）留在对应卡片。diagnostics、raw count、queue depth 和 `acceptedSampleCount` 不得让整个 `MainActivity` 重组。
+3. 所有会话名建议/唯一性、profile 读取、可用空间与 session catalog 构建移到 `Dispatchers.IO`；输入时以内存索引即时校验，磁盘查询 debounce 且 latest-wins。Composable/`remember`/Main 上禁止直接 `Files.*`。
+4. 引入单次 `SessionCatalogSnapshot`：一轮 refresh 只 `listSessions` 一次，并复用给列表、artifact、archive、BP/HR summary；录制完成、删除、编辑、恢复后以 dirty/version 触发增量或一次重建。
+5. `MainActivity.onStart()` 不再无条件刷新 sessions/archive。只有该页面首次可见、catalog dirty 或用户主动刷新时执行；快速 stop/start 不得留下多个不可取消的阻塞扫描。
+6. metrics/BP/ECG 大文件一律 streaming 聚合，禁止 `readAllLines`；设置解析上限/坏行计数并保持内存有界。批量导出总大小只计算一次，hash 与 copy 同趟完成（若 manifest 格式需要，先写临时 manifest entry/末尾 manifest，不重复读大文件）。
+
+### E. 录制 service、进度与确定性结束
+
+1. 把 `CaptureRecordingSnapshot` 拆成：低频/离散 `RecordingStatus`（IDLE/RECORDING/STOPPING/FINALIZED/FAILED、generation、mode、reason/summary）与限频 `RecordingProgress`（accepted duration、remaining、pending）。raw enqueue 不直接发布 UI 状态；progress 最多 5 Hz，倒计时文字最多 1 Hz。
+2. FGS 监听连接 generation、locked protocol 与 freshness：
+   - disconnect 或 generation/protocol 改变：停止接收新块，排空已确认块并以明确 reason finalize；
+   - 短暂 stale：accepted sample clock/倒计时暂停；
+   - 仍 subscribed 但超过明确 grace（常量、可测试）无接受样本：以 `STREAM_STALE`/等价 stop reason finalize，禁止永久 RECORDING。
+3. 开始录制改成 service 内的单一事务：重新验证 name 唯一性、BLE generation/mode/freshness、participant 必填字段与容量；writer/FGS 接受成功后才保存 subject profile revision。失败/竞态开始不创建会话目录或 profile revision。
+4. ADS metadata 明确写 PPG 4 samples/frame、PPG 100 Hz、ECG 20 samples/frame、ECG 500 Hz；PPG/ECG derived row count、时间戳、session_id、accepted/missing/duplicate 统计彼此可推导。CUP/Nordic 168 的既有 metadata 不回归。
+5. `awaitFinalized`/close 使用 condition/latch 或 coroutine completion，不做 1 ms busy polling；停止过程中保持 first stop reason wins，错误也要关闭 writer/worker 并可由 recovery 检查。
+
+### F. M7.6 后业务与文件契约收口
+
+1. 建立 typed participant validation result；CaptureStartGate 只选择明确的 blocking 字段，参考 BP 无论为空或填写错误都不以字符串前缀混入 start gate。BP 编辑 UI 自身显示范围/成对/`SBP > DBP` 错误。
+2. Canonical identity 优先解析 baseName 的 `PPG|MB` prefix，再用 metadata subject/sequence 校验；档案同 subject 下按 PPG/MB 分节，ZIP 路径断言 `subjects/{subject}/MB/...` 不会落到 PPG。
+3. 会话详情优先显示/编辑 session metadata 的 sbp/dbp 与 `bp_updated_at`，旧 blood-pressure.csv 只作为历史事件摘要；一次编辑只修改该会话 JSON，不改 subject profile/其它会话。
+4. 为 optional ECG 实现 streaming inspection：header、session_id、row count、device/sample time 单调性、数值字段；PPG-only 缺 ECG 仍合法，存在但损坏的 ECG 必须产生 finding 并影响 verified-complete/export manifest 状态。
+5. Combo SQI 以 `references/需求V3.0/code/combo_sqi.py` 和关联预处理代码生成跨语言 fixture；修复恒定 pressure height 等偏差，并验证 4 种显示状态与 debounce。参考 Python 只读，不改录制 CSV `sqi`。
+6. 修复两项现有离线回归并补原因说明；删除录中手动 BP 的残留 dialog/state/callback，统一 CUP/Nordic 扫描和 session-level BP 文案。
+
+### 主改文件
+
+- BLE/生命周期：`AndroidBleTransport.kt`、`BleCoordinator.kt`、`BleGattStateMachine.kt`、`BlePreviewRuntime.kt`、`NordicWireProbe.kt`、`PpgCollectorApplication.kt`
+- 连续性/录制：`LivePpgSignalRuntime.kt`、`CaptureRecordingController.kt`、`CaptureForegroundService.kt`、`CaptureSessionWriter.kt`、`Ads1292rPacketProtocol.kt`
+- UI/状态：`MainActivity.kt`、`CaptureServiceViewModel.kt`、`LiveCaptureScreen.kt`、`LiveWaveformComponents.kt`、`SessionsViewModel.kt`
+- 文件/业务：`CaptureStartGate.kt`、`SessionNamePolicy.kt`、`SubjectArchiveModels.kt`、`SubjectArchiveScreen.kt`、`SessionsScreens.kt`、`CaptureSessionMetadataEditor.kt`、`CaptureSessionInspection.kt`、`CaptureArchiveExportService.kt`、`ComboSqi.kt`
+- 对应 JVM/fake BLE/file-contract tests；必要时增加不依赖真机的 Compose/Macrobenchmark fixture
+
+### G. 验收（全部为退出门闩）
+
+1. `:app:testDebugUnitTest` **0 failure、0 ignore 新增**；现有两项失败必须关闭。再跑 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy`，不得只跑焦点测试。
+2. fake ADS 120 连续 10,000 帧：只锁一次协议，RED/IR 40,000 accepted samples、ECG 200,000 accepted samples；波形约 5 Hz、指标 1 Hz、recording progress ≤5 Hz，UI connection/status emission 不与 25 Hz notify 同频。
+3. fake gap/duplicate/out-of-order：raw 可回放全部输入；派生 CSV 不重复接受；missing/duplicate/out-of-order 统计准确；gap 后三窗保留旧历史并出现共同断点，指标回到 warming 后可恢复。
+4. fake lifecycle：空闲 10 s 无 preview worker/clock tick 投 Main；连接但未录制后台 30 s 后队列不增长；录制中后台继续写入，回前台不 reset decoder/sequence；disconnect/长期 stale 能在 grace 后 finalize。
+5. Debug StrictMode/计数测试：Main 上没有 session/profile/metrics `Files.*`；滚动到记录表单不会一次组装全表单；Activity 重复 stop/start 不重复全量 catalog pass。固定 emulator 的 Macrobenchmark 记录 startup、滚动与 background-resume frame timing，R6 相对修复前基线不得退化，并把阈值/设备配置写入测试说明。
+6. 文件夹 fixture 同时含 `PPG-A-1`、`MB-A-1`、PPG-only、合法/损坏 ECG、旧 metadata：档案分节和 ZIP 路径正确；旧文件兼容；ADS metadata/ECG 行数正确；BP 修改只影响目标 JSON。
+7. 更新 `01_CODEBASE_AS_IS.md` 与 `status/DEVELOPMENT_STATUS.md`：记录实际线程/生命周期策略、测试命令与结果、仍需真机验证项。未跑的真机项必须写“待测”，不得写已验收。
+
+### 本轮不做
+
+- 不做真机操作，除非用户另行明确要求；fake BLE/JVM/file contract 是本轮停止条件。
+- 不修改 `references/需求V3.0/` 的 Python，不改变录制 CSV `sqi` 既有口径。
+- 不新增或宣称未校准的 SpO2/预测血压，不把人工参考 BP 变成测量结果。
+- 不借性能重构重做整个导航/视觉设计，不回滚 R5.1 已完成的 CUP/ADS 探测与 optional ECG 文件清单。
+
+---
+
+## V3.R7 实时显示回归与空闲采集页卡顿修正
+
+### 问题结论（2026-08-20 真机复验后）
+
+1. **未扫描时的卡顿不是 BLE 解码或信号处理在空转。** `BlePreviewRuntime` 空闲时没有 worker/clock；主要负担来自 UI/初始化：空波形仍首组装模式按钮、两张 Canvas、五项指标及详细文案；滚动到记录区时首次组装多组 Material 输入控件；`CaptureViewModel` 启动又重复发起建议名、profile、gate 扫盘，并用 `BIND_AUTO_CREATE` 创建空闲录制 service及 Main 上的健康轮询。首次连接/断开后代码、字体与绘制缓存已预热，所以观感会暂时改善。
+2. **RAW 漂移来自显示层的非时不变变换。** `rawPeakUpForPlot()` 每次 5 Hz 发布都对不断增长/滑动的整个视窗重新拟合直线；同一个稳定样本会随窗口端点和 segment 组成被反复改值。R6 又保留 gap 前历史，使跨 segment 拟合进一步放大该现象。落盘 raw 没有被改。
+3. **CAUSAL/FIXED 回归来自 R6 的连续性拆分不完整。** gap 后 RAW 历史保留，但 display causal 与 fixed-lag 被清空；CAUSAL 因反复从大 DC 初值启动产生明显瞬态，FIXED 每次都重新等待 201 点，频繁 gap 下长期不可选。M7.6 已验证的显示滤波参数和输入极性本身不改，算法指标的连续窗口仍必须在 gap 后重置。
+4. **ECG 接收布局与落盘口径未发现错位：** 120-byte 帧仍按 `uint32 ECG×20 + RED×4 + IR×4` 小端解析，CSV 原样保存。显示层当前直接每 5 点取 1 点且随后再做 min/max 降采样，没有 500→100 Hz 抗混叠；它不会生成超出输入范围的数值，但会把高频噪声/孤立 ADC 异常突出为伪峰。若修正显示降采样后 CSV 同一时刻仍有尖峰，来源应判为开发板/模拟前端，而不是 App 解码。
+
+后台恢复卡死已由 R6 修复，本轮不重复改生命周期主线。
+
+### 开发任务
+
+1. **恢复稳定的 PPG 显示契约**
+   - 实时 RAW 保留 M7.6 的 raw 输入与取负极性，但针对本次真机复验去掉其随 publication 重算的整窗线性拟合，收敛为确定性的“原始 ADC 仅取负”；离线工作台是否去趋势保持原状。
+   - 把“指标/算法连续性 reset”与“显示滤波连续性”分开：普通 sequence gap 只重置预处理、HR/SQI/Combo warmup并画 segment marker，display causal/fixed 保持有界状态；真正连接 generation、协议切换或实际丢失 analysis 输入才整体重置。
+   - FIXED 按钮始终允许选择；未积满右侧上下文时明确显示 warming，积满后自动进入 fixed，不再被 UI fallback 改写用户选择。
+
+2. **修正 ECG 显示，不改变 raw/CSV**
+   - 新增有状态的 5:1 boxcar 降采样器，每 5 个原始 `uint32` 只发布一个均值点；跨 notify 保持相位，连接/协议 reset 时清空。
+   - 保持 parser、`{stem}_ecg.csv` 和 uint32 原始口径不变；测试断言显示值位于对应五点范围内，App 不产生输入中不存在的越界峰值。
+
+3. **削减未连接页面的首次工作**
+   - 无波形时只显示轻量等待卡，不组装 Canvas、滤波选择器和指标网格；收到首批样本后再进入完整实时面板。
+   - Activity 空闲绑定 service 时不使用 `BIND_AUTO_CREATE`；真正开始录制时再创建并绑定，已有 FGS 的 Activity 重建仍可重新绑定。
+   - 合并首次建议名/profile/gate 磁盘初始化，避免 init、首个 `onStart` 和建议名回填连续触发同一轮扫盘；把最重的“设备/模式 + 名称”首项拆为两个有界 lazy item，其余记录表单结构不再扩大重构。
+
+### 必要验收
+
+- JVM：稳定 raw 显示只做取负；单个/多个 gap 后 CAUSAL 不出现重新启动的大 DC 瞬态、FIXED 保持/恢复可选且算法 metric 仍重新 warmup；ECG 5:1 跨 chunk 均值与范围契约。
+- fake BLE：连续 ADS 与带 gap ADS 都能保持 RED/IR/ECG 三窗，FIXED 在达到初始延迟后不因普通 gap 消失；preview 空闲仍为 0 worker/0 tick。
+- 编译与现有全量 JVM/lint/release contract 通过。真机仅复验帧时序和 CSV 对点；若 CSV 自身含异常 ECG 峰，单列为板端待查。
+
+### 本轮不做
+
+- 不改 ECG raw parser/CSV 的 uint32 口径，不用裁剪或符号转换掩盖板端异常。
+- 不改 M7.6 的 0.5–12 Hz CAUSAL/FIXED 参数，不改 valley/peak 算法；只恢复其正确输入与连续性。
+- 不再重做导航、档案、录制文件契约或后台生命周期。
+
+---
+
 ## 跨轮工程约定
 
 - 每轮先补/改 **JVM 测试再改生产代码**（算法轮尤其如此）。  
@@ -565,7 +886,7 @@ R5 的档案 PPG/MB 分节、回看改 sbp/dbp、批量 ZIP 目录树、ECG-SQI�
 - 不把 SpO2、预测 BP 做成「看起来可用」。参考血压 UI 明确是人工填写。  
 - 综合 SQI 颜色是显示逻辑；录制 CSV `sqi` 口径锁定，直到有单独需求再改。  
 - CUP 与腕部协议分模式，禁止用 120-byte 解析器去啃 CUP 168 帧。
-- 直播协议因设备而异：CUP 靠广播名锁定 batch；Nordic 的 120/168 靠帧几何探测锁定，禁止把全部 Nordic 默认切到 120。两种 168 不得靠 payload 互猜。
+- 直播协议因设备而异：CUP **默认** batch 168；若 batch 无接受帧，则用与 Nordic 相同的帧几何探测 ads1292r 120，并允许手动覆盖。锁定 168 时 CUP 必须保持 `BATCH_COMPATIBLE`，禁止把 CUP 名切到 Nordic sensor packet。Nordic 的 120/168 仍靠几何探测，禁止把全部 Nordic 默认切到 120。两种 168 不得靠 payload 互猜。禁止用 120 解析器去啃已锁定的 CUP 168 帧。
 
 ## 建议的真机清单（全部延期，不阻塞轮次完成）
 

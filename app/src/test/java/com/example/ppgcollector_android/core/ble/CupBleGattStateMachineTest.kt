@@ -1,5 +1,14 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
+import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
+import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
+import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
+import com.example.ppgcollector_android.core.protocol.encodeCupSensorPacketFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import java.time.Instant
 import org.junit.Assert.assertEquals
@@ -371,6 +380,192 @@ class CupBleGattStateMachineTest {
         assertEquals(BluetoothAvailability.POWERED_ON, owner.availability)
         assertEquals("蓝牙扫描失败（code=2），请重试。", owner.lastError)
     }
+
+    @Test
+    fun cupAdvertised120FramesLockAdsWithoutWaitingForTimeout() {
+        val transport = FakeBleTransport()
+        val owner = subscribed(transport, "CUP-SIM")
+        val delivered = mutableListOf<BleRawNotificationChunk>()
+        owner.onRawChunk = delivered::add
+        assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, owner.activeStreamProtocolMode)
+        assertFalse(owner.protocolProbePending)
+        repeat(3) { index ->
+            owner.handle(
+                BleTransportEvent.ValueReceived(
+                    deviceId,
+                    profile.notifyCharacteristicUuid,
+                    Ads1292rPacketProtocol.encode(adsPacket(index.toUInt())),
+                    null,
+                ),
+                nowUptimeSeconds = index * 0.04,
+            )
+        }
+        assertEquals(CupStreamProtocolMode.ADS1292R_120, owner.activeStreamProtocolMode)
+        assertFalse(owner.protocolProbePending)
+        assertFalse(owner.protocolProbeTimedOut)
+        val replay = owner.takeProtocolReplay()
+        assertEquals(3, replay.size)
+        assertTrue(replay.all { it.streamProtocolMode == CupStreamProtocolMode.ADS1292R_120 })
+        assertEquals(3, delivered.size)
+        assertTrue(delivered.all { it.streamProtocolMode == CupStreamProtocolMode.BATCH_COMPATIBLE })
+    }
+
+    @Test
+    fun cupAdvertisedBatchStaysBatchAndNeverShowsOverride() {
+        val transport = FakeBleTransport()
+        val owner = subscribed(transport, "CUP-SIM")
+        val chunks = mutableListOf<BleRawNotificationChunk>()
+        owner.onRawChunk = chunks::add
+        owner.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                encodeCupBatchFrame(batchFrame(1u)),
+                null,
+            ),
+            nowUptimeSeconds = 0.1,
+        )
+        assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, owner.activeStreamProtocolMode)
+        assertEquals(1, chunks.size)
+        assertFalse(owner.protocolProbePending)
+        assertFalse(owner.protocolProbeTimedOut)
+        owner.markValidFrame(0.2)
+        assertEquals(StreamFreshness.FRESH, owner.freshness)
+        assertFalse(owner.protocolProbePending)
+        owner.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                encodeCupBatchFrame(batchFrame(2u)),
+                null,
+            ),
+            nowUptimeSeconds = 2.5,
+        )
+        assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, owner.activeStreamProtocolMode)
+        assertFalse(owner.protocolProbeTimedOut)
+    }
+
+    @Test
+    fun cupProbeTimeoutShowsPendingWithoutLocking120() {
+        val transport = FakeBleTransport()
+        val owner = subscribed(transport, "CUP-SIM")
+        owner.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                byteArrayOf(1, 2, 3),
+                null,
+            ),
+            nowUptimeSeconds = 0.1,
+        )
+        assertFalse(owner.protocolProbePending)
+        assertTrue(owner.pollProtocolProbe(2.0))
+        assertTrue(owner.protocolProbePending)
+        assertTrue(owner.protocolProbeTimedOut)
+        assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, owner.activeStreamProtocolMode)
+        assertEquals(StreamFreshness.WAITING, owner.freshness)
+    }
+
+    @Test
+    fun selectStreamProtocolHonorsIdentityMapping() {
+        val cup = subscribed(FakeBleTransport(), "CUP-SIM")
+        cup.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                Ads1292rPacketProtocol.encode(adsPacket(0u)),
+                null,
+            ),
+            0.1,
+        )
+        cup.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                Ads1292rPacketProtocol.encode(adsPacket(1u)),
+                null,
+            ),
+            0.2,
+        )
+        assertTrue(cup.pollProtocolProbe(2.0))
+        assertFalse(cup.selectStreamProtocol(CupStreamProtocolMode.SENSOR_PACKET_168))
+        assertTrue(cup.selectStreamProtocol(CupStreamProtocolMode.ADS1292R_120))
+        assertEquals(CupStreamProtocolMode.ADS1292R_120, cup.activeStreamProtocolMode)
+
+        val cupBatch = subscribed(FakeBleTransport(), "CUP-SIM")
+        cupBatch.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                encodeCupBatchFrame(batchFrame(1u)),
+                null,
+            ),
+            0.1,
+        )
+        assertTrue(cupBatch.pollProtocolProbe(2.0))
+        assertTrue(cupBatch.selectStreamProtocol(CupStreamProtocolMode.BATCH_COMPATIBLE))
+        assertEquals(CupStreamProtocolMode.BATCH_COMPATIBLE, cupBatch.activeStreamProtocolMode)
+
+        val nordic = subscribed(FakeBleTransport(), "Nordic_UART_Service")
+        nordic.handle(
+            BleTransportEvent.ValueReceived(
+                deviceId,
+                profile.notifyCharacteristicUuid,
+                encodeCupSensorPacketFrame(sensorFrame(1u)),
+                null,
+            ),
+            0.1,
+        )
+        assertFalse(nordic.selectStreamProtocol(CupStreamProtocolMode.BATCH_COMPATIBLE))
+        assertTrue(nordic.selectStreamProtocol(CupStreamProtocolMode.SENSOR_PACKET_168))
+        assertEquals(CupStreamProtocolMode.SENSOR_PACKET_168, nordic.activeStreamProtocolMode)
+    }
+
+    private fun subscribed(transport: FakeBleTransport, advertisedName: String): CupBleGattStateMachine {
+        val owner = CupBleGattStateMachine(transport)
+        owner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)
+        owner.handle(
+            BleTransportEvent.Discovered(BleTransportDiscovery(deviceId, advertisedName, -42, true, Instant.EPOCH)),
+            0.0,
+        )
+        assertTrue(owner.connect(deviceId))
+        transport.emit(BleTransportEvent.Connected(deviceId))
+        transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+        transport.emit(
+            BleTransportEvent.CharacteristicsDiscovered(
+                deviceId,
+                profile.serviceUuid,
+                listOf(
+                    BleTransportCharacteristic(profile.notifyCharacteristicUuid, listOf("notify"), true, false),
+                    BleTransportCharacteristic(profile.controlCharacteristicUuid, listOf("write"), false, false),
+                ),
+                null,
+            ),
+        )
+        transport.emit(BleTransportEvent.NotificationStateChanged(deviceId, profile.notifyCharacteristicUuid, true, null))
+        return owner
+    }
+
+    private fun adsPacket(sequence: UInt) = Ads1292rPacket(
+        sequenceNumber = sequence,
+        ecg = List(20) { it.toUInt() },
+        red = List(4) { 100u + it.toUInt() },
+        ir = List(4) { 200u + it.toUInt() },
+    )
+
+    private fun batchFrame(sequence: UByte) = CupBatchFrame(
+        sequence = sequence,
+        samples = List(CupBatchProtocolV1.samplesPerFrame) { index ->
+            CupPpgSample((10_000 + index).toUInt(), (20_000 + index).toUInt())
+        },
+    )
+
+    private fun sensorFrame(sequence: UInt) = CupBatchFrame(
+        sequence = sequence.toUByte(),
+        sequenceNumber = sequence,
+        wireProfile = CupWireFrameProfile.SENSOR_PACKET_168,
+        samples = List(20) { index -> CupPpgSample(45_000u + index.toUInt(), 52_000u + index.toUInt()) },
+    )
 
     private fun readyToConnecting(transport: FakeBleTransport): CupBleGattStateMachine {
         val owner = CupBleGattStateMachine(transport)

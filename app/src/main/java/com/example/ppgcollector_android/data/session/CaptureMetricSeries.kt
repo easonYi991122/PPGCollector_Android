@@ -3,6 +3,8 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -51,6 +53,7 @@ data class CaptureSidecarScanReport(
     val hasExpectedHeader: Boolean,
     val hasTruncatedFinalLine: Boolean,
     val monotonicityError: String? = null,
+    val sessionId: String? = null,
 ) {
     val trailingByteCount: Long get() = maxOf(0L, totalBytes - validByteCount)
     val isStructurallyValid: Boolean get() = hasExpectedHeader && monotonicityError == null
@@ -166,39 +169,78 @@ internal fun scanSessionSidecar(
     expectedHeader: String,
     rowValidator: (fields: List<String>, previous: List<String>?) -> String?,
 ): CaptureSidecarScanReport {
-    Files.newInputStream(path, StandardOpenOption.READ).use { input ->
-        val bytes = input.readBytes()
-        val text = bytes.toString(Charsets.UTF_8)
-        val hasTrailingNewline = text.endsWith("\n")
-        val validText = if (hasTrailingNewline) text else text.substringBeforeLast('\n', "")
-        val lines = validText.split('\n')
-        val headerLine = lines.firstOrNull()?.removeSuffix("\r") ?: ""
-        var error: String? = null
-        var rows = 0L
-        var previous: List<String>? = null
-        if (headerLine != expectedHeader.trimEnd('\n')) error = "unexpected sidecar header"
-        if (error == null) {
-            lines.drop(1).filter { it.isNotEmpty() }.forEach { line ->
-                val fields = parseSessionCsvFields(line.removeSuffix("\r"))
-                if (error == null) error = rowValidator(fields, previous)
-                if (error == null) {
-                    rows++
-                    previous = fields
+    val totalBytes = Files.size(path)
+    val expectedHeaderLine = expectedHeader.trimEnd('\n')
+    var error: String? = null
+    var rows = 0L
+    var previous: List<String>? = null
+    var sessionId: String? = null
+    var headerLine = ""
+    var hasExpectedHeader = false
+    var validByteCount = 0L
+    var consumedBytes = 0L
+    var lineIndex = 0
+    var hasTrailingNewline = false
+    val lineBuffer = ByteArrayOutputStream()
+
+    fun consumeLine(terminated: Boolean) {
+        val line = lineBuffer.toByteArray().toString(Charsets.UTF_8).removeSuffix("\r")
+        val lineEnd = consumedBytes
+        if (lineIndex == 0) {
+            headerLine = line
+            hasExpectedHeader = line == expectedHeaderLine
+            if (!hasExpectedHeader || !terminated) error = "unexpected sidecar header"
+            if (error == null && terminated) validByteCount = lineEnd
+        } else if (line.isNotEmpty() && error == null) {
+            val fields = runCatching { parseSessionCsvFields(line) }.getOrElse {
+                error = it.message ?: "invalid CSV row"
+                emptyList()
+            }
+            if (error == null) error = rowValidator(fields, previous)
+            if (error == null) {
+                rows++
+                if (sessionId == null) sessionId = fields.getOrNull(1)
+                previous = fields
+                if (terminated) validByteCount = lineEnd
+            }
+        } else if (error == null && terminated) {
+            validByteCount = lineEnd
+        }
+        lineIndex++
+        lineBuffer.reset()
+    }
+
+    BufferedInputStream(Files.newInputStream(path, StandardOpenOption.READ)).use { input ->
+        while (true) {
+            val value = input.read()
+            if (value < 0) break
+            consumedBytes++
+            if (value == '\n'.code) {
+                hasTrailingNewline = true
+                consumeLine(terminated = true)
+            } else {
+                if (lineBuffer.size() >= MAX_SIDECAR_LINE_BYTES) {
+                    if (error == null) error = "sidecar line exceeds limit"
+                } else {
+                    lineBuffer.write(value)
                 }
+                hasTrailingNewline = false
             }
         }
-        val validBytes = if (hasTrailingNewline) bytes.size.toLong()
-        else validText.toByteArray(Charsets.UTF_8).size.toLong()
-        return CaptureSidecarScanReport(
-            totalBytes = bytes.size.toLong(),
-            validByteCount = validBytes,
-            completeDataRowCount = rows,
-            hasExpectedHeader = headerLine == expectedHeader.trimEnd('\n'),
-            hasTruncatedFinalLine = bytes.isNotEmpty() && !hasTrailingNewline,
-            monotonicityError = error,
-        )
+        if (lineBuffer.size() > 0) consumeLine(terminated = false)
     }
+    return CaptureSidecarScanReport(
+        totalBytes = totalBytes,
+        validByteCount = validByteCount,
+        completeDataRowCount = rows,
+        hasExpectedHeader = hasExpectedHeader,
+        hasTruncatedFinalLine = totalBytes > 0L && !hasTrailingNewline,
+        monotonicityError = error,
+        sessionId = sessionId,
+    )
 }
+
+private const val MAX_SIDECAR_LINE_BYTES = 1_048_576
 
 internal fun parseSessionCsvFields(line: String): List<String> {
     val fields = ArrayList<String>()

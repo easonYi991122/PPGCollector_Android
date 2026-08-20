@@ -76,7 +76,7 @@ class LivePpgSignalRuntimeTest {
     }
 
     @Test
-    fun gapResetsRawCausalMetricAndSettlingStateAtomically() {
+    fun gapResetsProcessingButRetainsBoundedDisplayHistoryAtomically() {
         val runtime = LivePpgSignalRuntime()
         var beforeGap: LiveMetricAnalysisRequest? = null
         repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
@@ -101,13 +101,24 @@ class LivePpgSignalRuntimeTest {
         assertNotNull(gap.waveform)
         assertFalse(runtime.isCurrent(beforeGap!!))
         assertEquals(20L, runtime.continuousSamples)
-        assertEquals(20, runtime.bufferedSampleCount)
-        assertEquals(20, gap.waveform!!.red.size)
-        assertEquals(20, gap.waveform.causalRed.size)
-        assertEquals(20, gap.waveform.settlingSampleCount)
-        assertEquals(0.0, gap.waveform.causalRed.first(), 0.0)
-        assertEquals(0.0, gap.waveform.causalIr.first(), 0.0)
-        assertEquals(800L, gap.waveform.sourceSampleStartIndex)
+        assertEquals(800, runtime.bufferedSampleCount)
+        assertEquals(1L, gap.waveform!!.gapCount)
+        assertEquals(800, gap.waveform.red.size)
+        assertEquals(800, gap.waveform.causalRed.size)
+        assertEquals(180, gap.waveform.settlingSampleCount)
+        assertTrue(gap.waveform.causalRed.any { it != 0.0 })
+        assertTrue(gap.waveform.causalIr.any { it != 0.0 })
+        assertEquals(620, gap.waveform.fixedLagRed.size)
+        val expectedDisplayCausal = CausalPpgDisplayFilterRuntime().let { filter ->
+            (0 until 820).map { sampleIndex ->
+                val phase = 2.0 * PI * 1.2 * sampleIndex / 100.0
+                val raw = (100_000.0 + 1_100.0 * sin(phase)).toUInt().toDouble()
+                filter.process(-raw)
+            }.takeLast(800).toDoubleArray()
+        }
+        assertArrayEquals(expectedDisplayCausal, gap.waveform.displayCausalRed, 1e-9)
+        assertArrayEquals(intArrayOf(780), gap.waveform.segmentBreakSampleIndices)
+        assertEquals(20L, gap.waveform.sourceSampleStartIndex)
         assertEquals(819L, gap.waveform.sourceSampleEndIndex)
     }
 
@@ -150,7 +161,8 @@ class LivePpgSignalRuntimeTest {
         assertEquals(20, discontinuous.causalRed.size)
         assertEquals(40L, discontinuous.sourceSampleStartIndex)
         assertEquals(59L, discontinuous.sourceSampleEndIndex)
-        assertEquals(0.0, discontinuous.causalRed.first(), 0.0)
+        assertArrayEquals(intArrayOf(), discontinuous.segmentBreakSampleIndices)
+        assertTrue(discontinuous.causalRed.any { it != 0.0 })
     }
 
     @Test

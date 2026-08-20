@@ -209,3 +209,15 @@ M7.5 code is implemented and indexed above; real-device IME/rotation, TalkBack/d
 | `M7-PERF-003` | `baselineprofile/`, `app/src/main/baseline-prof.txt`, Gradle/settings/version catalog, `verifyReleasePrivacy` | Baseline Profile generator + startup/sessions CUJ、ProfileInstaller、release `assets/dexopt/baseline.prof` 打包断言；真实设备 profile 生成与 Macrobenchmark 数值仍是 runtime 门禁 |
 
 本节与 [`10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md`](10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md) 是 M7.6 UI/性能的当前依据；`docs/09` 继续作为 M7.0～M7.5 历史和数据合同依据，不得用于回退本节页面层级。
+
+## M7.7 会话详情、离线滤波与对齐可视化索引（2026-08-09）
+
+| 需求 | Android target | 关键合同/证据 |
+|---|---|---|
+| `M7-UI-006/007` | `LiveWaveformComponents.kt`, `CaptureUiPolicy.kt`, `SavedSessionsRoute.kt` | `RAW/CAUSAL/FIXED` 完整标签；HR/RR/PI/SQI/BP 五项无横向隐藏，常规 5 列、窄屏/大字体 3+2；Saved Sessions 操作区与 16 dp 内容边界一致；`CaptureUiPolicyTest` / Compose system-test seam |
+| `M7-DETAIL-001` / `M7-ANL-001` | `SessionDetailUiPolicy.kt`, `SessionsScreens.kt` | 概览、来源、被试、BP、完整性、重放、分析、导出默认全部收起且独立 toggle；单 artifact 不显示无意义“历史 1”，多个结果才显示选择器；`SessionDetailUiPolicyTest` |
+| `M7-DSP-003` | `PpgPreprocessing.kt`, `OfflinePpgAnalysis.kt`, `CaptureSessionOfflineAnalysis.kt`, `SessionSignalWorkbench.kt` | `offline-biquad-filtfilt-0.5-12hz-0.1` 分段 ZERO 与 source-aligned `fixed-lag-fir-0.5-12hz-0.1` 同时可选；gap 不共享状态，raw/CSV 不回写；频带响应/FIR 对齐/session trace tests |
+| `M7-MET-003` | `CaptureMetricSeries.kt`, `CaptureSessionOfflineAnalysis.kt`, `SessionSignalWorkbench.kt` | 有界读取 1 Hz valid HR/SQI/R/PI source cursor；PPG 与指标采用 shared-x、独立 Y lane，viewport/gap 同步；sidecar round-trip 与 UI semantics seam |
+| `M7-BP-002` | `OfflineBloodPressurePreview.kt`, `SessionSignalWorkbench.kt` | 手工 SBP/DBP 使用 dialog-open source time；无模型时仅离线生成不落盘 120/80、1 Hz 占位序列并显式标注，live 继续 `—`；warm-up/cadence/gap/metric-epoch tests |
+
+本节与 [`11_M7_7_SESSION_DETAIL_AND_TIMELINE_PLAN.md`](11_M7_7_SESSION_DETAIL_AND_TIMELINE_PLAN.md) 是 M7.7 的当前依据。`docs/09` 继续管理 session/sidecar/subject 数据合同；`docs/10` 保留 Compose/性能基线，但其“大字体改为横向可达”和旧详情页行为被 M7.7 的 3+2 网格、默认折叠与 shared-x 设计覆盖。

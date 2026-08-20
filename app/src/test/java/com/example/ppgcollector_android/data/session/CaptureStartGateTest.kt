@@ -47,4 +47,27 @@ class CaptureStartGateTest {
         assertEquals(null, bloodPressureValidationError("120", "80"))
         assertTrue(draft.validationErrors().none { it.contains("血压") })
     }
+
+    @Test
+    fun diskCacheWalksOncePerNameWithinOneSecond() {
+        val root = Files.createTempDirectory("capture-gate-disk")
+        try {
+            var now = 1_000L
+            val cache = CaptureGateDiskCache(
+                sessionsRoot = { root },
+                nowMs = { now },
+            )
+            cache.snapshot("PPG-S001-1")
+            cache.snapshot("PPG-S001-1")
+            cache.snapshot("PPG-S001-1")
+            assertEquals(1, cache.diskWalkCount)
+            now += 1_000L
+            cache.snapshot("PPG-S001-1")
+            assertEquals(2, cache.diskWalkCount)
+            cache.snapshot("PPG-S001-2")
+            assertEquals(3, cache.diskWalkCount)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
 }

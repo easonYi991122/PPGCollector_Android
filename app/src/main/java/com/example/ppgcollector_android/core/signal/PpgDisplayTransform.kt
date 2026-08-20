@@ -11,6 +11,9 @@ object PpgDisplayTransform {
         if (value.isFinite()) -value else value
     }
 
+    /** Realtime RAW contract: existing samples never change when the viewport grows. */
+    fun liveRawPeakUp(values: DoubleArray): DoubleArray = rawPeakUp(values)
+
     /**
      * Presentation-only raw waveform for a finite viewport.
      *

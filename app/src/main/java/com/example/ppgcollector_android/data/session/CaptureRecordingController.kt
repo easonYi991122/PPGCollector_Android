@@ -115,6 +115,8 @@ class CaptureRecordingController(
     private var comboGeneration = -1L
     private var latestAcceptedSourceSampleIndex: Long? = null
     private var nextReferenceEventIndex = 0L
+    private var finalizedLatch = CountDownLatch(0)
+    private var lastProgressPublishNanos = Long.MIN_VALUE
     private val committedReferenceTokens = ConcurrentHashMap.newKeySet<String>()
     private val _analysisSnapshot = MutableStateFlow(CaptureAnalysisSnapshot())
     private val _waveformSnapshot = MutableStateFlow(LiveWaveformSnapshot())
@@ -147,6 +149,7 @@ class CaptureRecordingController(
         freshness: StreamFreshness,
         connectionGeneration: Long,
         availableBytes: Long? = null,
+        participant: CaptureParticipantSnapshot? = null,
     ): CaptureRecordingStartResult {
         synchronized(lock) {
             val gateFailure = CaptureStartGate.validate(
@@ -157,6 +160,7 @@ class CaptureRecordingController(
                     sessionsRoot = sessionsRoot,
                     sessionName = configuration.baseName,
                     availableBytes = availableBytes,
+                    participant = participant?.let(CaptureParticipantDraft::fromSnapshot),
                 ),
             )
             if (gateFailure != null) return CaptureRecordingStartResult.Rejected(gateFailure)
@@ -180,6 +184,8 @@ class CaptureRecordingController(
                 acceptedSampleCount = 0L
                 nextReferenceEventIndex = 0L
                 analysisStopRequested = false
+                finalizedLatch = CountDownLatch(1)
+                lastProgressPublishNanos = Long.MIN_VALUE
                 signalRuntime = LivePpgSignalRuntime()
                 comboSqiDebounce = ComboSqiDebounce()
                 comboGeneration = -1L
@@ -198,6 +204,7 @@ class CaptureRecordingController(
             } catch (error: CaptureSessionWriterException) {
                 lastError = error.message
                 publish(CaptureRecordingState.FAILED)
+                finalizedLatch.countDown()
                 CaptureRecordingStartResult.Failed(error.message ?: "cannot create session")
             }
         }
@@ -275,6 +282,9 @@ class CaptureRecordingController(
         require(event.systolicMmHg > 0 && event.diastolicMmHg > 0) {
             "blood pressure must be positive"
         }
+        require(event.systolicMmHg > event.diastolicMmHg) {
+            "systolic must be greater than diastolic"
+        }
         val token = "${event.reference.sessionId}:${event.reference.eventIndex}"
         if (!committedReferenceTokens.add(token)) return@synchronized true
         if (!bloodPressureQueue.offer(event)) {
@@ -294,14 +304,9 @@ class CaptureRecordingController(
     }
 
     fun awaitFinalized(timeout: Long, unit: TimeUnit): CaptureSessionSummary? {
-        val target = unit.toNanos(timeout)
-        val start = System.nanoTime()
-        while (System.nanoTime() - start < target) {
-            if (snapshotValue.state == CaptureRecordingState.FINALIZED ||
-                snapshotValue.state == CaptureRecordingState.FAILED
-            ) return finalSummary
-            Thread.sleep(1)
-        }
+        if (snapshotValue.state != CaptureRecordingState.FINALIZED &&
+            snapshotValue.state != CaptureRecordingState.FAILED
+        ) finalizedLatch.await(timeout, unit)
         return finalSummary
     }
 
@@ -327,6 +332,7 @@ class CaptureRecordingController(
     }
 
     private companion object {
+        const val PROGRESS_PUBLISH_INTERVAL_NANOS = 200_000_000L
         val nonFatalStopReasons = setOf(
             CaptureStopReason.USER,
             CaptureStopReason.VIEW_EXIT,
@@ -361,12 +367,8 @@ class CaptureRecordingController(
                             data = item.bytes,
                             acceptedSampleStartIndex = acceptedBefore,
                         ) { emptyList() }
+                        val acceptedEcgSamples = ArrayList<UInt>()
                         val adsEvents = adsDecoder.feed(item.bytes).map { packet ->
-                            writer?.appendAds1292rPacket(
-                                hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
-                                packet = packet,
-                            )
-                            acceptedSampleIndex += packet.red.size
                             val frame = CupBatchFrame(
                                 sequence = packet.sequenceNumber.toUByte(),
                                 sequenceNumber = packet.sequenceNumber,
@@ -375,19 +377,31 @@ class CaptureRecordingController(
                                     CupPpgSample(packet.red[index], packet.ir[index])
                                 },
                             )
+                            val sequence = sequenceTracker.observe(frame)
+                            val accepted = sequence !is CupSequenceEvent.Duplicate &&
+                                sequence !is CupSequenceEvent.OutOfOrder
+                            writer?.appendAds1292rPacket(
+                                hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
+                                packet = packet,
+                                sequenceEvent = sequence,
+                            )
+                            if (accepted) {
+                                acceptedSampleIndex += packet.red.size
+                                acceptedEcgSamples += packet.ecg
+                            }
                             CupDecodedFrameEvent(
                                 frame = frame,
-                                sequenceEvent = CupSequenceEvent.Continuous,
-                                isAccepted = true,
-                            ) to packet.ecg
+                                sequenceEvent = sequence,
+                                isAccepted = accepted,
+                            )
                         }
                         if (adsEvents.isNotEmpty() &&
                             !analysisQueue.offer(
                                 AnalysisInput(
-                                    frames = adsEvents.map { it.first },
+                                    frames = adsEvents,
                                     acceptedSampleStartIndex = acceptedBefore,
                                     measuredAt = Instant.now(),
-                                    ecgSamples = adsEvents.flatMap { it.second },
+                                    ecgSamples = acceptedEcgSamples,
                                 ),
                             )
                         ) {
@@ -504,8 +518,8 @@ class CaptureRecordingController(
                             acceptedSampleStartIndex = input.acceptedSampleStartIndex,
                             measuredAt = input.measuredAt,
                             nowNanos = nowNanos,
+                            acceptedEcgSamples = input.ecgSamples,
                         )
-                        signalRuntime.ingestEcgDisplaySamples(input.ecgSamples)
                         val acceptedSamples = input.frames.filter { it.isAccepted }
                             .sumOf { it.frame.samples.size }
                         if (acceptedSamples > 0) {
@@ -633,10 +647,15 @@ class CaptureRecordingController(
             activeGeneration = null
             activeStreamProtocolMode = null
             publish(if (finalSummary != null) CaptureRecordingState.FINALIZED else CaptureRecordingState.FAILED)
+            // Signal only after the terminal snapshot is visible to callers
+            // waiting for finalization; otherwise awaitFinalized can return
+            // between writer.close() and the StateFlow publication.
+            finalizedLatch.countDown()
         }
     }
 
     private fun publish(state: CaptureRecordingState) {
+        val previous = snapshotValue
         val next = CaptureRecordingSnapshot(
             state = state,
             recordMode = writer?.configuration?.recordMode ?: snapshotValue.recordMode,
@@ -657,6 +676,14 @@ class CaptureRecordingController(
             summary = finalSummary,
         )
         snapshotValue = next
-        _snapshotFlow.value = next
+        val now = System.nanoTime()
+        val shouldEmit = state != CaptureRecordingState.RECORDING ||
+            previous.state != CaptureRecordingState.RECORDING ||
+            now - lastProgressPublishNanos >= PROGRESS_PUBLISH_INTERVAL_NANOS
+        if (shouldEmit) {
+            lastProgressPublishNanos = now
+            _snapshotFlow.value = next
+        }
     }
+
 }

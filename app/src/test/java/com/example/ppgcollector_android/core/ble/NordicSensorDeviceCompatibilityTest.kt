@@ -70,6 +70,7 @@ class NordicSensorDeviceCompatibilityTest {
             )
         }
 
+        owner.takeProtocolReplay().forEach { owner.onRawChunk?.invoke(it) }
         assertEquals(3, chunks.size)
         assertEquals(CupStreamProtocolMode.SENSOR_PACKET_168, chunks.first().streamProtocolMode)
         assertEquals(168, chunks.first().bytes.size)

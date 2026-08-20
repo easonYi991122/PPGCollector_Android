@@ -2,7 +2,7 @@ package com.example.ppgcollector_android
 
 import android.app.Application
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.os.SystemClock
 import com.example.ppgcollector_android.core.ble.AndroidBleTransport
 import com.example.ppgcollector_android.core.ble.BleCoordinator
@@ -18,10 +18,12 @@ class PpgCollectorApplication : Application() {
         get() = filesDir.toPath().resolve("subjects")
 
     val bleCoordinator: BleCoordinator by lazy {
-        val mainHandler = Handler(Looper.getMainLooper())
+        val bleThread = HandlerThread("ppg-ble-transport").apply { start() }
+        val bleHandler = Handler(bleThread.looper)
         BleCoordinator(
             transport = AndroidBleTransport(
                 context = applicationContext,
+                mainHandler = bleHandler,
                 monotonicNanos = SystemClock::elapsedRealtimeNanos,
             ),
             apiLevel = android.os.Build.VERSION.SDK_INT,
@@ -29,13 +31,7 @@ class PpgCollectorApplication : Application() {
                 SystemClock.elapsedRealtimeNanos().toDouble() / 1_000_000_000.0
             },
             hostMonotonicNanos = SystemClock::elapsedRealtimeNanos,
-            ownerDispatcher = { action ->
-                if (Looper.myLooper() == mainHandler.looper) {
-                    action()
-                } else {
-                    mainHandler.post(action)
-                }
-            },
+            ownerDispatcher = { action -> action() },
         )
     }
 

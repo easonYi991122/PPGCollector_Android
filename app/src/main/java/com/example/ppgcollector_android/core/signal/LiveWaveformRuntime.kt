@@ -27,6 +27,12 @@ data class LiveWaveformSnapshot(
     val displayCausalIr: DoubleArray = doubleArrayOf(),
     val displayCausalProfile: String? = null,
     val continuousSampleCount: Long = 0,
+    /** Processing continuity epoch; increments on a gap/filter reset, not on a BLE reconnect. */
+    val continuityEpoch: Long = 0,
+    /** Number of sequence gaps observed in this live runtime. */
+    val gapCount: Long = 0,
+    /** Relative sample offsets where a new display segment starts. */
+    val segmentBreakSampleIndices: IntArray = intArrayOf(),
     val metricWarmupSampleCount: Int = 800,
     val settlingSampleCount: Int = 0,
     val fixedLagRed: DoubleArray = doubleArrayOf(),
@@ -107,6 +113,7 @@ class LiveWaveformSnapshotScheduler(
     private val redRing = DoubleArray(windowSampleCount)
     private val irRing = DoubleArray(windowSampleCount)
     private val ecgRing = DoubleArray(windowSampleCount)
+    private val ecgDisplayDownsampler = EcgDisplayDownsampler()
     private var ecgRingStart = 0
     private var ecgRingSize = 0
     private var ringStart = 0
@@ -147,11 +154,9 @@ class LiveWaveformSnapshotScheduler(
         return publishIfDue(nowNanos, measuredAt)
     }
 
-    /** Adds ECG samples to the display-only 100 Hz view (500 Hz source, 5:1 stride). */
+    /** Adds ECG samples to the display-only 100 Hz view (500 Hz source, 5:1 boxcar). */
     fun ingestEcgDisplaySamples(samples: List<UInt>) {
-        samples.forEachIndexed { index, sample ->
-            if (index % 5 == 0) appendEcg(sample.toDouble())
-        }
+        ecgDisplayDownsampler.ingest(samples).forEach(::appendEcg)
     }
 
     fun publishNow(measuredAt: Instant): LiveWaveformSnapshot? {
@@ -221,6 +226,7 @@ class LiveWaveformSnapshotScheduler(
         ringSize = 0
         ecgRingStart = 0
         ecgRingSize = 0
+        ecgDisplayDownsampler.reset()
         nextWriteSampleIndex = nextIndex
         if (resetCount) acceptedSampleCount = 0L
         generation++

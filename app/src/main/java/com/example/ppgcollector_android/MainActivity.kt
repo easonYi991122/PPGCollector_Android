@@ -95,6 +95,7 @@ class MainActivity : ComponentActivity() {
                 var page by rememberSaveable { mutableStateOf(AppPage.LIVE) }
 
                 LaunchedEffect(page) {
+                    if (page == AppPage.SESSIONS) sessionsViewModel.refresh()
                     val insets = WindowCompat.getInsetsController(window, window.decorView)
                     if (page == AppPage.WORKBENCH) {
                         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -152,9 +153,8 @@ class MainActivity : ComponentActivity() {
                             onStopScan = bleCoordinator::stopScanning,
                             onConnect = bleCoordinator::connect,
                             onDisconnect = bleCoordinator::disconnect,
-                            onSelectNordicProtocol = { mode -> bleCoordinator.selectNordicProtocol(mode) },
+                            onSelectStreamProtocol = { mode -> bleCoordinator.selectStreamProtocol(mode) },
                             onOpenSessions = {
-                                sessionsViewModel.refresh()
                                 page = AppPage.SESSIONS
                             },
                             modifier = Modifier.padding(innerPadding),
@@ -244,11 +244,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        bleCoordinator.setPreviewUiActive(true)
         captureViewModel.onStart()
-        sessionsViewModel.refresh()
     }
 
     override fun onStop() {
+        bleCoordinator.setPreviewUiActive(false)
         captureViewModel.onStop()
         super.onStop()
     }

@@ -274,8 +274,15 @@ object OfflinePpgAnalyzer {
 
         segments.forEach { segment ->
             cancellationCheck()
-            val redSlice = input.red.copyOfRange(segment.startIndex, segment.stopIndex)
-            val irSlice = input.ir.copyOfRange(segment.startIndex, segment.stopIndex)
+            // The stored ADC contract has systolic peaks pointing down. Keep
+            // the offline estimator on the same display polarity as the live
+            // path; the source CSV remains untouched.
+            val redSlice = PpgDisplayTransform.rawPeakUp(
+                input.red.copyOfRange(segment.startIndex, segment.stopIndex),
+            )
+            val irSlice = PpgDisplayTransform.rawPeakUp(
+                input.ir.copyOfRange(segment.startIndex, segment.stopIndex),
+            )
             val filteredRed = ZeroPhasePpgFilter.filter(
                 redSlice,
                 PpgPreprocessingProfile.offlineBiquad05To12Hz01,
@@ -359,10 +366,16 @@ object OfflinePpgAnalyzer {
                 }
             },
         )
-        val polarity = selectPolarity(accepted, channel)
+        val estimatorPolarity = selectPolarity(accepted, channel)
+        // Estimation runs on the display polarity (raw ADC is inverted above),
+        // while the public analysis contract reports the source polarity.
+        val polarity = estimatorPolarity?.let {
+            if (it == HeartRatePolarity.POSITIVE) HeartRatePolarity.NEGATIVE
+            else HeartRatePolarity.POSITIVE
+        }
         val selectedValues = if (channel == "RED") redBandpass else irBandpass
         val peaks = collectPeaks(
-            accepted, polarity, selectedValues, segmentIds, centerBpm,
+            accepted, estimatorPolarity, selectedValues, segmentIds, centerBpm,
         )
         val bpmValues = accepted.mapNotNull { it.estimate(channel).peakBpm }
         val bpmMad = weightedMedian(

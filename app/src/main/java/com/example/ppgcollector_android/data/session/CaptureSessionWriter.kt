@@ -219,6 +219,7 @@ class CaptureSessionWriter(
     fun appendAds1292rPacket(
         hostMonotonicNanoseconds: ULong,
         packet: Ads1292rPacket,
+        sequenceEvent: CupSequenceEvent = CupSequenceEvent.Continuous,
         metrics: LiveMetricSnapshot = LiveMetricSnapshot.unavailable(
             hasConnectedDevice = true,
             freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH,
@@ -228,6 +229,20 @@ class CaptureSessionWriter(
         require(configuration.protocolProfile == Ads1292rPacketProtocol.profileIdentifier) {
             "ECG packet requires ads1292r protocol configuration"
         }
+        snapshot = snapshot.copy(
+            missingFrames = snapshot.missingFrames +
+                (sequenceEvent as? CupSequenceEvent.Gap)?.missingFrames.orZero(),
+            duplicateFrames = snapshot.duplicateFrames +
+                if (sequenceEvent is CupSequenceEvent.Duplicate) 1 else 0,
+            outOfOrderFrames = snapshot.outOfOrderFrames +
+                if (sequenceEvent is CupSequenceEvent.OutOfOrder) 1 else 0,
+        )
+        if (sequenceEvent is CupSequenceEvent.Duplicate ||
+            sequenceEvent is CupSequenceEvent.OutOfOrder
+        ) return snapshot
+        observedSamplesPerFrame = packet.red.size
+        observedProtocolProfile = configuration.protocolProfile
+        if (firstStreamSampleIndex == null) firstStreamSampleIndex = nextSampleIndex
         ensureEcgFile()
         val ppg = StringBuilder()
         packet.red.indices.forEach { sampleInFrame ->
@@ -279,6 +294,8 @@ class CaptureSessionWriter(
         checkpointIfDue()
         return snapshot
     }
+
+    private fun Int?.orZero(): Int = this ?: 0
 
     /** Called only by the serialized writer owner; publishes a new metadata snapshot. */
     fun updateParticipant(participant: CaptureParticipantSnapshot?) {

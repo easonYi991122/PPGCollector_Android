@@ -1,8 +1,9 @@
 package com.example.ppgcollector_android.core.ble
 
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.NordicWireProbe
-import java.time.Instant
+import com.example.ppgcollector_android.core.protocol.WireFrameGeometry
 
 data class BleRawNotificationChunk(
     val connectionGeneration: Long,
@@ -67,6 +68,10 @@ class CupBleGattStateMachine(
         private set
     var protocolProbeTimedOut: Boolean = false
         private set
+    var discoveredDevicesEpoch: Long = 0
+        private set
+    val advertisedName: String?
+        get() = activeDeviceName
     var discoveredServiceUuids: List<String> = emptyList()
         private set
     var discoveredCharacteristics: List<BleCharacteristicDiagnostic> = emptyList()
@@ -83,9 +88,11 @@ class CupBleGattStateMachine(
     private var notifyCharacteristicUuid: String? = null
     private var controlCharacteristicUuid: String? = null
     private var activeDeadline: BleConnectionDeadline? = null
-    private var nordicWireProbe: NordicWireProbe? = null
-    private val pendingNordicChunks = ArrayList<BleRawNotificationChunk>()
+    private var wireGeometryProbe: NordicWireProbe? = null
+    private val pendingProbeChunks = ArrayList<BleRawNotificationChunk>()
+    private var pendingReplayChunks: List<BleRawNotificationChunk> = emptyList()
     private var protocolProbeStartedAt: Double? = null
+    private var acceptedBatchFrame: Boolean = false
 
     init {
         transport.eventHandler = { event ->
@@ -96,7 +103,10 @@ class CupBleGattStateMachine(
     fun startScanning(clearPreviousResults: Boolean = false) {
         shouldScanWhenReady = true
         lastError = null
-        if (clearPreviousResults) discoveredDevices.clear()
+        if (clearPreviousResults) {
+            discoveredDevices.clear()
+            discoveredDevicesEpoch++
+        }
         if (availability == BluetoothAvailability.POWERED_ON && !isScanning) {
             isScanning = true
             transport.startScanning()
@@ -120,11 +130,13 @@ class CupBleGattStateMachine(
         activeDeviceId = deviceId
         activeDeviceName = discovered.name
         activeStreamProtocolMode = discovered.streamProtocolMode
-        nordicWireProbe = if (discovered.name == "Nordic_UART_Service") NordicWireProbe() else null
-        protocolProbePending = nordicWireProbe != null
+        wireGeometryProbe = NordicWireProbe()
+        protocolProbePending = BleAdvertisedIdentity.isNordic(discovered.name)
         protocolProbeTimedOut = false
         protocolProbeStartedAt = null
-        pendingNordicChunks.clear()
+        acceptedBatchFrame = false
+        pendingProbeChunks.clear()
+        pendingReplayChunks = emptyList()
         activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
@@ -186,9 +198,33 @@ class CupBleGattStateMachine(
         if (phase !is BleConnectionPhase.Subscribed && phase !is BleConnectionPhase.Receiving) {
             return false
         }
+        val previousFreshness = freshness
+        val previousPending = protocolProbePending
+        val previousTimedOut = protocolProbeTimedOut
         freshnessTracker.observeValidFrame(atUptimeSeconds)
         freshness = freshnessTracker.freshness(atUptimeSeconds)
-        return true
+        if (activeStreamProtocolMode == CupStreamProtocolMode.BATCH_COMPATIBLE &&
+            wireGeometryProbe != null
+        ) {
+            acceptedBatchFrame = true
+            cancelProbe()
+        }
+        return freshness != previousFreshness ||
+            protocolProbePending != previousPending ||
+            protocolProbeTimedOut != previousTimedOut
+    }
+
+    fun pollProtocolProbe(atUptimeSeconds: Double): Boolean {
+        val previousPending = protocolProbePending
+        val previousTimedOut = protocolProbeTimedOut
+        applyProtocolProbeTimeout(atUptimeSeconds)
+        return protocolProbePending != previousPending || protocolProbeTimedOut != previousTimedOut
+    }
+
+    fun takeProtocolReplay(): List<BleRawNotificationChunk> {
+        val chunks = pendingReplayChunks
+        pendingReplayChunks = emptyList()
+        return chunks
     }
 
     fun refreshFreshness(atUptimeSeconds: Double): com.example.ppgcollector_android.core.signal.StreamFreshness {
@@ -226,6 +262,7 @@ class CupBleGattStateMachine(
             activeDeviceId = null
             activeDeviceName = null
             activeStreamProtocolMode = null
+            clearProbeState()
         }
         freshnessTracker.reset()
         freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.UNAVAILABLE
@@ -259,6 +296,7 @@ class CupBleGattStateMachine(
         val index = discoveredDevices.indexOfFirst { it.id == device.id }
         if (index >= 0) discoveredDevices[index] = device else discoveredDevices += device
         discoveredDevices.sortWith(compareBy<DiscoveredBleDevice> { it.name }.thenByDescending { it.rssi ?: Int.MIN_VALUE })
+        discoveredDevicesEpoch++
     }
 
     private fun handleConnected(deviceId: String, now: Double) {
@@ -279,8 +317,7 @@ class CupBleGattStateMachine(
         cancelDeadline()
         activeDeviceId = null
         activeDeviceName = null
-        nordicWireProbe = null
-        pendingNordicChunks.clear()
+        clearProbeState()
         activeStreamProtocolMode = null
         phase = BleConnectionPhase.Failed(message ?: "无法连接设备。")
         lastError = phase.let { (it as BleConnectionPhase.Failed).message }
@@ -295,6 +332,7 @@ class CupBleGattStateMachine(
         activeDeviceId = null
         activeDeviceName = null
         activeStreamProtocolMode = null
+        clearProbeState()
         activeProfile = null
         notifyCharacteristicUuid = null
         controlCharacteristicUuid = null
@@ -395,6 +433,8 @@ class CupBleGattStateMachine(
         phase = BleConnectionPhase.Subscribed(event.deviceId)
         freshnessTracker.start(now)
         freshness = freshnessTracker.freshness(now)
+        protocolProbeStartedAt = now
+        applyProtocolProbeTimeout(now)
     }
 
     private fun handleValue(event: BleTransportEvent.ValueReceived, hostNanos: Long, now: Double) {
@@ -429,65 +469,74 @@ class CupBleGattStateMachine(
             receivedNotificationCount = diagnostics.receivedNotificationCount + 1,
             rawChunkCount = diagnostics.rawChunkCount + 1,
         )
-        if (nordicWireProbe != null && activeStreamProtocolMode == CupStreamProtocolMode.SENSOR_PACKET_168) {
-            if (protocolProbeStartedAt == null) protocolProbeStartedAt = now
-            if (now - protocolProbeStartedAt!! >= 2.0) protocolProbeTimedOut = true
-            pendingNordicChunks += BleRawNotificationChunk(
-                connectionGeneration = connectionGeneration,
-                hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
-                bytes = data.copyOf(),
-                streamProtocolMode = CupStreamProtocolMode.SENSOR_PACKET_168,
-            )
-            val probe = nordicWireProbe!!.feed(data)
-            val locked = probe.locked
-            if (locked == null) {
-                freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
+        val chunk = BleRawNotificationChunk(
+            connectionGeneration = connectionGeneration,
+            hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
+            bytes = data.copyOf(),
+            streamProtocolMode = activeStreamProtocolMode
+                ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
+        )
+        val cupIdentity = BleAdvertisedIdentity.isCup(activeDeviceName)
+        val nordicIdentity = BleAdvertisedIdentity.isNordic(activeDeviceName)
+        val probe = wireGeometryProbe
+        if (probe != null) {
+            bufferPendingChunk(chunk)
+            val probeResult = probe.feed(data)
+            applyProtocolProbeTimeout(now)
+            if (cupIdentity && !acceptedBatchFrame) {
+                onRawChunk?.invoke(chunk.copy(streamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE))
+                if (probeResult.locked == CupStreamProtocolMode.ADS1292R_120) {
+                    lockStreamProtocol(CupStreamProtocolMode.ADS1292R_120, now)
+                }
                 phase = BleConnectionPhase.Receiving(event.deviceId)
+                // A CUP name is provisionally batch-compatible. Do not let a
+                // recording start race the asynchronous preview decode before
+                // the probe either accepts a batch frame or locks ADS 120.
+                if (activeStreamProtocolMode == CupStreamProtocolMode.BATCH_COMPATIBLE) {
+                    freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
+                } else {
+                    refreshFreshness(now)
+                }
                 return
             }
-            activeStreamProtocolMode = locked
-            protocolProbePending = false
-            protocolProbeTimedOut = false
-            val replay = pendingNordicChunks.toList()
-            pendingNordicChunks.clear()
-            replay.forEach { chunk ->
-                onRawChunk?.invoke(chunk.copy(streamProtocolMode = locked))
+            if (nordicIdentity &&
+                activeStreamProtocolMode == CupStreamProtocolMode.SENSOR_PACKET_168
+            ) {
+                val locked = probeResult.locked
+                if (locked == null) {
+                    freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
+                    phase = BleConnectionPhase.Receiving(event.deviceId)
+                    return
+                }
+                lockStreamProtocol(locked, now)
+                return
             }
-            nordicWireProbe = null
-            phase = BleConnectionPhase.Receiving(event.deviceId)
-            freshnessTracker.start(now)
-            freshness = freshnessTracker.freshness(now)
-            return
         }
-        onRawChunk?.invoke(
-            BleRawNotificationChunk(
-                connectionGeneration = connectionGeneration,
-                hostMonotonicNanos = event.hostMonotonicNanos ?: hostNanos,
-                bytes = data.copyOf(),
-                streamProtocolMode = activeStreamProtocolMode
-                    ?: CupStreamProtocolMode.BATCH_COMPATIBLE,
-            ),
-        )
+        onRawChunk?.invoke(chunk)
         phase = BleConnectionPhase.Receiving(event.deviceId)
         refreshFreshness(now)
     }
 
-    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean {
-        if (activeDeviceName != "Nordic_UART_Service" ||
-            mode !in setOf(CupStreamProtocolMode.ADS1292R_120, CupStreamProtocolMode.SENSOR_PACKET_168)
-        ) return false
-        val probe = NordicWireProbe(framesToLock = 1)
-        pendingNordicChunks.forEach { probe.feed(it.bytes) }
-        if (probe.result.locked != mode) return false
-        activeStreamProtocolMode = mode
-        nordicWireProbe = null
-        protocolProbePending = false
-        protocolProbeTimedOut = false
-        val replay = pendingNordicChunks.toList()
-        pendingNordicChunks.clear()
-        replay.forEach { onRawChunk?.invoke(it.copy(streamProtocolMode = mode)) }
+    fun selectStreamProtocol(mode: CupStreamProtocolMode): Boolean {
+        val name = activeDeviceName ?: return false
+        val allowed = when {
+            BleAdvertisedIdentity.isNordic(name) -> setOf(
+                CupStreamProtocolMode.ADS1292R_120,
+                CupStreamProtocolMode.SENSOR_PACKET_168,
+            )
+            BleAdvertisedIdentity.isCup(name) -> setOf(
+                CupStreamProtocolMode.ADS1292R_120,
+                CupStreamProtocolMode.BATCH_COMPATIBLE,
+            )
+            else -> return false
+        }
+        if (mode !in allowed) return false
+        if (!overrideGeometryMatches(mode)) return false
+        lockStreamProtocol(mode, uptimeSeconds())
         return true
     }
+
+    fun selectNordicProtocol(mode: CupStreamProtocolMode): Boolean = selectStreamProtocol(mode)
 
     private fun accepts(deviceId: String, expected: BleConnectionPhase): Boolean {
         if (activeDeviceId == deviceId && phase == expected) return true
@@ -513,6 +562,96 @@ class CupBleGattStateMachine(
         lastError = message
         phase = BleConnectionPhase.Failed(message)
         disconnectDeviceId?.let(transport::disconnect)
+    }
+
+    private fun lockStreamProtocol(mode: CupStreamProtocolMode, now: Double) {
+        activeStreamProtocolMode = mode
+        protocolProbePending = false
+        protocolProbeTimedOut = false
+        pendingReplayChunks = pendingProbeChunks.map { chunk ->
+            chunk.copy(streamProtocolMode = mode)
+        }
+        pendingProbeChunks.clear()
+        wireGeometryProbe = null
+        val deviceId = activeDeviceId
+        if (deviceId != null &&
+            (phase is BleConnectionPhase.Subscribed || phase is BleConnectionPhase.Receiving)
+        ) {
+            phase = BleConnectionPhase.Receiving(deviceId)
+        }
+        freshnessTracker.start(now)
+        freshness = freshnessTracker.freshness(now)
+    }
+
+    private fun cancelProbe() {
+        wireGeometryProbe = null
+        protocolProbePending = false
+        protocolProbeTimedOut = false
+        pendingProbeChunks.clear()
+    }
+
+    private fun clearProbeState() {
+        wireGeometryProbe = null
+        protocolProbePending = false
+        protocolProbeTimedOut = false
+        protocolProbeStartedAt = null
+        acceptedBatchFrame = false
+        pendingProbeChunks.clear()
+        pendingReplayChunks = emptyList()
+    }
+
+    private fun bufferPendingChunk(chunk: BleRawNotificationChunk) {
+        pendingProbeChunks += chunk
+        val maxChunks = 48
+        if (pendingProbeChunks.size > maxChunks) {
+            pendingProbeChunks.subList(0, pendingProbeChunks.size - maxChunks).clear()
+        }
+    }
+
+    private fun applyProtocolProbeTimeout(now: Double) {
+        if (wireGeometryProbe == null || acceptedBatchFrame) return
+        val started = protocolProbeStartedAt ?: return
+        if (now - started < 2.0) return
+        if (activeStreamProtocolMode == CupStreamProtocolMode.ADS1292R_120) return
+        protocolProbeTimedOut = true
+        protocolProbePending = true
+    }
+
+    private fun overrideGeometryMatches(mode: CupStreamProtocolMode): Boolean {
+        val probe = NordicWireProbe(framesToLock = 1)
+        pendingProbeChunks.forEach { probe.feed(it.bytes) }
+        val hasExact120 = pendingProbeChunks.any(::isExactAds120Frame)
+        val hasExact168 = pendingProbeChunks.any { chunk ->
+            chunk.bytes.size == 168 &&
+                chunk.bytes[0] == Ads1292rPacketProtocol.header[0] &&
+                chunk.bytes[1] == Ads1292rPacketProtocol.header[1] &&
+                chunk.bytes[166] == Ads1292rPacketProtocol.footer[0] &&
+                chunk.bytes[167] == Ads1292rPacketProtocol.footer[1]
+        }
+        return when (mode) {
+            CupStreamProtocolMode.ADS1292R_120 ->
+                probe.result.locked == CupStreamProtocolMode.ADS1292R_120 ||
+                    probe.result.votes120 > 0 ||
+                    hasExact120
+            CupStreamProtocolMode.SENSOR_PACKET_168 ->
+                probe.result.locked == CupStreamProtocolMode.SENSOR_PACKET_168 ||
+                    probe.result.votes168 > 0 ||
+                    hasExact168
+            CupStreamProtocolMode.BATCH_COMPATIBLE ->
+                probe.result.locked == CupStreamProtocolMode.SENSOR_PACKET_168 ||
+                    probe.result.votes168 > 0 ||
+                    hasExact168 ||
+                    probe.result.lockedGeometry == WireFrameGeometry.BYTES_168
+        }
+    }
+
+    private fun isExactAds120Frame(chunk: BleRawNotificationChunk): Boolean {
+        val bytes = chunk.bytes
+        return bytes.size == Ads1292rPacketProtocol.frameLength &&
+            bytes[0] == Ads1292rPacketProtocol.header[0] &&
+            bytes[1] == Ads1292rPacketProtocol.header[1] &&
+            bytes[118] == Ads1292rPacketProtocol.footer[0] &&
+            bytes[119] == Ads1292rPacketProtocol.footer[1]
     }
 
     private fun incrementStaleCallback() {

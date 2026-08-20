@@ -1,8 +1,8 @@
 # PPGCollector Android 移植：Codex Agent 目标模式说明
 
 版本：1.2（agent 执行基线）
-日期：2026-08-08
-当前迭代：`M7.6`（Saved Sessions 统一骨架、紧凑录制 UI、Compose 性能与 Baseline Profile 构建路径已实现；真机门禁仍待执行）
+日期：2026-08-09
+当前迭代：`M7.7`（实时五指标、详情折叠、离线 0.5～12 Hz ZERO/FIXED 与 source-time 对齐可视化已实现；本地综合门禁与真机门禁状态见 status）
 
 > 这是本项目的长期 agent 入口文档。每次开始新迭代、恢复任务或上下文压缩后，必须从头阅读本文件，再阅读[简版开发状态](status/DEVELOPMENT_STATUS.md)。需要追溯历史时再阅读[详细开发状态](status/DEVELOPMENT_STATUS_DETAILED.md)。没有完成这一步，不得开始修改代码或宣布进展。
 
@@ -22,7 +22,7 @@
 
 证据优先级固定为：真实产品需求与真实 CUP 固件/GATT 抓包 > 当前 iOS Swift 源码、Swift 测试和 golden fixtures > Python/C++ 交叉参考 > 规划建议。reference_sources 是只读快照；不要直接修改它，也不要把被 EXCLUSIONS.md 排除的旧 BLE/NUS、旧协议、旧 CSV、IMU 或隔壁项目作为 Android V1 依据。资料冲突时先记录 ADR/决策，不要悄悄猜测。
 
-当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值。M1～M7.6 已有 BLE、CUP 协议、信号处理、raw-first 会话、前台服务、实时/会话页面、subject archive、统一 Saved Sessions route、紧凑录制 UI 与 Baseline Profile producer 代码及 JVM/build/privacy 证据；真机、模拟器、API/厂商矩阵、正式 identity/signing、Macrobenchmark 数值和可访问性门禁仍开放。不要把 app versionName=1.0 当作迁移完成版本。
+当前 Android 工程事实：Kotlin + Gradle Kotlin DSL + Jetpack Compose；minSdk 26、compileSdk 37、targetSdk 37、Java 11；applicationId 和 app 名仍是基础工程占位值。M1～M7.7 已有 BLE、CUP 协议、信号处理、raw-first 会话、前台服务、实时/会话页面、subject archive、统一 Saved Sessions route、紧凑录制 UI、详情 shared-x 时间轴与 Baseline Profile producer 代码；本地验证事实以 status 为准，真机、模拟器、API/厂商矩阵、正式 identity/signing、Macrobenchmark 数值和可访问性门禁仍开放。不要把 app versionName=1.0 当作迁移完成版本。
 
 必须保持或显式验证的核心契约：
 - CUP transport profile 当前包含 NUS `6E400001/3/2` 与 FFF0/FFF1/FFF2 两组 service/notify/control UUID；连接后按设备身份和实际发现的 service 精确选择。两组都仍是 draft/bring-up，被动订阅不等于固件已确认无需控制命令。
@@ -79,9 +79,11 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 7. [实施路线与验收](docs/04_IMPLEMENTATION_ROADMAP_AND_ACCEPTANCE.md)：阶段、任务和门禁。
 8. [源代码参考索引](docs/05_SOURCE_REFERENCE_INDEX.md)：从需求/模块跳转到参考符号和测试。
 9. [决策与风险登记](docs/06_OPEN_DECISIONS_AND_RISK_REGISTER.md)：未决证据和风险，不得在代码中偷偷作决定。
-10. [实时数据处理与数据存储实现指南](../REALTIME_AND_STORAGE.md)：当前 Android production 调用链、文件格式、函数索引与修改边界。
-11. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：2026-08-08 用户增量的权威实施顺序、数据合同、旧文档治理和单轮单次校验要求。
-12. [M7.6 Compose UI 与性能收敛规划](docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md)：Saved Sessions 统一层级、录制信息密度、Compose 状态/绘图边界、无障碍与 Baseline Profile；本轮 UI 冲突以此为准。
+10. [使用手册](../USER_GUIDE.md)、[功能介绍](../FEATURE_OVERVIEW.md)、[滤波与分析参数](../FILTER_AND_ANALYSIS_PARAMETERS.md)、[导出数据格式](../EXPORT_DATA_FORMAT.md)：从当前 M7.7 代码提取的面向使用者事实；操作、结果语义和文件合同优先查阅这些短文档。
+11. [实时数据处理与数据存储实现指南](../REALTIME_AND_STORAGE.md)：当前 Android production 调用链、函数索引与修改边界。
+12. [M7 五轮开发规划](docs/09_M7_CAPTURE_TRACEABILITY_SUBJECT_ARCHIVE_PLAN.md)：2026-08-08 用户增量的权威实施顺序、数据合同、旧文档治理和单轮单次校验要求。
+13. [M7.6 Compose UI 与性能收敛规划](docs/10_M7_6_COMPOSE_UI_PERFORMANCE_PLAN.md)：Saved Sessions 统一层级、录制信息密度、Compose 状态/绘图边界、无障碍与 Baseline Profile；本轮 UI 冲突以此为准。
+14. [M7.7 实时指标、会话详情与对齐时间轴规划](docs/11_M7_7_SESSION_DETAIL_AND_TIMELINE_PLAN.md)：五指标、详情折叠、离线 ZERO/FIXED、PPG/指标/BP 对齐与分析导航；M7.7 相关冲突以此为准。
 
 ## 4. 证据优先级与冲突处理
 
@@ -112,6 +114,7 @@ Android 端最终要提供 CUP BLE 设备扫描/连接、实时 RED/IR 波形和
 | `M7.4` | M7 第 4 轮 | subject-first archive、canonical/unclassified 分区、seq numeric sort、HR/BP summary、manifest/hash/streaming multi-session ZIP | JVM/build/privacy 综合门禁通过；真实 SAF、动态字号与设备门禁延期 |
 | `M7.5` | M7 第 5 轮 | 示例建议名、canonical 前缀归一化、已保存会话双视图/多选导出删除、录制态紧凑设备区、IME 避让与 UI 收尾 | 本地综合门禁通过；真机 IME/TalkBack/动态字号/SAF/长录制门禁延期 |
 | `M7.6` | Compose UI/性能单轮收敛 | Saved Sessions 单 route/固定顶栏/安全选择，录制 compact/detail/固定操作/五指标，state slice/缓存绘图/语义，Baseline Profile producer 与 release 打包断言 | 165 JVM tests、lint/build/R8/REL/profile 综合门禁通过；真机 UI、SAF、Macrobenchmark/功耗门禁延期 |
+| `M7.7` | 详情与对齐可视化单轮收敛 | 五指标完整网格、Saved Sessions 对齐；详情默认折叠；离线 0.5～12 Hz ZERO/FIXED；PPG/指标/BP shared-x；扁平分析导航与 BP 占位边界 | 实现已落地；最终本地门禁结果见双层 status，真机滤波观感、动态字号、手势/TalkBack 与真实 BP 仍延期 |
 
 ## 6. 不可破坏的核心契约
 
