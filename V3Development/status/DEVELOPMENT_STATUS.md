@@ -1,9 +1,22 @@
 # V3.0 开发状态（简版）
 
 更新：2026-08-22
-当前轮次：**V3.R9/R9.1（编码与完整自动门禁已完成；等待 R9 真机节点）**
+当前轮次：**V3.R10（编码与完整自动门禁已完成；R9/R10 真机节点待测）**
 
-> 本文件后面的 R8.2/R8.1/R8/R7/R6/R5.1 记录保留作历史基线；以下先记录 R9/R9.1 实际状态。
+> 本文件后面的 R9/R9.1、R8.2/R8.1/R8/R7/R6/R5.1 记录保留作历史基线；以下先记录 R10 实际状态。
+
+## R10 本轮落地
+
+- 离线重放显式拆为 raw evidence input 与 repaired analysis input：两者共享原 accepted ADC 和顺序；时间统一为零基 `index / 100 Hz`。gap 只保留 break 位置与 missing 统计，不插值、不补点、不回写 `.cupraw`；ZERO、FIXED、离线窗口和指标后备消费连续 repaired input，RAW 可继续显示断点证据。
+- 新 analysis artifact 在既有 raw SHA-256 之外记录 `accepted-order-gap-compression-v1`、repair gap 数与 repaired 点数；三项均 optional decode，旧 artifact 可读。
+- metrics sidecar 加载区分 `PERSISTED_VALID`、`PERSISTED_NO_VALID_VALUES`、`SIDECAR_MISSING`、`SIDECAR_INVALID`。有效录制期指标优先；其余状态基于 repaired input 离线重算并展示来源/有界失败原因，无结果时明确显示不可用。详情波形区无需 artifact 也可显示该指标时间轴；指标与人工 BP 均按 accepted cursor 对齐。
+- 详情与横屏工作台增加「显示缺帧标记」开关：低密度默认开、高密度默认关。marker 先以低 alpha、像素去重方式绘制，波形后绘制；只有 RAW path 保留断点，ZERO/FIXED 连续。诊断数字不受开关影响。
+
+## R10 JVM/构建验收
+
+- fixture 覆盖无 gap、单 gap、高密度 gap、duplicate/out-of-order/坏帧混合、raw hash 不变、repaired 点数/时钟、ZERO/FIXED、8 s 窗口、metrics 四态、BP 对齐、旧 artifact 和 marker policy。
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；231 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 均成功。
+- 未执行真机。用户在开发板检修期间明确要求继续完成 R10；因此 R9 真机节点和 R10 真机节点都仍标记待测。R10 节点应分别导入/打开开发板修复前高 gap 会话与修复后会话，对照 RAW 诊断、ZERO/FIXED、指标来源、BP 对齐和 marker 开关。
 
 ## R9/R9.1 本轮落地
 
@@ -16,7 +29,7 @@
 ## R9/R9.1 JVM/构建验收
 
 - `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；223 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 均成功。
-- 未执行真机。真机节点需同一会话录前 BP + 两条录中 BP，核对停止后 BP/notes 清空、原名即时重复、改名解除、详情三条事件，并同时记录 MTU 请求/实际/FALLBACK 和 gap 诊断。该节点通过前不进入 R10。
+- 未执行真机。真机节点需同一会话录前 BP + 两条录中 BP，核对停止后 BP/notes 清空、原名即时重复、改名解除、详情三条事件，并同时记录 MTU 请求/实际/FALLBACK 和 gap 诊断。用户已要求在开发板检修期间先完成 R10 编码；该 R9 节点仍未被自动门禁替代。
 
 ## R8.2 本轮落地
 

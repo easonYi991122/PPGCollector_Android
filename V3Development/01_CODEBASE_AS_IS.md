@@ -237,6 +237,15 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - 定时录制无效时长现在是 typed gate failure，不再静默回落到 60 s。participant dirty 状态按 canonical subject 作用，同一 subject 换序号可保留编辑，切换 subject 必须重新加载对应 profile。
 - metadata 新增 optional `record_mode`；详情页从 stem 显示 PPG/MB，补齐模式、计划/实际时长、生活方式、notes、录前会话级 BP 和时间轴 BP 事件数。旧 metadata 不猜测模式。
 
+## R10 实际实现补充（2026-08-22）
+
+- `CaptureSessionOfflineAnalysisService` 现在同时构造 raw evidence input 和 repaired analysis input。二者共享原始 accepted ADC 数组及顺序；时间为零基 accepted cursor `index / 100 Hz`。gap 不再向分析时间轴补 missing sample，不插值或写回源文件，只在 raw input 中保留 break index 与 replay 统计。
+- `OfflinePpgAnalyzer.analyze`、全程 ZERO、FIXED 和离线指标后备统一消费无 break 的 repaired input。因此高密度 sequence gap 不会再把滤波切成不足 32/201 点的碎段，也不会仅因 gap guard 使 8 秒窗口消失；RAW stage 仍显示原 accepted ADC 并可选择 gap evidence。
+- analysis JSON 继续保留来源 raw SHA-256，并在 input 下 optional 记录 `analysis_signal_profile=accepted-order-gap-compression-v1`、repair gap 数和 repaired 点数。旧 JSON 不含这些键时返回 `null`，不猜测旧分析口径。
+- `CaptureSessionSignalTrace` 的指标证据区分 persisted valid / persisted no-valid-values / sidecar missing / sidecar invalid；后三态基于当前 repaired input 重算接受窗口，界面明确显示「录制期 1 Hz」「离线重算」或不可用原因。录制期 metrics 和人工 BP 均用 accepted source sample index/time 对齐。
+- 详情波形区即使没有 analysis artifact 也会显示指标时间轴。详情和横屏工作台的 gap marker 可开关；低密度默认开、高密度默认关。marker 在波形下层低透明绘制并按像素去重，RAW path 可按 break 断开，ZERO/FIXED 保持连续；missing/break/source 诊断数字始终保留。
+- R10 完整自动门禁为 231 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 全部通过。开发板修复前/后的真机会话对照仍待执行。
+
 ## R7 后代码结构审计（2026-08-20）
 
 - `app/src/main/java` 共 76 个 Kotlin 文件、约 2.14 万行；`core/ble`、`core/protocol`、`core/signal`、`data/session` 的分包边界与当前项目规模相称。短文件主要承载单一协议、策略或文件契约，不适合为了减少文件数量而合并。

@@ -777,6 +777,11 @@ private fun AnalysisDiagnostics(artifact: CaptureSessionAnalysisArtifact) {
     val report = artifact.report
     LabeledValue("raw SHA-256", report.sourceRawSha256)
     LabeledValue("输入样本", report.input.acceptedSampleCount.toString())
+    LabeledValue("分析输入口径", report.input.analysisSignalProfile ?: "legacy / 未记录")
+    LabeledValue(
+        "修复 gap / 输入点",
+        "${report.input.repairGapCount ?: "—"} / ${report.input.repairInputSampleCount ?: "—"}",
+    )
     LabeledValue("前导 / 停止尾部", "${report.input.leadingAlignmentByteCount} / ${report.input.pendingDecoderByteCount} B")
     LabeledValue("结构无效 / 对齐后丢弃", "${report.input.structurallyInvalidFrameCount} / ${report.input.structuralDiscardedByteCount}")
     LabeledValue("拒绝原因", report.metrics.rejectionCounts.entries.joinToString { "${it.key}=${it.value}" }.ifEmpty { "无" })

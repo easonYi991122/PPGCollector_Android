@@ -38,4 +38,31 @@ class SessionDetailUiPolicyTest {
         assertEquals("—", SessionDetailUiPolicy.durationLabel(null))
         assertEquals("42 秒", SessionDetailUiPolicy.durationLabel(42L))
     }
+
+    @Test
+    fun gapMarkersDefaultOnOnlyForLowDensityEvidence() {
+        assertFalse(SessionGapMarkerPolicy.defaultVisible(0, 3_000))
+        assertTrue(SessionGapMarkerPolicy.defaultVisible(1, 3_000))
+        assertFalse(SessionGapMarkerPolicy.defaultVisible(20, 3_000))
+        assertFalse(SessionGapMarkerPolicy.defaultVisible(10, 800))
+    }
+
+    @Test
+    fun repairedStagesStayContinuousWhileRawRetainsBreaks() {
+        val breaks = intArrayOf(20, 80)
+        assertTrue(SessionGapMarkerPolicy.pathBreaksForRawStage(true, breaks) === breaks)
+        assertTrue(SessionGapMarkerPolicy.pathBreaksForRawStage(false, breaks).isEmpty())
+    }
+
+    @Test
+    fun markerLayerAlwaysPrecedesPhysiologicalWaveform() {
+        assertEquals(
+            listOf(SessionSignalDrawLayer.GAP_MARKERS, SessionSignalDrawLayer.WAVEFORM),
+            SessionGapMarkerPolicy.drawLayers(showMarkers = true),
+        )
+        assertEquals(
+            listOf(SessionSignalDrawLayer.WAVEFORM),
+            SessionGapMarkerPolicy.drawLayers(showMarkers = false),
+        )
+    }
 }

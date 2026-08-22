@@ -30,3 +30,29 @@ internal object SessionDetailUiPolicy {
 
     fun durationLabel(seconds: Long?): String = seconds?.let { "$it 秒" } ?: "—"
 }
+
+internal enum class SessionSignalDrawLayer {
+    GAP_MARKERS,
+    WAVEFORM,
+}
+
+/** Pure policy shared by the detail replay and the landscape workbench. */
+internal object SessionGapMarkerPolicy {
+    private const val highDensityBreakCount = 20
+    private const val highDensityBreaksPerSamples = 0.01
+
+    fun isHighDensity(breakCount: Int, sampleCount: Int): Boolean =
+        breakCount >= highDensityBreakCount ||
+            (sampleCount > 0 && breakCount.toDouble() / sampleCount >= highDensityBreaksPerSamples)
+
+    fun defaultVisible(breakCount: Int, sampleCount: Int): Boolean =
+        breakCount > 0 && !isHighDensity(breakCount, sampleCount)
+
+    fun pathBreaksForRawStage(isRawStage: Boolean, breakIndices: IntArray): IntArray =
+        if (isRawStage) breakIndices else intArrayOf()
+
+    fun drawLayers(showMarkers: Boolean): List<SessionSignalDrawLayer> = buildList {
+        if (showMarkers) add(SessionSignalDrawLayer.GAP_MARKERS)
+        add(SessionSignalDrawLayer.WAVEFORM)
+    }
+}

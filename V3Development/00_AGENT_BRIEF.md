@@ -37,9 +37,8 @@
 
 | 标识 | 含义 |
 |---|---|
-| V3.R1 … V3.R9.1 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R9/R9.1 自动门禁已通过，R9 真机节点待测 |
-| V3.R10 | 待实施；须在 R9 双路 BP/表单/MTU 真机节点通过后再进入 |
-| 当前代码基线 | R1–R9.1 已落地；BLE、录制、连续性、实时显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
+| V3.R1 … V3.R10 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R9/R9.1 与 R10 自动门禁已通过，两个真机节点待测 |
+| 当前代码基线 | R1–R10 已落地；BLE、录制、连续性、实时/离线显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
 
 ## 证据优先级（本阶段）
 

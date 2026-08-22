@@ -14,6 +14,7 @@ import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertArrayEquals
 import org.junit.Test
@@ -131,29 +132,165 @@ class CaptureSessionOfflineAnalysisTest {
         }
     }
 
+    @Test
+    fun singleGapUsesContinuousAcceptedClockWithoutChangingRawEvidence() {
+        val sequences = List(150) { index -> if (index < 50) index else index + 1 }
+        withSession(sequenceNumbers = sequences) { session ->
+            val files = CaptureSessionRepository.expectedFiles(session.directory)
+            val beforeRaw = sha256(files.raw)
+
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            val artifact = CaptureSessionOfflineAnalysisService.analyzeAndSave(session)
+
+            assertEquals(1, trace.replay.missingFrames)
+            assertArrayEquals(intArrayOf(1_000), trace.breakIndices)
+            assertEquals(3_000, trace.rawRed.size)
+            assertEquals(0.01, trace.timeSeconds[1_000] - trace.timeSeconds[999], 1e-12)
+            assertEquals(29.99, trace.timeSeconds.last(), 1e-12)
+            assertTrue(trace.filteredRed.all(Double::isFinite))
+            assertEquals(2_800, trace.fixedLagRed.count(Double::isFinite))
+            assertEquals(CaptureSessionOfflineAnalysisService.analysisSignalProfile, artifact.report.input.analysisSignalProfile)
+            assertEquals(1, artifact.report.input.repairGapCount)
+            assertEquals(3_000L, artifact.report.input.repairInputSampleCount)
+            assertTrue(artifact.report.metrics.acceptedWindowCount > 0)
+            assertEquals(beforeRaw, artifact.report.sourceRawSha256)
+            assertEquals(beforeRaw, sha256(files.raw))
+        }
+    }
+
+    @Test
+    fun highDensityGapsStillProduceBoundedFiltersWindowsAndAcceptedCursorAlignment() {
+        val sequences = List(150) { it * 2 }
+        val metric = metricSidecar(valid = true, sourceSampleIndex = 2_500, sourceTimeSeconds = 25.0)
+        val bloodPressure = bloodPressureEvent(sourceSampleIndex = 2_500, sourceTimeSeconds = 25.0)
+        withSession(
+            sequenceNumbers = sequences,
+            metricSidecar = metric,
+            bloodPressureEvent = bloodPressure,
+        ) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            val artifact = CaptureSessionOfflineAnalysisService.analyzeAndSave(session)
+
+            assertTrue(trace.replay.missingFrames >= 100)
+            assertTrue(trace.breakIndices.size >= 100)
+            assertEquals(trace.replay.acceptedSamples.toInt(), trace.timeSeconds.size)
+            assertEquals((trace.timeSeconds.size - 1) / 100.0, trace.timeSeconds.last(), 1e-12)
+            assertTrue(trace.filteredRed.all(Double::isFinite))
+            assertTrue(trace.filteredIr.all(Double::isFinite))
+            assertEquals(trace.timeSeconds.size - 200, trace.fixedLagRed.count(Double::isFinite))
+            assertTrue(artifact.report.metrics.acceptedWindowCount > 0)
+            assertEquals(CaptureMetricTimelineSource.RECORDED_1_HZ, trace.metricTimelineEvidence.source)
+            assertEquals(25.0, trace.metricTimeline.single().sourceTimeSeconds, 0.0)
+            assertEquals(trace.timeSeconds[2_500], trace.metricTimeline.single().sourceTimeSeconds, 0.0)
+            assertEquals(25.0, trace.bloodPressureEvents.single().reference.sourceTimeSeconds, 0.0)
+            assertEquals(trace.timeSeconds[2_500], trace.bloodPressureEvents.single().reference.sourceTimeSeconds, 0.0)
+        }
+    }
+
+    @Test
+    fun mixedDuplicateOutOfOrderGapAndInvalidFrameKeepOnlyAcceptedSamples() {
+        val sequences = listOf(0, 1, 1, 0, 2) + List(145) { it + 4 }
+        withSession(sequenceNumbers = sequences, invalidWireAt = 20) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+
+            assertTrue(trace.replay.duplicateFrames >= 1)
+            assertTrue(trace.replay.outOfOrderFrames >= 1)
+            assertTrue(trace.replay.missingFrames >= 1)
+            assertTrue(trace.replay.structurallyInvalidFrames >= 1)
+            assertEquals(trace.replay.acceptedSamples.toInt(), trace.rawRed.size)
+            assertEquals((trace.rawRed.size - 1) / 100.0, trace.timeSeconds.last(), 1e-12)
+            assertTrue(trace.filteredRed.all(Double::isFinite))
+            assertEquals(trace.rawRed.size - 200, trace.fixedLagRed.count(Double::isFinite))
+        }
+    }
+
+    @Test
+    fun metricTimelineDistinguishesFourPersistedStatesAndUsesRepairedFallback() {
+        withSession(metricSidecar = metricSidecar(valid = true)) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(PersistedMetricSidecarState.PERSISTED_VALID, trace.metricTimelineEvidence.persistedState)
+            assertEquals(CaptureMetricTimelineSource.RECORDED_1_HZ, trace.metricTimelineEvidence.source)
+            assertEquals(72.0, trace.metricTimeline.single().heartRateBpm!!, 0.0)
+        }
+        withSession(metricSidecar = metricSidecar(valid = false)) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(PersistedMetricSidecarState.PERSISTED_NO_VALID_VALUES, trace.metricTimelineEvidence.persistedState)
+            assertEquals(CaptureMetricTimelineSource.OFFLINE_RECOMPUTED, trace.metricTimelineEvidence.source)
+            assertTrue(trace.metricTimeline.isNotEmpty())
+        }
+        withSession { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(PersistedMetricSidecarState.SIDECAR_MISSING, trace.metricTimelineEvidence.persistedState)
+            assertEquals(CaptureMetricTimelineSource.OFFLINE_RECOMPUTED, trace.metricTimelineEvidence.source)
+            assertTrue(trace.metricTimelineEvidence.detail.contains("不存在"))
+        }
+        withSession(metricSidecar = "broken header\n") { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(PersistedMetricSidecarState.SIDECAR_INVALID, trace.metricTimelineEvidence.persistedState)
+            assertEquals(CaptureMetricTimelineSource.OFFLINE_RECOMPUTED, trace.metricTimelineEvidence.source)
+            assertTrue(trace.metricTimelineEvidence.detail.length < 260)
+        }
+        withSession(sequenceNumbers = List(20) { it }) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(PersistedMetricSidecarState.SIDECAR_MISSING, trace.metricTimelineEvidence.persistedState)
+            assertEquals(CaptureMetricTimelineSource.UNAVAILABLE, trace.metricTimelineEvidence.source)
+            assertTrue(trace.metricTimeline.isEmpty())
+            assertTrue(trace.metricTimelineEvidence.detail.contains("仍无可发布指标"))
+        }
+    }
+
+    @Test
+    fun legacyArtifactWithoutRepairFieldsStillDecodes() {
+        withSession { session ->
+            val report = CaptureSessionOfflineAnalysisService.analyzeAndSave(session).report
+            val legacyJson = CaptureSessionAnalysisCodec.encode(report)
+                .lineSequence()
+                .filterNot { line ->
+                    line.contains("\"analysis_signal_profile\"") ||
+                        line.contains("\"repair_gap_count\"") ||
+                        line.contains("\"repair_input_sample_count\"")
+                }
+                .joinToString("\n")
+
+            val decoded = CaptureSessionAnalysisCodec.decode(legacyJson)
+
+            assertNull(decoded.input.analysisSignalProfile)
+            assertNull(decoded.input.repairGapCount)
+            assertNull(decoded.input.repairInputSampleCount)
+        }
+    }
+
     private fun withSession(
         leadingPrefixBytes: Int = 0,
+        sequenceNumbers: List<Int> = List(3_000 / CupBatchProtocolV1.samplesPerFrame) { it },
+        invalidWireAt: Int? = null,
+        metricSidecar: String? = null,
+        bloodPressureEvent: ManualBloodPressureEvent? = null,
         block: (StoredCaptureSession) -> Unit,
     ) {
         val root = Files.createTempDirectory("offline-session")
         val directory = root.resolve("capture")
         Files.createDirectory(directory)
         val files = CaptureSessionRepository.expectedFiles(directory)
-        val frameCount = 3_000 / CupBatchProtocolV1.samplesPerFrame
+        val frameCount = sequenceNumbers.size
         try {
             CupRawWriter(files.raw).use { writer ->
                 if (leadingPrefixBytes > 0) {
-                    val previous = frameWire(255)
+                    val previous = frameWire(255, 255)
                     writer.append(
                         500u,
                         previous.copyOfRange(previous.size - leadingPrefixBytes, previous.size),
                     )
                 }
-                repeat(frameCount) { frameIndex ->
+                sequenceNumbers.forEachIndexed { frameIndex, sequence ->
+                    if (invalidWireAt == frameIndex) {
+                        val invalid = frameWire(frameIndex, sequence).also { it[it.lastIndex] = 0x00 }
+                        writer.append((999_000_000L + frameIndex).toULong(), invalid)
+                    }
                     writer.append(
                         (1_000_000_000L + frameIndex.toLong() * CupBatchProtocolV1.samplesPerFrame *
                             1_000_000_000L / CupBatchProtocolV1.sampleRateHz).toULong(),
-                        frameWire(frameIndex),
+                        frameWire(frameIndex, sequence),
                     )
                 }
             }
@@ -168,6 +305,15 @@ class CaptureSessionOfflineAnalysisTest {
                     ),
                 ),
             )
+            metricSidecar?.let {
+                Files.writeString(directory.resolve("capture.metrics.csv"), it)
+            }
+            bloodPressureEvent?.let {
+                Files.writeString(
+                    directory.resolve("capture.blood-pressure.csv"),
+                    CaptureBloodPressureSeries.header + CaptureBloodPressureSeries.format(it),
+                )
+            }
             val session = CaptureSessionRepository.listSessions(root).single()
             block(session)
         } finally {
@@ -177,11 +323,11 @@ class CaptureSessionOfflineAnalysisTest {
         }
     }
 
-    private fun frameWire(frameIndex: Int): ByteArray {
+    private fun frameWire(frameIndex: Int, sequence: Int = frameIndex): ByteArray {
         val frameStart = frameIndex * CupBatchProtocolV1.samplesPerFrame
         return encodeCupBatchFrame(
             CupBatchFrame(
-                sequence = frameIndex.toUByte(),
+                sequence = sequence.toUByte(),
                 samples = List(CupBatchProtocolV1.samplesPerFrame) { sampleInFrame ->
                     val sampleIndex = frameStart + sampleInFrame
                     val phase = 2.0 * PI * 1.2 * sampleIndex / CupBatchProtocolV1.sampleRateHz
@@ -193,6 +339,47 @@ class CaptureSessionOfflineAnalysisTest {
             ),
         )
     }
+
+    private fun metricSidecar(
+        valid: Boolean,
+        sourceSampleIndex: Long = 999,
+        sourceTimeSeconds: Double = 9.99,
+    ): String {
+        val fields = MutableList(CaptureMetricSeries.columns.size) { "" }
+        fields[0] = CaptureMetricSeries.schemaVersion
+        fields[1] = "offline-session-id"
+        fields[2] = "1"
+        fields[3] = "1"
+        fields[4] = sourceSampleIndex.toString()
+        fields[5] = sourceTimeSeconds.toString()
+        fields[6] = "2026-08-02T01:00:10Z"
+        listOf(8, 13, 18, 23).forEach { fields[it] = "false" }
+        listOf(9, 14, 19, 24).forEach { fields[it] = "false" }
+        if (valid) {
+            fields[7] = "72.0"
+            fields[8] = "true"
+            fields[10] = "test"
+        }
+        return CaptureMetricSeries.header + fields.joinToString(",") + "\n"
+    }
+
+    private fun bloodPressureEvent(
+        sourceSampleIndex: Long,
+        sourceTimeSeconds: Double,
+    ) = ManualBloodPressureEvent(
+        reference = CaptureReferenceTimestamp(
+            sessionId = "offline-session-id",
+            connectionGeneration = 1,
+            eventIndex = 0,
+            sourceSampleIndex = sourceSampleIndex,
+            sourceTimeSeconds = sourceTimeSeconds,
+            dialogOpenHostMonotonicNanoseconds = 1_000u,
+            dialogOpenUtc = Instant.parse("2026-08-02T01:00:25Z"),
+        ),
+        savedUtc = Instant.parse("2026-08-02T01:00:26Z"),
+        systolicMmHg = 120,
+        diastolicMmHg = 80,
+    )
 
     private fun sampleMetadata(
         rawChunkCount: Long,

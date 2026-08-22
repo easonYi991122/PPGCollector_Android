@@ -52,6 +52,28 @@ data class CaptureSessionAnalysisInputReport(
     val structuralDiscardedByteCount: Int,
     val pendingDecoderByteCount: Int,
     val trailingRawByteCount: Long,
+    val analysisSignalProfile: String? = null,
+    val repairGapCount: Int? = null,
+    val repairInputSampleCount: Long? = null,
+)
+
+enum class PersistedMetricSidecarState {
+    PERSISTED_VALID,
+    PERSISTED_NO_VALID_VALUES,
+    SIDECAR_MISSING,
+    SIDECAR_INVALID,
+}
+
+enum class CaptureMetricTimelineSource {
+    RECORDED_1_HZ,
+    OFFLINE_RECOMPUTED,
+    UNAVAILABLE,
+}
+
+data class CaptureMetricTimelineEvidence(
+    val persistedState: PersistedMetricSidecarState,
+    val source: CaptureMetricTimelineSource,
+    val detail: String,
 )
 
 data class CaptureSessionAnalysisMetrics(
@@ -116,11 +138,17 @@ data class CaptureSessionSignalTrace(
     val preprocessProfile: String,
     val fixedLagProfile: String,
     val metricTimeline: List<CaptureMetricTimelinePoint> = emptyList(),
+    val metricTimelineEvidence: CaptureMetricTimelineEvidence = CaptureMetricTimelineEvidence(
+        persistedState = PersistedMetricSidecarState.SIDECAR_MISSING,
+        source = CaptureMetricTimelineSource.UNAVAILABLE,
+        detail = "未加载指标证据",
+    ),
     val bloodPressureEvents: List<ManualBloodPressureEvent> = emptyList(),
 )
 
 object CaptureSessionOfflineAnalysisService {
     const val schemaVersion = "ppgcollector_analysis_v1"
+    const val analysisSignalProfile = "accepted-order-gap-compression-v1"
     private const val maximumAcceptedSamples = 1_500_000
     private val fileTimestamp = DateTimeFormatter
         .ofPattern("yyyyMMdd'T'HHmmss.SSS'Z'")
@@ -150,7 +178,7 @@ object CaptureSessionOfflineAnalysisService {
         var lastCompletedWindows = 0
         var totalWindows = 0
         val analysis = OfflinePpgAnalyzer.analyze(
-            replayed.input,
+            replayed.analysisInput,
             progress = { completed, total ->
                 cancellationCheck()
                 lastCompletedWindows = completed
@@ -160,7 +188,7 @@ object CaptureSessionOfflineAnalysisService {
                     CaptureSessionAnalysisProgress(
                         CaptureAnalysisStage.ANALYZING,
                         fraction.coerceIn(0.40, 0.90),
-                        replayed.input.red.size,
+                        replayed.analysisInput.red.size,
                         completed,
                         total,
                     ),
@@ -173,7 +201,8 @@ object CaptureSessionOfflineAnalysisService {
             session = session,
             rawSha = rawSha,
             replay = replayed.replay,
-            input = replayed.input,
+            input = replayed.analysisInput,
+            repairGapCount = replayed.rawInput.breakIndices.size,
             analysis = analysis,
             started = started,
             ended = now(),
@@ -182,7 +211,7 @@ object CaptureSessionOfflineAnalysisService {
             CaptureSessionAnalysisProgress(
                 CaptureAnalysisStage.SAVING,
                 0.95,
-                replayed.input.red.size,
+                replayed.analysisInput.red.size,
                 lastCompletedWindows,
                 totalWindows,
             ),
@@ -193,7 +222,7 @@ object CaptureSessionOfflineAnalysisService {
             CaptureSessionAnalysisProgress(
                 CaptureAnalysisStage.SAVING,
                 1.0,
-                replayed.input.red.size,
+                replayed.analysisInput.red.size,
                 lastCompletedWindows,
                 totalWindows,
             ),
@@ -238,27 +267,26 @@ object CaptureSessionOfflineAnalysisService {
             cancellationCheck = cancellationCheck,
         )
         cancellationCheck()
-        val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.input, cancellationCheck)
-        val fixedLag = OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.input, cancellationCheck)
-        val metricTimeline = files.metrics?.let { path ->
-            runCatching { CaptureMetricSeries.readTimeline(path) }.getOrDefault(emptyList())
-        }.orEmpty()
+        val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.analysisInput, cancellationCheck)
+        val fixedLag = OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.analysisInput, cancellationCheck)
+        val metrics = resolveMetricTimeline(files.metrics, loaded.analysisInput, cancellationCheck)
         val bloodPressure = files.bloodPressure?.let { path ->
             runCatching { CaptureBloodPressureSeries.read(path) }.getOrDefault(emptyList())
         }.orEmpty()
         return CaptureSessionSignalTrace(
-            timeSeconds = loaded.input.timeSeconds,
-            rawRed = loaded.input.red,
-            rawIr = loaded.input.ir,
+            timeSeconds = loaded.rawInput.timeSeconds,
+            rawRed = loaded.rawInput.red,
+            rawIr = loaded.rawInput.ir,
             filteredRed = filtered.red,
             filteredIr = filtered.ir,
             fixedLagRed = fixedLag.red,
             fixedLagIr = fixedLag.ir,
-            breakIndices = loaded.input.breakIndices,
+            breakIndices = loaded.rawInput.breakIndices,
             replay = loaded.replay,
             preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
             fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
-            metricTimeline = metricTimeline,
+            metricTimeline = metrics.points,
+            metricTimelineEvidence = metrics.evidence,
             bloodPressureEvents = bloodPressure,
         )
     }
@@ -278,13 +306,11 @@ object CaptureSessionOfflineAnalysisService {
         val ir = DoubleArrayBuilder(expected)
         val time = DoubleArrayBuilder(expected)
         val breaks = IntArrayBuilder()
-        var logicalSampleIndex = 0L
         var lastPublishedFrame = 0
         val protocolMode = CupStreamProtocolMode.fromProtocolProfileIdentifier(protocolProfile)
         val replay = CupRawReplayEngine.replay(path, protocolMode) { sample ->
             cancellationCheck()
             if (sample.sampleInFrame == 0 && sample.missingFramesBefore > 0) {
-                logicalSampleIndex += sample.missingFramesBefore.toLong() * sample.samplesPerFrame
                 breaks.add(red.size)
             }
             if (red.size >= maximumAcceptedSamples) {
@@ -292,8 +318,7 @@ object CaptureSessionOfflineAnalysisService {
             }
             red.add(sample.sample.red.toDouble())
             ir.add(sample.sample.ir.toDouble())
-            time.add(logicalSampleIndex / CupBatchProtocolV1.sampleRateHz.toDouble())
-            logicalSampleIndex += 1
+            time.add((red.size - 1).toDouble() / CupBatchProtocolV1.sampleRateHz.toDouble())
             if (sample.sampleInFrame == sample.samplesPerFrame - 1) {
                 val completedFrames = red.size / sample.samplesPerFrame
                 if (completedFrames - lastPublishedFrame >= 16) {
@@ -312,17 +337,123 @@ object CaptureSessionOfflineAnalysisService {
             }
         }
         progress(CaptureSessionAnalysisProgress(CaptureAnalysisStage.REPLAYING, 0.40, red.size, 0, 0))
+        val acceptedTime = time.toArray()
+        val acceptedRed = red.toArray()
+        val acceptedIr = ir.toArray()
+        val breakIndices = breaks.toArray()
         return LoadedRawInput(
-            input = OfflinePpgInput(time.toArray(), red.toArray(), ir.toArray(), breaks.toArray()),
+            rawInput = OfflinePpgInput(acceptedTime, acceptedRed, acceptedIr, breakIndices),
+            analysisInput = OfflinePpgInput(acceptedTime, acceptedRed, acceptedIr),
             replay = replay,
         )
     }
+
+    private fun resolveMetricTimeline(
+        metricsPath: Path?,
+        analysisInput: OfflinePpgInput,
+        cancellationCheck: () -> Unit,
+    ): ResolvedMetricTimeline {
+        val persisted = when {
+            metricsPath == null || !Files.isRegularFile(metricsPath) -> PersistedMetricLoad(
+                PersistedMetricSidecarState.SIDECAR_MISSING,
+                emptyList(),
+                "metrics sidecar 不存在",
+            )
+            else -> try {
+                val points = CaptureMetricSeries.readTimeline(metricsPath)
+                if (points.any { it.hasValidValue() }) {
+                    PersistedMetricLoad(
+                        PersistedMetricSidecarState.PERSISTED_VALID,
+                        points,
+                        "已加载录制期 1 Hz 指标",
+                    )
+                } else {
+                    PersistedMetricLoad(
+                        PersistedMetricSidecarState.PERSISTED_NO_VALID_VALUES,
+                        emptyList(),
+                        "metrics sidecar 不含有效指标值",
+                    )
+                }
+            } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
+                PersistedMetricLoad(
+                    PersistedMetricSidecarState.SIDECAR_INVALID,
+                    emptyList(),
+                    "metrics sidecar 无效：${boundedError(error)}",
+                )
+            }
+        }
+        if (persisted.state == PersistedMetricSidecarState.PERSISTED_VALID) {
+            return ResolvedMetricTimeline(
+                persisted.points,
+                CaptureMetricTimelineEvidence(
+                    persisted.state,
+                    CaptureMetricTimelineSource.RECORDED_1_HZ,
+                    persisted.detail,
+                ),
+            )
+        }
+
+        cancellationCheck()
+        val analysis = OfflinePpgAnalyzer.analyze(
+            analysisInput,
+            progress = { _, _ -> cancellationCheck() },
+            cancellationCheck = cancellationCheck,
+        )
+        val recomputed = analysis.windows.asSequence()
+            .filter(OfflinePulseWindow::accepted)
+            .mapIndexedNotNull { epoch, window ->
+                val sourceIndex = ((window.startIndex + window.stopIndex) / 2)
+                    .coerceIn(0, maxOf(0, analysisInput.red.lastIndex))
+                val heartRate = window.peakBpm?.takeIf(Double::isFinite)
+                val perfusionIndex = when (window.usedChannel ?: window.bestChannel) {
+                    "RED" -> window.redAcDcPercent
+                    else -> window.irAcDcPercent
+                }.takeIf(Double::isFinite)
+                if (heartRate == null && perfusionIndex == null) return@mapIndexedNotNull null
+                CaptureMetricTimelinePoint(
+                    metricEpoch = epoch.toLong(),
+                    sourceSampleIndex = sourceIndex.toLong(),
+                    sourceTimeSeconds = analysisInput.timeSeconds[sourceIndex],
+                    heartRateBpm = heartRate,
+                    signalQuality = null,
+                    ratioOfRatios = null,
+                    perfusionIndexPercent = perfusionIndex,
+                )
+            }
+            .toList()
+        val source = if (recomputed.isEmpty()) {
+            CaptureMetricTimelineSource.UNAVAILABLE
+        } else {
+            CaptureMetricTimelineSource.OFFLINE_RECOMPUTED
+        }
+        val outcome = if (recomputed.isEmpty()) {
+            "；修复信号离线重算后仍无可发布指标"
+        } else {
+            "；已基于修复信号离线重算"
+        }
+        return ResolvedMetricTimeline(
+            recomputed,
+            CaptureMetricTimelineEvidence(persisted.state, source, persisted.detail + outcome),
+        )
+    }
+
+    private fun CaptureMetricTimelinePoint.hasValidValue(): Boolean =
+        heartRateBpm != null || signalQuality != null || ratioOfRatios != null ||
+            perfusionIndexPercent != null
+
+    private fun boundedError(error: Exception): String =
+        (error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
+            .replace('\n', ' ')
+            .replace('\r', ' ')
+            .take(160)
 
     private fun buildReport(
         session: StoredCaptureSession,
         rawSha: String,
         replay: CupRawReplayReport,
         input: OfflinePpgInput,
+        repairGapCount: Int,
         analysis: OfflinePpgAnalysis,
         started: Instant,
         ended: Instant,
@@ -372,6 +503,9 @@ object CaptureSessionOfflineAnalysisService {
                 structuralDiscardedByteCount = replay.structuralDiscardedBytes,
                 pendingDecoderByteCount = replay.pendingDecoderBytes,
                 trailingRawByteCount = replay.trailingRawBytes,
+                analysisSignalProfile = analysisSignalProfile,
+                repairGapCount = repairGapCount,
+                repairInputSampleCount = input.red.size.toLong(),
             ),
             metrics = CaptureSessionAnalysisMetrics(
                 segmentCount = analysis.segments.size,
@@ -459,8 +593,20 @@ object CaptureSessionOfflineAnalysisService {
     }
 
     private data class LoadedRawInput(
-        val input: OfflinePpgInput,
+        val rawInput: OfflinePpgInput,
+        val analysisInput: OfflinePpgInput,
         val replay: CupRawReplayReport,
+    )
+
+    private data class PersistedMetricLoad(
+        val state: PersistedMetricSidecarState,
+        val points: List<CaptureMetricTimelinePoint>,
+        val detail: String,
+    )
+
+    private data class ResolvedMetricTimeline(
+        val points: List<CaptureMetricTimelinePoint>,
+        val evidence: CaptureMetricTimelineEvidence,
     )
 
     private class DoubleArrayBuilder(initialCapacity: Int) {
@@ -533,6 +679,9 @@ internal object CaptureSessionAnalysisCodec {
         "structural_discarded_byte_count" to number(value.structuralDiscardedByteCount),
         "pending_decoder_byte_count" to number(value.pendingDecoderByteCount),
         "trailing_raw_byte_count" to number(value.trailingRawByteCount),
+        "analysis_signal_profile" to nullableString(value.analysisSignalProfile),
+        "repair_gap_count" to nullableInteger(value.repairGapCount),
+        "repair_input_sample_count" to nullableInteger(value.repairInputSampleCount),
     )
 
     private fun metricsJson(value: CaptureSessionAnalysisMetrics) = obj(
@@ -634,6 +783,9 @@ internal object CaptureSessionAnalysisCodec {
                 input.intField("leading_alignment_byte_count"),
                 input.intField("structural_discarded_byte_count"),
                 input.intField("pending_decoder_byte_count"), input.longField("trailing_raw_byte_count"),
+                input.optionalStringField("analysis_signal_profile"),
+                input.optionalIntField("repair_gap_count"),
+                input.optionalLongField("repair_input_sample_count"),
             ),
             metrics = CaptureSessionAnalysisMetrics(
                 metrics.intField("segment_count"), metrics.doubleField("stable_sample_ratio"),
@@ -700,6 +852,7 @@ internal object CaptureSessionAnalysisCodec {
     private fun number(value: Number) = JsonValue.NumberValue(value.toString())
     private fun nullableNumber(value: Double?) = value?.takeIf(Double::isFinite)?.let(::number)
         ?: JsonValue.NullValue
+    private fun nullableInteger(value: Number?) = value?.let(::number) ?: JsonValue.NullValue
     private fun numberArray(values: DoubleArray) = array(values.map(::number))
 
     private fun JsonValue.objectValue(name: String) = this as? JsonValue.ObjectValue
@@ -715,8 +868,15 @@ internal object CaptureSessionAnalysisCodec {
     private fun JsonValue.ObjectValue.nullableStringField(name: String) = field(name).let {
         if (it is JsonValue.NullValue) null else it.stringValue(name)
     }
+    private fun JsonValue.ObjectValue.optionalStringField(name: String) = fields[name]?.let {
+        if (it is JsonValue.NullValue) null else it.stringValue(name)
+    }
     private fun JsonValue.ObjectValue.longField(name: String) = field(name).longValue(name)
     private fun JsonValue.ObjectValue.intField(name: String) = longField(name).toInt()
+    private fun JsonValue.ObjectValue.optionalLongField(name: String) = fields[name]?.let {
+        if (it is JsonValue.NullValue) null else it.longValue(name)
+    }
+    private fun JsonValue.ObjectValue.optionalIntField(name: String) = optionalLongField(name)?.toInt()
     private fun JsonValue.ObjectValue.doubleField(name: String) = field(name).doubleValue(name)
     private fun JsonValue.ObjectValue.nullableDoubleField(name: String) = field(name).let {
         if (it is JsonValue.NullValue) null else it.doubleValue(name)

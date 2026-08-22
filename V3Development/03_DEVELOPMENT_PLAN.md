@@ -45,7 +45,7 @@ R10 gap-aware repaired signal + 指标来源 + 详情重放
 
 依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。**R5.1 依赖 R4.1 的 120 decoder / ECG 显示环 / uiSnapshotFlow 骨架。R6 依赖先保全 R5.1 当前工作区并形成可回退基线；不得在未区分用户已有修改时覆盖或回滚。**
 
-**当前轮次：`V3.R9`/`V3.R9.1` 编码与自动门禁已完成，等待 R9 真机节点；该节点通过后再进入 `V3.R10`。未扫描时残留卡顿仍暂不处理。**
+**当前轮次：`V3.R10` 编码与自动门禁已完成；R9/R10 真机节点均待测。用户已明确要求在开发板检修期间先完成 R10；未扫描时残留卡顿仍暂不处理。**
 
 ---
 
@@ -1053,7 +1053,7 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - 已实现录前 BP 第 0 条 sidecar 事件与录中事件共存、notes/profile 隔离、录后 session 字段清理、按名称作用域化 runtime duplicate、终态 gate cache 失效、typed duration gate 和跨 subject draft 策略。
 - 已实现 optional `record_mode` 编解码/恢复保留，以及详情页 PPG/MB、模式、计划/实际时长、生活方式、notes、会话级 BP 与时间轴事件数的分开展示。
 - `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 已通过：223 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest/Release、API/lifecycle/BLE/privacy contracts 均通过。
-- 未执行真机；R9 真机节点增加记录 ATT MTU 请求/实际/FALLBACK 状态，并与 gap/missing/App 丢块诊断分开判读。真机节点通过前不进入 R10。
+- 未执行真机；R9 真机节点增加记录 ATT MTU 请求/实际/FALLBACK 状态，并与 gap/missing/App 丢块诊断分开判读。用户随后明确要求在开发板检修期间先执行 R10，R9 真机结论仍保持待测。
 
 ---
 
@@ -1088,6 +1088,15 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - JVM/file fixture：无 gap、单 gap、高密度 gap、duplicate/out-of-order/invalid 混合；raw 值和 hash 不变，repaired 点数与 accepted 一致，ZERO/FIXED 有界可用，8 s 窗口可恢复，metrics/BP 时间对齐。
 - 指标来源四态、旧 artifact/metadata optional decode、marker 默认/开关/层级的纯 JVM/UI policy 测试；完整门禁通过。
 - **真机节点 2：**用开发板修复前的高 gap 会话和修复后的会话各一份，对照 raw 诊断、repaired ZERO/FIXED、录制期/离线指标来源、BP marker 和 gap 开关。此节点通过即完成本次不超过两轮的开发。
+
+### R10 实施状态（2026-08-22）
+
+- 已将 raw evidence 与 repaired analysis input 分离：accepted ADC、顺序、raw hash 和 gap 证据不变；repaired input 只使用零基 accepted cursor 压缩缺失时间，不插值、不补点。ZERO/FIXED、离线分析和指标后备均使用 repaired input，RAW 仍可保留断点。
+- analysis artifact 新增 optional `analysis_signal_profile`、`repair_gap_count`、`repair_input_sample_count`，并继续记录来源 raw SHA-256；旧 artifact 缺键可解码。
+- metrics sidecar 四态和有界错误已显式建模；有效 sidecar 标记为「录制期 1 Hz」，其余状态使用当前 repaired input 离线重算。指标时间轴在无 artifact 时也随完整波形加载；无重算证据时显示原因。
+- 详情/分析/横屏工作台提供 gap marker 开关；低密度默认开、高密度默认关。marker 在 waveform 前以低 alpha、像素去重绘制，RAW path 可断，ZERO/FIXED 连续；诊断页始终保留 missing/break/source 数字。
+- 定向 fixture 覆盖无 gap、单 gap、高密度 gap、duplicate/out-of-order/坏帧混合、metrics 四态、BP accepted cursor、旧 artifact 和 marker policy。完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 门禁通过：231 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest/Release、API/lifecycle/BLE/privacy contracts 均通过。
+- 未执行真机；按用户指示先完成编码。R9 真机节点与本节真机节点 2 均保留待测，不能由上述自动门禁替代。
 
 ### R9–R10 不做
 
