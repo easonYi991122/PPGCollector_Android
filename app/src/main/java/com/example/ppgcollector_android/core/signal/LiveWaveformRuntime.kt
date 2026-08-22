@@ -1,7 +1,6 @@
 package com.example.ppgcollector_android.core.signal
 
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
-import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import java.time.Instant
 import kotlin.math.min
 
@@ -26,8 +25,9 @@ data class LiveWaveformSnapshot(
     val displayCausalRed: DoubleArray = doubleArrayOf(),
     val displayCausalIr: DoubleArray = doubleArrayOf(),
     val displayCausalProfile: String? = null,
+    /** Accepted analysis samples since the last local cursor/filter reset; wire gaps are diagnostic. */
     val continuousSampleCount: Long = 0,
-    /** Processing continuity epoch; increments on a gap/filter reset, not on a BLE reconnect. */
+    /** Local processing epoch; wire gaps are tracked separately and do not increment it. */
     val continuityEpoch: Long = 0,
     /** Number of sequence gaps observed in this live runtime. */
     val gapCount: Long = 0,
@@ -64,19 +64,30 @@ data class WaveformPlot(
     val maximum: Double,
 )
 
-/** Python live-GUI parity for autoscaling without hiding settling samples. */
+/** Live autoscale uses a stable recent tail without hiding older plotted samples. */
 object LiveWaveformScaleMath {
+    private const val DISPLAY_WINDOW_SAMPLE_COUNT = 800
+    private const val FILLING_REFERENCE_SAMPLE_COUNT = 200
+    private const val FULL_REFERENCE_SAMPLE_COUNT = 600
+
     fun verticalRange(
         values: DoubleArray,
         excludedLeadingSampleCount: Int = 0,
         paddingRatio: Double = 0.08,
     ): WaveformVerticalRange? {
         if (values.isEmpty()) return null
-        val start = if (excludedLeadingSampleCount > 0 && values.size > excludedLeadingSampleCount) {
+        val referenceSampleCount = if (values.size < DISPLAY_WINDOW_SAMPLE_COUNT) {
+            FILLING_REFERENCE_SAMPLE_COUNT
+        } else {
+            FULL_REFERENCE_SAMPLE_COUNT
+        }
+        val tailStart = (values.size - referenceSampleCount).coerceAtLeast(0)
+        val stableStart = if (excludedLeadingSampleCount > 0 && values.size > excludedLeadingSampleCount) {
             excludedLeadingSampleCount.coerceAtMost(values.lastIndex)
         } else {
             0
         }
+        val start = maxOf(tailStart, stableStart)
         var minimum = Double.POSITIVE_INFINITY
         var maximum = Double.NEGATIVE_INFINITY
         for (index in start until values.size) {
@@ -91,6 +102,58 @@ object LiveWaveformScaleMath {
         val padding = span * paddingRatio.coerceAtLeast(0.0)
         return WaveformVerticalRange(minimum - padding, maximum + padding)
     }
+}
+
+/**
+ * Display-only RAW axis holder. Its center is immutable for one UI source;
+ * ranges expand symmetrically in bounded steps and never follow rolling extrema inward.
+ */
+class LiveRawWaveformAxisRuntime(
+    private val safetyMarginRatio: Double = 0.15,
+    private val minimumGrowthRatio: Double = 0.25,
+) {
+    init {
+        require(safetyMarginRatio >= 0.0)
+        require(minimumGrowthRatio > 0.0)
+    }
+
+    private var currentRange: WaveformVerticalRange? = null
+
+    fun update(candidate: WaveformVerticalRange?): WaveformVerticalRange? {
+        if (candidate == null) return currentRange
+        if (!candidate.lower.isFinite() || !candidate.upper.isFinite() ||
+            candidate.upper <= candidate.lower
+        ) return currentRange
+
+        val current = currentRange
+        if (current == null) {
+            val center = (candidate.lower + candidate.upper) / 2.0
+            val halfSpan = (candidate.upper - candidate.lower) / 2.0
+            return centeredRange(center, halfSpan * (1.0 + safetyMarginRatio)).also {
+                currentRange = it
+            }
+        }
+
+        val center = (current.lower + current.upper) / 2.0
+        val currentHalfSpan = (current.upper - current.lower) / 2.0
+        val requiredHalfSpan = maxOf(
+            center - candidate.lower,
+            candidate.upper - center,
+        )
+        if (requiredHalfSpan <= currentHalfSpan) return current
+
+        val expandedHalfSpan = maxOf(
+            requiredHalfSpan * (1.0 + safetyMarginRatio),
+            currentHalfSpan * (1.0 + minimumGrowthRatio),
+        )
+        return centeredRange(center, expandedHalfSpan).also { currentRange = it }
+    }
+
+    private fun centeredRange(center: Double, halfSpan: Double): WaveformVerticalRange =
+        WaveformVerticalRange(
+            lower = center - halfSpan.coerceAtLeast(1e-9),
+            upper = center + halfSpan.coerceAtLeast(1e-9),
+        )
 }
 
 /**
@@ -135,9 +198,6 @@ class LiveWaveformSnapshotScheduler(
             resetContinuity(acceptedSampleStartIndex)
         }
         decodedFrames.filter { it.isAccepted }.forEach { decoded ->
-            if (decoded.sequenceEvent is CupSequenceEvent.Gap) {
-                resetContinuity(nextWriteSampleIndex)
-            }
             decoded.frame.samples.forEach { sample ->
                 append(sample.red.toDouble(), sample.ir.toDouble())
                 nextWriteSampleIndex++

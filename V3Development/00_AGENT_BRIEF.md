@@ -1,6 +1,6 @@
 # V3.0 Agent 工作约定
 
-本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；后来插入 **`V3.R4.1`**、**`V3.R5.1`**，并追加生命周期/录制稳定性 **`V3.R6`** 与真机显示回归修正 **`V3.R7`**。这不是 iOS 移植任务。
+本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；后来插入 **`V3.R4.1`**、**`V3.R5.1`**，并追加生命周期/录制稳定性 **`V3.R6`**、真机显示回归修正 **`V3.R7`**、纵轴/指标/链路诊断 **`V3.R8`**、RAW 纵轴保持 **`V3.R8.1`** 与即时 UI/诊断修正 **`V3.R8.2`**。后续双路 BP/表单闭环与详情修复信号限定在 **`V3.R9`–`V3.R10`** 两轮内。这不是 iOS 移植任务。
 
 ## 每轮开工必读
 
@@ -26,7 +26,7 @@
 - 先看 `git status`，保留用户已有修改；不要回滚无关改动。
 - 每轮只做 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md) 指定的那一轮，做完可验收再停下。
 - 默认验收：JVM unit / fake BLE / 文件契约测试。真机门禁标为待执行，除非用户明确要求真机。
-- 每轮结束后更新 `status/DEVELOPMENT_STATUS.md`（当前快照 + 本轮事实）。用户要求提交时再 commit。
+- 每轮结束后更新 `status/DEVELOPMENT_STATUS.md`（当前快照 + 本轮事实），门禁通过后立即 commit；只有用户明确要求本轮不提交时才保留未提交状态。
 - 提交说明格式：`V3.Rn <本轮主题>`，一两句话写清为什么。
 - 不要把未校准的 SpO2 / 预测血压宣称为有效结果。V3.0 的参考血压是人工填写，不是模型输出。
 - 不要把综合 SQI 的显示状态伪装成已改变 `{stem}.csv` 的 `sqi` 列口径（见 rebase 决策）。
@@ -37,8 +37,9 @@
 
 | 标识 | 含义 |
 |---|---|
-| V3.R1 … V3.R4、V3.R4.1、V3.R5、V3.R5.1、V3.R6、V3.R7 | 开发轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R7 JVM/Release 门禁已通过，真机与 Macrobenchmark 仍待测 |
-| 当前代码基线 | R1–R7 已落地；BLE、录制、连续性、实时显示、主线程 I/O 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
+| V3.R1 … V3.R9.1 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R9/R9.1 自动门禁已通过，R9 真机节点待测 |
+| V3.R10 | 待实施；须在 R9 双路 BP/表单/MTU 真机节点通过后再进入 |
+| 当前代码基线 | R1–R9.1 已落地；BLE、录制、连续性、实时显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
 
 ## 证据优先级（本阶段）
 

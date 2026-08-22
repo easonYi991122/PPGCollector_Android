@@ -23,6 +23,62 @@ class CupBleGattStateMachineTest {
     private val deviceId = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
 
     @Test
+    fun mtuIsRequestedBeforeServiceDiscoveryAndActualValueIsRecorded() {
+        val transport = FakeBleTransport(autoCompleteMtuRequest = false)
+        val owner = readyToConnecting(transport)
+
+        transport.emit(BleTransportEvent.Connected(deviceId))
+
+        assertEquals(BleConnectionPhase.NegotiatingMtu(deviceId), owner.phase)
+        assertEquals(
+            FakeBleCommand.RequestMtu(CupBleGattStateMachine.REQUESTED_ATT_MTU, deviceId),
+            transport.commands.last(),
+        )
+        transport.emit(BleTransportEvent.MtuChanged(deviceId, 517, null))
+
+        assertEquals(BleConnectionPhase.DiscoveringServices(deviceId), owner.phase)
+        assertEquals(BleMtuNegotiationStatus.NEGOTIATED, owner.mtu.status)
+        assertEquals(517, owner.mtu.negotiatedMtu)
+        assertTrue(
+            transport.commands.indexOf(FakeBleCommand.RequestMtu(247, deviceId)) <
+                transport.commands.indexOf(FakeBleCommand.DiscoverServices(deviceId)),
+        )
+    }
+
+    @Test
+    fun mtuFailureAndTimeoutFallBackToServiceDiscoveryAndLateCallbackIsStale() {
+        val failedTransport = FakeBleTransport(autoCompleteMtuRequest = false)
+        val failedOwner = readyToConnecting(failedTransport)
+        failedTransport.emit(BleTransportEvent.Connected(deviceId))
+        failedTransport.emit(BleTransportEvent.MtuChanged(deviceId, null, "rejected"))
+        assertEquals(BleConnectionPhase.DiscoveringServices(deviceId), failedOwner.phase)
+        assertEquals(BleMtuNegotiationStatus.FALLBACK, failedOwner.mtu.status)
+
+        val timedTransport = FakeBleTransport(autoCompleteMtuRequest = false)
+        val timedOwner = CupBleGattStateMachine(
+            timedTransport,
+            timeoutPolicy = BleConnectionTimeoutPolicy(0.1, 0.1, 0.1, 0.1, 0.1),
+        )
+        timedOwner.handle(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON), 0.0)
+        timedOwner.handle(
+            BleTransportEvent.Discovered(BleTransportDiscovery(deviceId, "CUP", null, true, Instant.EPOCH)),
+            0.0,
+        )
+        assertTrue(timedOwner.connect(deviceId))
+        timedOwner.handle(BleTransportEvent.Connected(deviceId), 0.0)
+        assertTrue(timedOwner.pollDeadline(0.1))
+        assertEquals(BleConnectionPhase.DiscoveringServices(deviceId), timedOwner.phase)
+        assertEquals(BleMtuNegotiationStatus.FALLBACK, timedOwner.mtu.status)
+        assertEquals(BleConnectionOperation.MTU_NEGOTIATION, timedOwner.attemptDiagnostics.lastTimedOutOperation)
+
+        val staleBefore = timedOwner.diagnostics.ignoredStaleCallbackCount
+        timedOwner.handle(BleTransportEvent.MtuChanged(deviceId, 247, null), 0.2)
+        assertEquals(staleBefore + 1, timedOwner.diagnostics.ignoredStaleCallbackCount)
+        assertEquals(BleConnectionPhase.DiscoveringServices(deviceId), timedOwner.phase)
+        assertEquals(BleMtuNegotiationStatus.FALLBACK, timedOwner.mtu.status)
+    }
+
+    @Test
     fun happyPathRequiresTargetServiceNotifyAndSuccessfulCccdBeforeReceiving() {
         val transport = FakeBleTransport()
         val owner = CupBleGattStateMachine(transport)

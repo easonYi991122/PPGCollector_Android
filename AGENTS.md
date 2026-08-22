@@ -15,6 +15,7 @@
 
 - 先检查 `git status`，保留用户已有修改。
 - 每轮只做开发方案中的一个轮次（`V3.Rn` 或 `V3.R4.1`），完成 JVM/fake BLE/文件契约验收后再停下。当前待执行见 `V3Development/status/DEVELOPMENT_STATUS.md`。
+- 每一开发轮次在门禁通过并更新开发状态文档后，必须立即按现有风格创建 git commit；除非用户明确要求本轮不提交。提交只包含该轮项目文件，不混入 `.idea`、本地产物或用户无关修改。
 - 默认不做真机操作；用户明确要求时再做。
 - 不要把未校准的 SpO2 / 预测血压宣称为有效结果。
 - 不要修改 `V3Development/references/需求V3.0/` 中的参考实现来迁就 Kotlin。

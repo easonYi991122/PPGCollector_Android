@@ -2,6 +2,7 @@ package com.example.ppgcollector_android.data.session
 
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BleRawNotificationChunk
+import com.example.ppgcollector_android.core.ble.LiveStreamDiagnostics
 import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
 import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
@@ -56,6 +57,7 @@ data class CaptureRecordingSnapshot(
     val connectionGeneration: Long? = null,
     val pendingWriteCount: Int = 0,
     val queueOverflowCount: Long = 0,
+    val streamDiagnostics: LiveStreamDiagnostics = LiveStreamDiagnostics(),
     val lastError: String? = null,
     val summary: CaptureSessionSummary? = null,
 )
@@ -104,6 +106,8 @@ class CaptureRecordingController(
     private var stopReason: CaptureStopReason? = null
     private var stopRequested = false
     private var queueOverflowCount = 0L
+    private var analysisInputDropCount = 0L
+    private var streamDiagnosticsValue = LiveStreamDiagnostics()
     private var lastError: String? = null
     private var finalSummary: CaptureSessionSummary? = null
     private var acceptedSampleCount = 0L
@@ -161,6 +165,8 @@ class CaptureRecordingController(
                     sessionName = configuration.baseName,
                     availableBytes = availableBytes,
                     participant = participant?.let(CaptureParticipantDraft::fromSnapshot),
+                    recordMode = configuration.recordMode,
+                    plannedDurationSeconds = configuration.plannedDurationSeconds,
                 ),
             )
             if (gateFailure != null) return CaptureRecordingStartResult.Rejected(gateFailure)
@@ -168,7 +174,8 @@ class CaptureRecordingController(
                 return CaptureRecordingStartResult.Failed("recording is stopping")
             }
             return try {
-                writer = writerFactory(configuration, sessionsRoot, capacityProvider)
+                val acceptedWriter = writerFactory(configuration, sessionsRoot, capacityProvider)
+                writer = acceptedWriter
                 activeGeneration = connectionGeneration
                 activeStreamProtocolMode =
                     CupStreamProtocolMode.fromProtocolProfileIdentifier(configuration.protocolProfile)
@@ -182,7 +189,19 @@ class CaptureRecordingController(
                 committedReferenceTokens.clear()
                 latestAcceptedSourceSampleIndex = null
                 acceptedSampleCount = 0L
-                nextReferenceEventIndex = 0L
+                queueOverflowCount = 0L
+                analysisInputDropCount = 0L
+                streamDiagnosticsValue = LiveStreamDiagnostics()
+                val initialBloodPressure = initialBloodPressureEvent(
+                    configuration = acceptedWriter.configuration,
+                    connectionGeneration = connectionGeneration,
+                )
+                if (initialBloodPressure != null) {
+                    acceptedWriter.appendBloodPressure(initialBloodPressure)
+                    committedReferenceTokens +=
+                        "${initialBloodPressure.reference.sessionId}:${initialBloodPressure.reference.eventIndex}"
+                }
+                nextReferenceEventIndex = if (initialBloodPressure == null) 0L else 1L
                 analysisStopRequested = false
                 finalizedLatch = CountDownLatch(1)
                 lastProgressPublishNanos = Long.MIN_VALUE
@@ -210,6 +229,29 @@ class CaptureRecordingController(
         }
     }
 
+    private fun initialBloodPressureEvent(
+        configuration: CaptureSessionConfiguration,
+        connectionGeneration: Long,
+    ): ManualBloodPressureEvent? {
+        val systolic = configuration.systolicBp ?: return null
+        val diastolic = configuration.diastolicBp ?: return null
+        if (systolic <= diastolic || diastolic <= 0) return null
+        return ManualBloodPressureEvent(
+            reference = CaptureReferenceTimestamp(
+                sessionId = configuration.sessionId,
+                connectionGeneration = connectionGeneration,
+                eventIndex = 0L,
+                sourceSampleIndex = 0L,
+                sourceTimeSeconds = 0.0,
+                dialogOpenHostMonotonicNanoseconds = System.nanoTime().toULong(),
+                dialogOpenUtc = configuration.startedUtc,
+            ),
+            savedUtc = configuration.startedUtc,
+            systolicMmHg = systolic,
+            diastolicMmHg = diastolic,
+        )
+    }
+
     /** Returns false only when the chunk is stale, no recording is active, or the queue is full. */
     fun onRawChunk(chunk: BleRawNotificationChunk): Boolean {
         val copied = chunk.copyOfBytes()
@@ -234,6 +276,9 @@ class CaptureRecordingController(
                 )
             ) {
                 queueOverflowCount += 1
+                streamDiagnosticsValue = streamDiagnosticsValue.copy(
+                    appDroppedChunkCount = queueOverflowCount,
+                )
                 requestStopLocked(CaptureStopReason.RESOURCE_PRESSURE, "raw queue overflow")
                 publish(CaptureRecordingState.STOPPING)
                 return false
@@ -353,6 +398,9 @@ class CaptureRecordingController(
         val adsDecoder = Ads1292rStreamDecoder()
         val sequenceTracker = CupFrameSequenceTracker()
         var acceptedSampleIndex = 0L
+        var lastSequenceNumber: UInt? = null
+        var lastSequenceStep: Long? = null
+        var gapEventCount = 0L
         try {
             while (true) {
                 val item = queue.poll(100, TimeUnit.MILLISECONDS)
@@ -378,6 +426,9 @@ class CaptureRecordingController(
                                 },
                             )
                             val sequence = sequenceTracker.observe(frame)
+                            lastSequenceNumber = frame.sequenceNumber
+                            lastSequenceStep = sequenceStep(sequence)
+                            if (sequence is CupSequenceEvent.Gap) gapEventCount++
                             val accepted = sequence !is CupSequenceEvent.Duplicate &&
                                 sequence !is CupSequenceEvent.OutOfOrder
                             writer?.appendAds1292rPacket(
@@ -405,12 +456,29 @@ class CaptureRecordingController(
                                 ),
                             )
                         ) {
+                            synchronized(lock) {
+                                analysisInputDropCount++
+                                streamDiagnosticsValue = streamDiagnosticsValue.copy(
+                                    appDroppedChunkCount = queueOverflowCount + analysisInputDropCount,
+                                )
+                            }
                             _analysisSnapshot.value = _analysisSnapshot.value.copy(
                                 state = CaptureAnalysisState.FAILED,
+                                lastResult = null,
                                 error = "analysis queue overflow; raw recording preserved",
                             )
                         }
                         synchronized(lock) {
+                            streamDiagnosticsValue = streamDiagnostics(
+                                protocolMode = protocolMode,
+                                decoder = decoder,
+                                adsDecoder = adsDecoder,
+                                sequenceTracker = sequenceTracker,
+                                lastSequenceNumber = lastSequenceNumber,
+                                lastSequenceStep = lastSequenceStep,
+                                gapEventCount = gapEventCount,
+                                appDroppedChunkCount = queueOverflowCount + analysisInputDropCount,
+                            )
                             acceptedSampleCount = acceptedSampleIndex
                             val planned = writer?.configuration?.plannedDurationSeconds
                             if (writer?.configuration?.recordMode == CaptureRecordMode.TIMED &&
@@ -440,6 +508,9 @@ class CaptureRecordingController(
                         // The writer has already acknowledged raw before this lambda runs.
                         events = decoder.feed(item.bytes).map { frame ->
                             val sequence = sequenceTracker.observe(frame)
+                            lastSequenceNumber = frame.sequenceNumber
+                            lastSequenceStep = sequenceStep(sequence)
+                            if (sequence is CupSequenceEvent.Gap) gapEventCount++
                             CupDecodedFrameEvent(
                                 frame = frame,
                                 sequenceEvent = sequence,
@@ -453,6 +524,16 @@ class CaptureRecordingController(
                         acceptedSampleIndex += it.frame.samples.size
                     }
                     synchronized(lock) {
+                        streamDiagnosticsValue = streamDiagnostics(
+                            protocolMode = protocolMode,
+                            decoder = decoder,
+                            adsDecoder = adsDecoder,
+                            sequenceTracker = sequenceTracker,
+                            lastSequenceNumber = lastSequenceNumber,
+                            lastSequenceStep = lastSequenceStep,
+                            gapEventCount = gapEventCount,
+                            appDroppedChunkCount = queueOverflowCount + analysisInputDropCount,
+                        )
                         acceptedSampleCount = acceptedSampleIndex
                         publish(snapshotValue.state)
                     }
@@ -476,8 +557,15 @@ class CaptureRecordingController(
                             AnalysisInput(events, acceptedBefore, Instant.now()),
                         )
                     ) {
+                        synchronized(lock) {
+                            analysisInputDropCount++
+                            streamDiagnosticsValue = streamDiagnosticsValue.copy(
+                                appDroppedChunkCount = queueOverflowCount + analysisInputDropCount,
+                            )
+                        }
                         _analysisSnapshot.value = _analysisSnapshot.value.copy(
                             state = CaptureAnalysisState.FAILED,
+                            lastResult = null,
                             error = "analysis queue overflow; raw recording preserved",
                         )
                     }
@@ -513,6 +601,7 @@ class CaptureRecordingController(
                 if (input != null) {
                     try {
                         val nowNanos = System.nanoTime()
+                        val signalGenerationBefore = signalRuntime.generation
                         val signal = signalRuntime.ingest(
                             decodedFrames = input.frames,
                             acceptedSampleStartIndex = input.acceptedSampleStartIndex,
@@ -530,13 +619,22 @@ class CaptureRecordingController(
                         }
                         signal.waveform?.let { _waveformSnapshot.value = it }
                         val request = signal.metricRequest
-                        _analysisSnapshot.value = _analysisSnapshot.value.copy(
-                            state = if (request == null) CaptureAnalysisState.WARMING
-                            else CaptureAnalysisState.ANALYZING,
-                            generation = signalRuntime.generation,
-                            processedSampleCount = signalRuntime.continuousSamples,
-                            error = null,
-                        )
+                        val hardReset = signalRuntime.generation != signalGenerationBefore
+                        _analysisSnapshot.value = if (hardReset) {
+                            CaptureAnalysisSnapshot(
+                                state = CaptureAnalysisState.WARMING,
+                                generation = signalRuntime.generation,
+                                processedSampleCount = signalRuntime.continuousSamples,
+                            )
+                        } else {
+                            _analysisSnapshot.value.copy(
+                                state = if (request == null) CaptureAnalysisState.WARMING
+                                else CaptureAnalysisState.ANALYZING,
+                                generation = signalRuntime.generation,
+                                processedSampleCount = signalRuntime.continuousSamples,
+                                error = null,
+                            )
+                        }
                         if (request != null) {
                             val result = LiveMetricAnalyzer.analyze(request)
                             val comboResult = synchronized(lock) {
@@ -672,6 +770,9 @@ class CaptureRecordingController(
             connectionGeneration = activeGeneration,
             pendingWriteCount = queue.size,
             queueOverflowCount = queueOverflowCount,
+            streamDiagnostics = streamDiagnosticsValue.copy(
+                appDroppedChunkCount = queueOverflowCount + analysisInputDropCount,
+            ),
             lastError = lastError,
             summary = finalSummary,
         )
@@ -684,6 +785,46 @@ class CaptureRecordingController(
             lastProgressPublishNanos = now
             _snapshotFlow.value = next
         }
+    }
+
+    private fun sequenceStep(event: CupSequenceEvent): Long? = when (event) {
+        CupSequenceEvent.First -> null
+        CupSequenceEvent.Continuous -> 1L
+        is CupSequenceEvent.Gap -> event.missingFrames.toLong() + 1L
+        CupSequenceEvent.Duplicate -> 0L
+        CupSequenceEvent.OutOfOrder -> null
+    }
+
+    private fun streamDiagnostics(
+        protocolMode: CupStreamProtocolMode,
+        decoder: CupBatchStreamDecoder,
+        adsDecoder: Ads1292rStreamDecoder,
+        sequenceTracker: CupFrameSequenceTracker,
+        lastSequenceNumber: UInt?,
+        lastSequenceStep: Long?,
+        gapEventCount: Long,
+        appDroppedChunkCount: Long,
+    ): LiveStreamDiagnostics {
+        val sequence = sequenceTracker.stats
+        val isAds = protocolMode == CupStreamProtocolMode.ADS1292R_120
+        val adsStats = adsDecoder.stats
+        val batchStats = decoder.stats
+        return LiveStreamDiagnostics(
+            decodedFrameCount = sequence.receivedFrames.toLong(),
+            lastSequenceNumber = lastSequenceNumber,
+            lastSequenceStep = lastSequenceStep,
+            gapEventCount = gapEventCount,
+            estimatedMissingFrameCount = sequence.missingFrames.toLong(),
+            duplicateFrameCount = sequence.duplicateFrames.toLong(),
+            outOfOrderFrameCount = sequence.outOfOrderFrames.toLong(),
+            decoderDiscardedByteCount = if (isAds) adsStats.discardedBytes else batchStats.bytesDiscarded.toLong(),
+            decoderInvalidFrameCount = if (isAds) {
+                adsStats.invalidHeaders + adsStats.invalidTails
+            } else {
+                (batchStats.invalidFunction + batchStats.invalidLength + batchStats.invalidTail).toLong()
+            },
+            appDroppedChunkCount = appDroppedChunkCount,
+        )
     }
 
 }

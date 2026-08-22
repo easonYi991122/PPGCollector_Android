@@ -3,7 +3,7 @@
 原计划约束是编码工作不超过五轮（`V3.R1` … `V3.R5`）；后续已因复验插入 R4.1/R5.1，并按稳定性审计追加 R6。R6 真机复验暴露实时显示回归与残留空闲卡顿，因此继续追加 R7，不把自动化门禁通过等同于真机体验完成。
 **V3.R4.1** 插在 R4 与 R5 之间。**V3.R5.1** 是 R4.1/R5 代码提交后，针对真机/CUP 名模拟腕带复验发现的直播缺口（采集页仍卡顿、ECG 在 CUP 身份上不可用）追加的修正轮。**V3.R6** 是对 M7.6 之后增量的稳定性审计轮，收口生命周期卡死、录制/波形连续性、主线程 I/O 与 R1–R5 文件/业务契约缺口。每轮交付可 JVM 验收的增量。需求依据 [`02_REQUIREMENTS_REBASED.md`](02_REQUIREMENTS_REBASED.md)，代码基线见 [`01_CODEBASE_AS_IS.md`](01_CODEBASE_AS_IS.md)。
 
-轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`。
+轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`、`V3.R8`、`V3.R8.1`、`V3.R8.2`、`V3.R9`、`V3.R10`。
 
 ---
 
@@ -19,6 +19,11 @@ R5 回看改血压、档案/导出、兼容收口
 R5.1 CUP/ECG 协议探测修正 + 采集页卡顿收口
 R6 生命周期/录制稳定性 + 主线程与连续性收口 + M7.6 后逻辑缺陷修正
 R7 恢复 M7.6 实时显示语义 + 空闲采集页轻量化 + ECG 显示抗混叠
+R8 实时纵轴稳定 + 指标恢复 + wire gap 诊断
+R8.1 RAW 纵轴中心锁定 + 分级对称扩展
+R8.2 恢复录中 BP 入口 + 实时 gap 渲染/诊断比例
+R9/R9.1 双路 BP + 表单/gate + 详情元数据 + ATT MTU 协商
+R10 gap-aware repaired signal + 指标来源 + 详情重放
 ```
 
 | 轮 | 主题 | 主风险 | 可独立演示 |
@@ -32,10 +37,15 @@ R7 恢复 M7.6 实时显示语义 + 空闲采集页轻量化 + ECG 显示抗混�
 | R5.1 | CUP 上 ECG + 卡顿收口 | CUP 名模拟腕带走 batch 会把 120 帧当废帧；R4.1 卡顿治理未真正切断主线程 publish | CUP 名前缀设备可锁定 ads1292r 120 并显示 ECG；手动覆盖可见；空闲预览不再按 notify 重组整页 |
 | R6 | 生命周期、录制与 M7.6 后稳定性 | BLE/协议工作仍占主线程；缺帧会清空三窗；恢复前台叠加全量文件扫描；多项 R5 契约未闭环 | fake BLE 连续/缺帧/后台恢复均不重置或卡死；录制可正确结束；全量 JVM 0 失败；MB/BP/ECG 文件契约回归通过 |
 | R7 | 实时显示回归与空闲 UI 卡顿 | R6 把显示历史与滤波连续性拆成不一致状态；空闲页仍首组装完整图表/表单；ECG 硬抽点会混叠 | RAW 不再随视窗重拟合漂移；CAUSAL/FIXED 在普通序号 gap 后保持可用；空闲页无图表重绘负担；ECG 显示不生成抽点伪峰 |
+| R8 | 实时纵轴、指标和链路诊断 | 整窗自动缩放造成视觉漂移；wire gap 同时阻断指标并覆盖波形；现有 UI 无法区分板端序号异常、解码异常和 App 队列丢块 | 纵轴按最近 200/600 点；普通 wire gap 不再使指标永久停在 warmup；中断标记移到图下；预览/录制显示一行有界诊断 |
+| R8.1 | RAW 纵轴视觉稳定 | R8 虽限制为最近 200/600 点，但每个 5 Hz 快照仍直接替换上下界，同一历史样本会因极值滑动而缓慢上下移动 | RAW 每个来源/通道锁定纵轴中心；正常候选波动不改轴，越界时仅分级、对称扩展；数据值和 200/600 候选规则不变 |
+| R8.2 | 即时 UI/诊断收口 | 录中 BP 底层存在但入口丢失；密集 gap 把实时 path 切成大量闪烁短段；诊断只有计数 | 恢复录中 BP 按钮；marker 留在图下而 path 连续；显示缺帧率/异常帧率 |
+| R9 | 采集表单和参考 BP 闭环 | 录前 BP 不在事件时间轴；notes/BP 继承；重名错误粘住；详情 metadata 不全 | 一次会话可同时含录前/录中 BP；录后表单清理；gate 实时恢复；详情字段完整 |
+| R10 | 详情修复信号与指标重放 | 离线时钟与 accepted cursor 不一致；密集 gap 使滤波/分析为空；marker 遮盖波形；metrics 失败静默 | raw 证据不变，repaired input 对齐实时口径；指标来源/降级可见；marker 可关且在波形下层 |
 
 依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。**R5.1 依赖 R4.1 的 120 decoder / ECG 显示环 / uiSnapshotFlow 骨架。R6 依赖先保全 R5.1 当前工作区并形成可回退基线；不得在未区分用户已有修改时覆盖或回滚。**
 
-**当前轮次：`V3.R7` 代码与 JVM/Release 门禁已完成；真机滚动、三种显示模式与 ECG CSV 对点仍待复验。**
+**当前轮次：`V3.R9`/`V3.R9.1` 编码与自动门禁已完成，等待 R9 真机节点；该节点通过后再进入 `V3.R10`。未扫描时残留卡顿仍暂不处理。**
 
 ---
 
@@ -875,6 +885,215 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - 不改 ECG raw parser/CSV 的 uint32 口径，不用裁剪或符号转换掩盖板端异常。
 - 不改 M7.6 的 0.5–12 Hz CAUSAL/FIXED 参数，不改 valley/peak 算法；只恢复其正确输入与连续性。
 - 不再重做导航、档案、录制文件契约或后台生命周期。
+
+---
+
+## V3.R8 实时纵轴稳定、指标恢复与 wire gap 诊断
+
+### 已确认现象与代码结论（2026-08-21）
+
+1. RAW 数值本身没有漂移，移动来自可视化纵轴。实时 RAW 已经只做 `UInt32 → Double → 取负`，不得恢复 M7.6 的逐窗口线性去趋势。
+2. 当前 RAW/CAUSAL/FIXED/ECG 的纵轴仍对整个可见数组取极值；代码中不存在“未满 800 参考最近 200、满 800 后参考最近 600”的规则。
+3. 波形和指标使用同一个 `LivePpgSignalRuntime` 与同一组 800 点 ring。`指标 n/800` 长期小于 80，是因为每个 `CupSequenceEvent.Gap` 都把算法连续计数清零，而不是指标另走了一条短窗口路径。
+4. 波形上的高频竖线不是峰谷，而是 R7 增加的 sequence-gap segment marker；它们可暂留作真机诊断，但不得覆盖波形主体。
+5. BLE 回调已在专用串行线程，preview/recording 各有 256 块有界队列，stream decoder 支持拆包/粘包且字节 ring 可扩容。源码不能证明频繁 gap 究竟来自开发板 `seq_no`、链路丢通知还是 App 队列压力；现有诊断只在测试接口，且 preview overflow 错误会被下一次波形发布清掉。
+
+### 目标与实施
+
+1. **稳定纵轴参考窗**
+   - 三个通道和三种 PPG 显示模式仍绘制最多最近 800 点。
+   - 样本未满 800 时，纵轴只用最近最多 200 点求上下界；达到 800 后只用最近 600 点；padding 保持 8%。CAUSAL 的 settling 排除与该尾窗取交集，但不得得到空范围。
+   - RAW 继续只取负，不修改 source、CSV 或历史点；增加纯函数边界测试，覆盖 1/199/200/799/800 点以及旧异常值退出参考窗。
+
+2. **让指标不再被普通 wire gap 永久阻断**
+   - 分离“wire 完整性事件”和“本地算法输入丢失”。普通 sequence gap 继续累计 missing/gap 并切断显示 path，但不清空 800 点 ring、不重置预处理、fixed-lag 或指标 warmup；指标按同一 accepted-sample ring 首次 800 点、之后每 100 点计算。
+   - generation/协议切换、analysis queue 丢输入、非有限样本等真正破坏本地处理状态的事件仍做硬重置，并立即清掉已发布的旧指标，禁止重置后继续显示陈旧结果。
+   - 指标只是可用性恢复；gap/missing 仍在诊断行明确展示，SQI 仍可将受损波形判为低质量。不得把缺帧隐藏成“链路正常”。
+
+3. **中断标记移出波形主体**
+   - 不再画贯穿 Canvas 的整高竖线；在每个 RED/IR/ECG 面板波形下方增加独立、低高度的 marker strip，以相同横坐标画短刻度。
+   - marker 不参与纵轴、不连接两个 segment，详细模式注明其语义为“序号中断”，后续定位完成可整体移除。
+
+4. **增加一行有界链路诊断**
+   - preview 与 recording 都发布低频快照：已解码帧数、最近完整 UInt32 序号及最近步进、gap 事件/估算缺帧、duplicate/out-of-order、decoder 丢弃字节/坏帧、App 输入队列丢块。
+   - 诊断只随既有 5 Hz 波形或录制 progress 发布，不保存逐包列表、不驱动根 Compose、不新增无界日志。
+   - 判读口径：`App丢块 > 0` 指向软件消费压力；`解码弃字节/坏帧 > 0` 指向字节流/帧边界异常；二者为 0 但 `seq Δ != 1` 指向 App 收到的板端/链路序号本身不连续。后两者仍需录制导出或板端日志最终区分。
+
+### 必要测试与验收
+
+- JVM：纵轴 200/600 尾窗；RAW 历史值时间不变；普通 gap 后 `n/800` 继续增长并在 800 点产生 metric request；真正输入 cursor 跳变仍硬重置并清除旧指标。
+- fake BLE：长 ADS 连续流与高频小 gap 流都能填满 RED/IR/ECG 和生成指标；诊断中的最近 `seq/Δ`、gap/missing、decoder discard 与 queue drop 可分别构造验证。
+- UI 纯函数/语义：中断标记只位于独立下方 strip，波形 path 仍在 break 处断开；无数据时不增加诊断重组负担。
+- 完整执行 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy`。本轮不以真机完成为门禁，但下一轮真机必须记录诊断行并导出一份问题会话。
+
+### 本轮不做
+
+- 暂不继续处理未扫描时残留卡顿。
+- 不修改 ADS1292R raw/CSV 的 uint32 口径，不改变 0.5–12 Hz CAUSAL/FIXED 参数、峰谷算法或综合 SQI 公式。
+- 不用无界队列、无限日志或简单隐藏 gap 来掩盖数据完整性问题。
+
+---
+
+## V3.R8.1 RAW 纵轴中心锁定与分级扩展
+
+### 复验结论（2026-08-22）
+
+1. RAW 数组和右上角最新 ADC 数值没有随窗口增长被修改；`liveRawPeakUp` 仍是逐点取负，确认不是接收数据或 raw 变换漂移。
+2. R8 的 200/600 规则只限制了“用哪些点计算候选上下界”，`WaveformPanel` 仍在每次约 5 Hz publication 时直接把新候选 min/max 作为当前坐标轴。滚动窗口中的极值进入、退出或轻微变化时，纵轴中心随之移动，因此屏幕上的既有历史点仍会出现缓慢上移和偶发回跳。
+3. 该问题只属于绘图坐标系；不得通过去趋势、减均值、高通或修改 raw ring/CSV 来掩盖。
+
+### 实施
+
+1. **保留 R8 候选窗**
+   - RAW 仍绘制最新最多 800 点；未满 800 点时从最近最多 200 点、满 800 后从最近 600 点计算带 8% padding 的候选范围。
+   - CAUSAL/FIXED 的滤波、settling 与现有自动缩放不在本小轮改动；ECG raw/CSV 也不改。
+
+2. **为 RED/IR RAW 增加有状态纵轴**
+   - 每个数据来源、显示 generation、显示模式和通道各自持有一个有界纵轴状态；连接/协议重置、preview/recording 来源切换或离开再进入 RAW 时重新初始化。
+   - 首个候选范围建立固定中心并预留安全边距。后续候选完全落在当前范围内时，纵轴上下界保持逐位相同，禁止因滚动极值收缩或中心抖动而改动既有点的屏幕坐标。
+   - 候选越界时保持中心不变，仅对上下界做对称扩展；每次至少扩展一个固定比例并追加安全边距，避免连续多个 5 Hz 快照小步缩放。纵轴在本来源生命周期内不自动收缩；真实基线变化仍表现为波形相对固定坐标轴移动，而不是坐标轴追随数据。
+
+3. **严格隔离数据与显示**
+   - 状态机只消费 `WaveformVerticalRange` 并返回绘图范围，不写 `values`，不进入 `LivePpgSignalRuntime`、指标、文件或 BLE 路径。
+   - 详细诊断行、图下 gap marker 和 R8 指标连续性规则保持不变。
+
+### 必要验收
+
+- JVM 纯函数：候选范围在轴内轻微上移/下移时输出上下界完全不变；单边越界时中心不变且范围按固定阶梯对称扩展；后续候选收窄不收缩；显式新状态可重新定标。
+- UI 接线：只有 RED/IR RAW 使用保持轴，CAUSAL/FIXED/ECG 继续使用即时候选范围；preview 与 recording 切换会使用不同 reset token。
+- 完整执行 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy`；真机重点观察右上角 ADC 数值稳定时，屏幕历史点是否还整体缓慢移动。
+
+### 本轮不做
+
+- 不处理未扫描时残留卡顿，不更改 BLE/decoder/录制/指标算法。
+- 不加入逐点去趋势、滑动减均值或对 raw 数据本身的任何修正。
+- 不为处理一次异常而加入无界历史、定时缩轴或持续动画；若真机仍移动，下一轮以 ADC 数值与轴范围调试值对点，不猜测数据漂移。
+
+---
+
+## V3.R8.2 即时低风险修正（本次完成，不计入 R9–R10 两轮）
+
+### 定位结论
+
+1. M7.6 的录制中手工血压能力没有被删除：`CaptureReferenceTimestamp`、`ManualBloodPressureDialog`、controller 幂等提交和 `blood-pressure.csv` 写入仍然存在。回归仅是 `LiveCaptureScreen.RecordingActionBar` 不再把 `onOpenBloodPressure` 接到按钮。
+2. 实时闪烁/断裂不是短 marker 覆盖了波形；marker 已在单独的图下 strip。可见断裂来自 `WaveformPanel` 在每个 sequence gap 主动 `moveTo` 切断 path，gap 密集且滚动时会使大量短线段持续进出视窗。
+3. 当前诊断只有累计数。可从现有有界计数安全派生两个估算值：`缺帧率 = missing / (decoded + missing)`，`异常帧率 = (missing + duplicate + out-of-order + invalid) / (decoded + missing + invalid)`。丢弃字节和 App 丢块不能精确换算成帧，仍只显示计数。
+
+### 实施与验收
+
+- 恢复录制底栏的「血压记录」按钮，不改现有弹窗和 sidecar 契约。
+- 实时波形 path 按 accepted sample 连续绘制，sequence gap 仍在波形下方短刻度带告警；marker 不进入生理信号 Canvas 的前景层。
+- 诊断行增加缺帧率/异常帧率，无分母时显示「—」，并用 JVM 覆盖 0 帧、普通 gap 和 duplicate/invalid 组合。
+- 本小轮不改 raw/CSV、序号决策、滤波和指标输入。
+
+---
+
+## V3.R9 双路参考血压、录制表单与详情元数据闭环
+
+### V3.R9.1 ATT MTU 协商前置（与 R9 同轮完成）
+
+#### 背景与边界
+
+- 当前 Android GATT 在连接回调后直接进入服务发现，没有显式请求 ATT MTU；168-byte 通知是否能作为单个 ATT payload 到达完全依赖系统/对端默认协商结果。
+- App 在连接成功后、服务发现前请求 `MTU=247`（可用 ATT payload 244 bytes，超过 123 且可容纳当前 168-byte 帧）。Android 14 及以后系统可能把首个请求提升为 517，UI 和诊断必须记录回调给出的**实际值**，不能把 247 当成协商结果。
+- MTU 请求是兼容性增强而不是链路修复证明：请求被拒、回调失败或超时均降级继续服务发现；开发板 sequence gap、BLE 通知丢失和板端缓存问题仍须依靠现有诊断与板端检修判断。
+
+#### 开发任务
+
+1. BLE owner 增加 `NegotiatingMtu` 阶段、MTU deadline、transport `requestMtu` 与 `onMtuChanged` 事件；严格保持 `connect -> request MTU -> callback/timeout fallback -> discover services` 的有序调用。
+2. 目标 MTU 固定为 247；记录 `requested/actual/status/message`。成功回调和失败回调都只消费当前 connection generation/device/phase，迟到回调计入 stale，不得干扰已开始的服务发现。
+3. Android `requestMtu()` 同步返回 false、权限/平台异常、回调失败和 5 s 超时均进入有界 FALLBACK 状态并继续连接，不因 MTU 协商单独断开设备。
+4. 连接详情显示 MTU 协商状态及实际值；fake BLE 覆盖成功顺序、立即拒绝、超时降级和迟到回调。
+
+#### 验收
+
+- fake BLE 命令顺序中 `RequestMtu(247)` 必须早于 `DiscoverServices`；成功回调记录实际 MTU（允许 247/517 等大于等于 23 的值）。
+- 请求失败与 deadline 超时后仍进入服务发现；迟到 MTU 回调不改变阶段或已记录状态。
+- 完整 BLE contract、JVM、lint、构建和 privacy 门禁通过；真机 R9 节点额外记录请求值、实际值和原有丢帧诊断，二者分开判读。
+
+### 问题溯源
+
+| 用户可见问题 | 代码根因 |
+|---|---|
+| 录制前血压不是详情中的一次手工参考事件 | `CaptureForegroundService` 只把 SBP/DBP 写到 session metadata，`CaptureSessionWriter` 不会为它建立 `blood-pressure.csv` 事件，因此详情计数和时间轴都看不到 |
+| 备注被下次录制继承 | `CaptureParticipantDraft.fromSnapshot` 无区分地回填 `additionalFields`，service 又把 `notes` 作为 subject profile 字段持久化 |
+| 录制结束后血压/备注仍在表单 | `CaptureViewModel` 没有观察 RECORDING 到 FINALIZED/FAILED 的转换，也没有 session-scoped draft clear |
+| 不改名时不立即报重复，点击后错误又粘住 | `CaptureGateDiskCache` 对同名有 1 s 缓存且录制完成时不 invalidate；service 二次 gate 返回的 `SessionAlreadyExists` 作为无名称作用域的 `runtimeFailure` 持续混入 UI gate |
+| 其它同类表单状态漏洞 | 定时时长只在输入框显示错误，没有进入 `captureGate`，无效值会在开始时静默回落成 60 s；`participantDraftDirty` 又是 ViewModel 全局布尔值，从被试 A 改名到被试 B 后仍可阻止 B 的 profile 加载并留住 A 的资料 |
+| 详情页少录制模式、完整生活方式和备注 | configuration 有 `recordMode`，但 `CaptureSessionMetadata` 没有 `record_mode`；详情只显示基本 participant 字段，没有 smoking/drinking/additional fields 和 planned duration |
+
+### 开发任务
+
+1. **双路参考血压共存**
+   - 保留 R8.2 恢复的录制中手工登记，一次录制可追加多条。
+   - 录制前血压同时保留在 session metadata 中，并在 writer 真正接受录制时写成 `event_index=0`、`source_sample_index=0`、`source_time_s=0`的手工 BP 事件；`dialog_open_utc` 和 `saved_utc` 都使用 `startedUtc`。录制中事件从下一个 index 继续，两种入口可在同一 sidecar 中共存。
+   - 无完整 SBP/DBP 时不生成事件；不改手工参考的产品语义，不将其当成预测结果。
+
+2. **会话级表单清理与 gate 失效**
+   - 将 SBP、DBP、`notes` 定义为 session-scoped；subject profile 回填/持久化时过滤这些字段，老 profile 中已存的 notes 也不再回填。
+   - 仅在实际经历过录制后的终态转换清除 session-scoped draft 和未提交 dialog，人口学/生活方式 profile 仍可为同一被试回填。
+   - 终态一到达立即 invalidate 完成会话名的磁盘快照并刷新 gate；service 的重复名/表单类事务失败只在当前名称与当前磁盘事实仍匹配时参与 gate。改名、使用建议名或磁盘复核通过后必须解除旧失败。
+   - 定时时长加入 typed gate；有错误时禁止开始，不再静默改为 60 s。`participantDraftDirty` 改为按 canonical subject 作用：同一被试只改 sequence 可保留当前编辑，改到另一被试必须加载其 profile 或空表单，不带入前一被试资料。
+   - 为「同名录制刚完成」、「事务竞态拒绝后改名」、「录制失败但未真正开始」增加 StateFlow/gate JVM 回归。
+
+3. **元数据和详情补齐**
+   - metadata 增加 optional-decode 的 `record_mode`，继续保留 `planned_duration_s`；旧会话显示「未记录」而不猜测模式。
+   - 详情页补齐 PPG/MB 录制类型、手动/定时模式、计划/实际时长、性别/年龄/身高/体重、吸烟/饮酒、会话备注、录制前参考 BP 和手工 BP 事件数。
+   - 会话级 metadata BP 编辑仍是对该会话的后期更正，不伪造录制时手工事件，详情页分开标识两者。
+
+### R9 验收与真机门闩
+
+- JVM/file contract：无 BP、仅录制前 BP、仅录制中 BP、两者共存；sidecar event/time/index 单调；旧 metadata 解码；notes 不进 profile 回填；gate 不粘住；无效定时时长不能开始；跨 subject 不泄漏 draft。
+- 完整 JVM/lint/build/privacy/lifecycle/BLE contract 门禁通过。
+- **真机节点 1：**一次录制同时登记录制前 BP 和两条录制中 BP，停止后不改名即时显示重复，改名后可开始，BP/备注已清空，详情页的三个 BP 时点和录制资料一致。通过此节点后进入 R10。
+
+### R9/R9.1 实施状态（2026-08-22）
+
+- 已实现 MTU 247 请求、实际值回调、失败/5 s 超时降级、UI 请求/实际值和 fake BLE 顺序/迟到回调覆盖；降级不阻塞服务发现。
+- 已实现录前 BP 第 0 条 sidecar 事件与录中事件共存、notes/profile 隔离、录后 session 字段清理、按名称作用域化 runtime duplicate、终态 gate cache 失效、typed duration gate 和跨 subject draft 策略。
+- 已实现 optional `record_mode` 编解码/恢复保留，以及详情页 PPG/MB、模式、计划/实际时长、生活方式、notes、会话级 BP 与时间轴事件数的分开展示。
+- `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 已通过：223 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest/Release、API/lifecycle/BLE/privacy contracts 均通过。
+- 未执行真机；R9 真机节点增加记录 ATT MTU 请求/实际/FALLBACK 状态，并与 gap/missing/App 丢块诊断分开判读。真机节点通过前不进入 R10。
+
+---
+
+## V3.R10 缺帧修复信号、指标来源与详情重放对齐
+
+### 问题溯源
+
+1. `CaptureSessionOfflineAnalysisService.loadRawInput` 在 gap 前把 missing samples 加入 `logicalSampleIndex`，但实时 `CaptureMetricEpoch` / `CaptureReferenceTimestamp` 和录制 CSV 使用连续 accepted-sample cursor。这使详情 PPG、录制期指标和手工 BP 不在同一时钟上，gap 越多错位越大。
+2. `OfflinePpgAnalyzer.continuityRuns/stableSegments` 把每个 `breakIndex` 和 >15 ms 时间跳变当成硬断点，stable analysis 还在每个转换两侧约 1.5 s 标无效。密集 gap 会让 ZERO/FIXED 各段短于 32/201 点，也会让离线 8 s 窗口为空；这与 R8 实时端「保留有序 accepted stream」的口径不一致。
+3. 详情已会读取 `metrics.csv`，并在无 sidecar 时用离线 artifact windows 后备；但 sidecar 缺失、损坏或「有行但所有指标无效」都被压成空列表，页面不显示来源/失败原因，且没有 artifact 时必然为空。
+4. `CompleteSignalChart` 在波形 path 之后绘制全高 gap 线，并无开关；高 gap 密度时会遮盖信号。
+
+### 开发任务
+
+1. **显式区分 raw 与修复/分析信号**
+   - raw 文件、raw ADC 值、accepted 顺序和 gap 证据保持不变；不回写源会话，不伪造板端样本。
+   - 建立内存中的 repaired/analysis input：以 accepted sample 连续时钟 `index / 100 Hz` 对齐实时指标和 BP，值仍是原顺序的 accepted ADC；正常 raw 时两者逐点一致。gap 处不做虚构生理插值，只压缩已缺失的时间并保留 break marker/统计。
+   - ZERO/FIXED、离线窗口和详情指标后备统一消费 repaired input；RAW stage 仍显示原 accepted ADC 与可选 gap 证据。修复口径、gap 数和来源 raw hash 写入新 analysis artifact，旧 artifact optional decode。
+
+2. **指标来源和失败降级可见**
+   - 加载结果区分 `PERSISTED_VALID`、`PERSISTED_NO_VALID_VALUES`、`SIDECAR_MISSING`、`SIDECAR_INVALID`，保留有界错误摘要，不再 `runCatching(...).getOrDefault(emptyList())` 静默丢原因。
+   - 录制期指标有有效值时优先重放，并显示「录制期 1 Hz」；否则用当前 repaired input 重新计算的离线窗口指标后备，标明「离线重算」及降级原因。若两者都无证据，显示具体原因而非空白。
+   - 指标和 BP 都以 accepted source cursor 对齐，测试覆盖大量 missing 后的首尾时点。
+
+3. **详情 gap 呈现不再干扰波形**
+   - 详情/工作台提供「显示缺帧标记」开关；高密度会话默认关闭，低密度可默认开启，用户选择只影响显示。
+   - 开启时先画低 alpha 标记层，再画生理波形；marker 不再覆盖 path。RAW 可保留断点语义，repaired ZERO/FIXED 按修复输入连续绘制。
+   - 诊断页始终保留 gap/missing/异常比例的数字证据，关闭 marker 不得隐藏数据质量问题。
+
+### R10 验收与真机门闩
+
+- JVM/file fixture：无 gap、单 gap、高密度 gap、duplicate/out-of-order/invalid 混合；raw 值和 hash 不变，repaired 点数与 accepted 一致，ZERO/FIXED 有界可用，8 s 窗口可恢复，metrics/BP 时间对齐。
+- 指标来源四态、旧 artifact/metadata optional decode、marker 默认/开关/层级的纯 JVM/UI policy 测试；完整门禁通过。
+- **真机节点 2：**用开发板修复前的高 gap 会话和修复后的会话各一份，对照 raw 诊断、repaired ZERO/FIXED、录制期/离线指标来源、BP marker 和 gap 开关。此节点通过即完成本次不超过两轮的开发。
+
+### R9–R10 不做
+
+- 不修改板端 sequence 生成，不用 App 修复来宣称链路已无丢帧。
+- 不将缺失样本插值成新 raw，不覆盖原会话或原 analysis artifact。
+- 不引入未校准预测 BP/SpO2，不在这两轮重做 BLE transport 或暂缓的空闲页卡顿。
 
 ---
 

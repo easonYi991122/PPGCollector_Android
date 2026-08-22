@@ -101,6 +101,7 @@ class BleCoreTest {
     fun timeoutPolicyClampsOnlyInvalidDurationsAndFakeTransportPreservesCommandOrder() {
         val defaults = BleConnectionTimeoutPolicy.iosDefault
         assertEquals(12.0, defaults.timeout(BleConnectionOperation.CONNECT), 0.0)
+        assertEquals(5.0, defaults.timeout(BleConnectionOperation.MTU_NEGOTIATION), 0.0)
         assertEquals(8.0, defaults.timeout(BleConnectionOperation.NOTIFICATION_SUBSCRIPTION), 0.0)
         val invalid = BleConnectionTimeoutPolicy(0.0, -1.0, 0.05, 0.1)
         assertEquals(0.1, invalid.timeout(BleConnectionOperation.CONNECT), 0.0)

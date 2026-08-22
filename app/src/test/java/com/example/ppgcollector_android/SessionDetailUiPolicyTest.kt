@@ -25,4 +25,17 @@ class SessionDetailUiPolicyTest {
         assertFalse(SessionDetailUiPolicy.showsArtifactSelector(1))
         assertTrue(SessionDetailUiPolicy.showsArtifactSelector(2))
     }
+
+    @Test
+    fun recordModeAndDurationLabelsDoNotGuessOldMetadata() {
+        assertEquals("未记录", SessionDetailUiPolicy.recordModeLabel(null))
+        assertEquals(
+            "定时录制",
+            SessionDetailUiPolicy.recordModeLabel(
+                com.example.ppgcollector_android.data.session.CaptureRecordMode.TIMED,
+            ),
+        )
+        assertEquals("—", SessionDetailUiPolicy.durationLabel(null))
+        assertEquals("42 秒", SessionDetailUiPolicy.durationLabel(42L))
+    }
 }

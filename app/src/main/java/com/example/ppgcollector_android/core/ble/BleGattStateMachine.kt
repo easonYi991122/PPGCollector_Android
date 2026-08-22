@@ -33,6 +33,11 @@ class CupBleGattStateMachine(
     private val uptimeSeconds: () -> Double = { 0.0 },
     private val monotonicNanos: () -> Long = { 0L },
 ) {
+    companion object {
+        const val REQUESTED_ATT_MTU = 247
+        private const val MIN_USEFUL_ATT_MTU = 124
+    }
+
     private val profiles = profiles.toList()
 
     init {
@@ -57,6 +62,8 @@ class CupBleGattStateMachine(
     var diagnostics: BleGattDiagnostics = BleGattDiagnostics()
         private set
     var attemptDiagnostics: BleConnectionAttemptDiagnostics = BleConnectionAttemptDiagnostics()
+        private set
+    var mtu: BleMtuSnapshot = BleMtuSnapshot()
         private set
     var connectionGeneration: Long = 0
         private set
@@ -142,6 +149,9 @@ class CupBleGattStateMachine(
         controlCharacteristicUuid = null
         discoveredServiceUuids = emptyList()
         discoveredCharacteristics = emptyList()
+        mtu = BleMtuSnapshot(
+            status = BleMtuNegotiationStatus.NOT_REQUESTED,
+        )
         connectionGeneration++
         attemptDiagnostics = attemptDiagnostics.copy(
             attemptCount = attemptDiagnostics.attemptCount + 1,
@@ -185,6 +195,7 @@ class CupBleGattStateMachine(
             is BleTransportEvent.Discovered -> updateDiscovered(event.discovery)
             is BleTransportEvent.ScanStopped -> handleScanStopped(event)
             is BleTransportEvent.Connected -> handleConnected(event.deviceId, nowUptimeSeconds)
+            is BleTransportEvent.MtuChanged -> handleMtuChanged(event, nowUptimeSeconds)
             is BleTransportEvent.FailedToConnect -> handleFailedToConnect(event.deviceId, event.message)
             is BleTransportEvent.Disconnected -> handleDisconnected(event.deviceId, event.message)
             is BleTransportEvent.ServicesDiscovered -> handleServices(event, nowUptimeSeconds)
@@ -241,6 +252,14 @@ class CupBleGattStateMachine(
             activeOperation = null,
             lastTimedOutOperation = deadline.operation,
         )
+        if (deadline.operation == BleConnectionOperation.MTU_NEGOTIATION) {
+            mtu = mtu.copy(
+                status = BleMtuNegotiationStatus.FALLBACK,
+                message = "MTU 协商超时，已使用系统默认值继续连接",
+            )
+            beginServiceDiscovery(deadline.deviceId, nowUptimeSeconds)
+            return true
+        }
         fail("${deadline.operation.title}超时，请确认设备仍在附近后重试。", activeDeviceId)
         return true
     }
@@ -304,6 +323,39 @@ class CupBleGattStateMachine(
             transport.disconnect(deviceId)
             return
         }
+        phase = BleConnectionPhase.NegotiatingMtu(deviceId)
+        mtu = BleMtuSnapshot(status = BleMtuNegotiationStatus.REQUESTING)
+        armDeadline(BleConnectionOperation.MTU_NEGOTIATION, deviceId, now)
+        transport.requestMtu(REQUESTED_ATT_MTU, deviceId)
+    }
+
+    private fun handleMtuChanged(event: BleTransportEvent.MtuChanged, now: Double) {
+        if (!accepts(event.deviceId, BleConnectionPhase.NegotiatingMtu(event.deviceId))) return
+        val actual = event.mtu?.takeIf { it >= 23 }
+        mtu = when {
+            event.errorMessage != null -> BleMtuSnapshot(
+                negotiatedMtu = actual,
+                status = BleMtuNegotiationStatus.FALLBACK,
+                message = "MTU 请求失败：${event.errorMessage}；已继续连接",
+            )
+            actual == null -> BleMtuSnapshot(
+                status = BleMtuNegotiationStatus.FALLBACK,
+                message = "MTU 回调未提供有效值；已继续连接",
+            )
+            actual < MIN_USEFUL_ATT_MTU -> BleMtuSnapshot(
+                negotiatedMtu = actual,
+                status = BleMtuNegotiationStatus.FALLBACK,
+                message = "实际 MTU=$actual，未超过 123；已继续连接",
+            )
+            else -> BleMtuSnapshot(
+                negotiatedMtu = actual,
+                status = BleMtuNegotiationStatus.NEGOTIATED,
+            )
+        }
+        beginServiceDiscovery(event.deviceId, now)
+    }
+
+    private fun beginServiceDiscovery(deviceId: String, now: Double) {
         phase = BleConnectionPhase.DiscoveringServices(deviceId)
         armDeadline(BleConnectionOperation.SERVICE_DISCOVERY, deviceId, now)
         transport.discoverServices(deviceId)

@@ -32,4 +32,37 @@ class SubjectProfileTest {
             root.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun sessionNotesAreNeverPersistedOrPrefilledFromSubjectProfile() {
+        val root = Files.createTempDirectory("subject-profile-session-fields")
+        try {
+            val saved = SubjectProfileStore(root).saveRevision(
+                subject = "subject_02",
+                sex = "男",
+                ageYears = 28,
+                heightCm = 175.0,
+                weightKg = 70.0,
+                additionalFields = mapOf("notes" to "one recording only", "site" to "lab-a"),
+            )
+            assertEquals(mapOf("site" to "lab-a"), saved.latest?.additionalFields)
+            val legacySnapshot = saved.latest?.asParticipantSnapshot("subject_02")?.copy(
+                additionalFields = mapOf("notes" to "legacy", "site" to "lab-a"),
+            )
+            val draft = CaptureParticipantDraft.fromSnapshot(legacySnapshot)
+            assertEquals(mapOf("site" to "lab-a"), draft.additionalFields)
+            assertEquals("", draft.systolicBp)
+            assertEquals("", draft.diastolicBp)
+            val cleared = draft.copy(
+                systolicBp = "120",
+                diastolicBp = "80",
+                additionalFields = draft.additionalFields + ("notes" to "temporary"),
+            ).clearSessionScopedFields()
+            assertEquals("", cleared.systolicBp)
+            assertEquals("", cleared.diastolicBp)
+            assertEquals(mapOf("site" to "lab-a"), cleared.additionalFields)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
 }

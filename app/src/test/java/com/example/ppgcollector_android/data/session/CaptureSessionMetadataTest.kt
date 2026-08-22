@@ -64,6 +64,21 @@ class CaptureSessionMetadataTest {
     }
 
     @Test
+    fun recordModeRoundTripsAndOldMetadataWithoutItRemainsUnknown() {
+        val metadata = sampleMetadata().copy(
+            recordMode = CaptureRecordMode.TIMED,
+            plannedDurationSeconds = 45,
+        )
+        val encoded = CaptureSessionMetadataCodec.encode(metadata)
+        assertEquals(metadata, CaptureSessionMetadataCodec.decode(encoded))
+
+        val oldEncoded = encoded.replace("  \"record_mode\": \"timed\",\n", "")
+        val decodedOld = CaptureSessionMetadataCodec.decode(oldEncoded)
+        assertEquals(null, decodedOld.recordMode)
+        assertEquals(45, decodedOld.plannedDurationSeconds)
+    }
+
+    @Test
     fun codecEscapesStringsAndRejectsMalformedOrMissingRequiredFields() {
         val metadata = sampleMetadata().copy(
             baseName = "line, \"quoted\"\nname",

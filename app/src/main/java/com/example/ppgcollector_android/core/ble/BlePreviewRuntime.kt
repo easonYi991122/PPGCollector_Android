@@ -28,6 +28,7 @@ data class BlePreviewSnapshot(
     val lastAnalysis: LiveMetricAnalysisResult? = null,
     val processedSampleCount: Long = 0,
     val droppedChunkCount: Long = 0,
+    val streamDiagnostics: LiveStreamDiagnostics = LiveStreamDiagnostics(),
     val lastError: String? = null,
 )
 
@@ -75,6 +76,8 @@ class BlePreviewRuntime(
     private var activeGeneration = 0L
     private var activeStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE
     private var droppedChunkCount = 0L
+    private var lastSequenceNumber: UInt? = null
+    private var lastSequenceStep: Long? = null
     private var acceptedSampleIndex = 0L
     private var stopRequested = false
     private var lastClockTickNanos = System.nanoTime()
@@ -129,9 +132,20 @@ class BlePreviewRuntime(
         }
         if (!accepted) {
             synchronized(lock) {
-                droppedChunkCount++
+                if (closed) return false
+                // Preview is disposable and independent from the recording raw
+                // sink. Drop its stale backlog as one local discontinuity so a
+                // later metric can never span bytes the App failed to consume.
+                val staleQueuedChunkCount = queue.size
+                queue.clear()
+                analysisQueue.clear()
+                droppedChunkCount += staleQueuedChunkCount + 1L
+                signalRuntime.invalidateLocalInput(acceptedSampleIndex)
                 _snapshot.value = _snapshot.value.copy(
+                    waveform = LiveWaveformSnapshot(generation = signalRuntime.generation),
+                    lastAnalysis = null,
                     droppedChunkCount = droppedChunkCount,
+                    streamDiagnostics = currentStreamDiagnostics(),
                     lastError = "preview queue overflow; recording raw sink remains independent",
                 )
             }
@@ -154,6 +168,9 @@ class BlePreviewRuntime(
             sequenceTracker = CupFrameSequenceTracker()
             signalRuntime = LivePpgSignalRuntime()
             acceptedSampleIndex = 0L
+            droppedChunkCount = 0L
+            lastSequenceNumber = null
+            lastSequenceStep = null
             lastClockTickNanos = System.nanoTime()
             _snapshot.value = BlePreviewSnapshot(connectionGeneration = generation)
         }
@@ -234,6 +251,7 @@ class BlePreviewRuntime(
                             },
                         )
                         val sequence = sequenceTracker.observe(frame)
+                        noteSequence(frame.sequenceNumber, sequence)
                         val accepted = sequence !is CupSequenceEvent.Duplicate &&
                             sequence !is CupSequenceEvent.OutOfOrder
                         if (accepted) acceptedEcgSamples += packet.ecg
@@ -245,6 +263,7 @@ class BlePreviewRuntime(
                     }
                 } else decoder.feed(input.bytes).map { frame ->
                     val sequence = sequenceTracker.observe(frame)
+                    noteSequence(frame.sequenceNumber, sequence)
                     CupDecodedFrameEvent(
                         frame = frame,
                         sequenceEvent = sequence,
@@ -254,6 +273,7 @@ class BlePreviewRuntime(
                 }
                 acceptedFrame = events.any { it.isAccepted }
                 val acceptedBefore = acceptedSampleIndex
+                val signalGenerationBefore = signalRuntime.generation
                 val signal = signalRuntime.ingest(
                     decodedFrames = events,
                     acceptedSampleStartIndex = acceptedBefore,
@@ -261,6 +281,9 @@ class BlePreviewRuntime(
                     nowNanos = System.nanoTime(),
                     acceptedEcgSamples = acceptedEcgSamples,
                 )
+                if (signalRuntime.generation != signalGenerationBefore) {
+                    _snapshot.value = _snapshot.value.copy(lastAnalysis = null)
+                }
                 acceptedSampleIndex += events.filter { it.isAccepted }
                     .sumOf { it.frame.samples.size.toLong() }
                 signal.waveform?.let { publishWaveform(it) }
@@ -324,7 +347,42 @@ class BlePreviewRuntime(
         _snapshot.value = _snapshot.value.copy(
             waveform = snapshot,
             processedSampleCount = acceptedSampleIndex,
+            streamDiagnostics = currentStreamDiagnostics(),
             lastError = null,
+        )
+    }
+
+    private fun noteSequence(sequenceNumber: UInt, event: CupSequenceEvent) {
+        lastSequenceNumber = sequenceNumber
+        lastSequenceStep = when (event) {
+            CupSequenceEvent.First -> null
+            CupSequenceEvent.Continuous -> 1L
+            is CupSequenceEvent.Gap -> event.missingFrames.toLong() + 1L
+            CupSequenceEvent.Duplicate -> 0L
+            CupSequenceEvent.OutOfOrder -> null
+        }
+    }
+
+    private fun currentStreamDiagnostics(): LiveStreamDiagnostics {
+        val sequence = sequenceTracker.stats
+        val adsStats = adsDecoder.stats
+        val batchStats = decoder.stats
+        val isAds = activeStreamProtocolMode == CupStreamProtocolMode.ADS1292R_120
+        return LiveStreamDiagnostics(
+            decodedFrameCount = sequence.receivedFrames.toLong(),
+            lastSequenceNumber = lastSequenceNumber,
+            lastSequenceStep = lastSequenceStep,
+            gapEventCount = signalRuntime.gapCountValue,
+            estimatedMissingFrameCount = sequence.missingFrames.toLong(),
+            duplicateFrameCount = sequence.duplicateFrames.toLong(),
+            outOfOrderFrameCount = sequence.outOfOrderFrames.toLong(),
+            decoderDiscardedByteCount = if (isAds) adsStats.discardedBytes else batchStats.bytesDiscarded.toLong(),
+            decoderInvalidFrameCount = if (isAds) {
+                adsStats.invalidHeaders + adsStats.invalidTails
+            } else {
+                (batchStats.invalidFunction + batchStats.invalidLength + batchStats.invalidTail).toLong()
+            },
+            appDroppedChunkCount = droppedChunkCount,
         )
     }
 }

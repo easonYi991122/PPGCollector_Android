@@ -102,6 +102,7 @@ internal fun LiveCaptureScreen(
             if (recordingActive) {
                 RecordingActionBar(
                     recording = captureStatus.recording,
+                    onOpenBloodPressure = onOpenBloodPressure,
                     onStopCapture = onStopCapture,
                 )
             }
@@ -153,6 +154,7 @@ internal fun LiveCaptureScreen(
             item(key = "live-waveform") {
                 LiveSignalCard(
                     recordingActive = recordingActive,
+                    captureRecording = captureStatus.recording,
                     freshness = snapshot.freshness,
                     density = effectiveDensity,
                     displayMode = displayMode,
@@ -337,6 +339,15 @@ private fun ConnectionSummaryCard(
                     ) { Text(secondLabel) }
                 }
             }
+            if (snapshot.mtu.status != com.example.ppgcollector_android.core.ble.BleMtuNegotiationStatus.NOT_REQUESTED) {
+                val actual = snapshot.mtu.negotiatedMtu?.toString() ?: "—"
+                Text(
+                    "ATT MTU：请求 ${snapshot.mtu.requestedMtu} / 实际 $actual" +
+                        snapshot.mtu.message?.let { " · $it" }.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (!recordingActive || density == CaptureContentDensity.DETAILED) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text(
@@ -404,6 +415,7 @@ private fun NearbyDevicesCard(
 @Composable
 private fun LiveSignalCard(
     recordingActive: Boolean,
+    captureRecording: CaptureRecordingSnapshot,
     freshness: StreamFreshness,
     density: CaptureContentDensity,
     displayMode: LiveWaveformDisplayMode,
@@ -421,12 +433,29 @@ private fun LiveSignalCard(
     val previewMetrics by remember(previewState) {
         previewState.map { it.lastAnalysis?.snapshot }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = null)
-    val waveform = if (recordingActive && captureWaveform.acceptedSampleCount > 0) {
+    val previewConnectionGeneration by remember(previewState) {
+        previewState.map { it.connectionGeneration }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = 0L)
+    val previewDiagnostics by remember(previewState) {
+        previewState.map { it.streamDiagnostics }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = com.example.ppgcollector_android.core.ble.LiveStreamDiagnostics())
+    val usingCaptureWaveform = recordingActive && captureWaveform.acceptedSampleCount > 0
+    val waveform = if (usingCaptureWaveform) {
         captureWaveform
     } else {
         previewWaveform
     }
     val metrics = if (recordingActive) captureAnalysis.lastResult?.snapshot else previewMetrics
+    val streamDiagnostics = if (recordingActive) {
+        captureRecording.streamDiagnostics
+    } else {
+        previewDiagnostics
+    }
+    val axisSourceToken = if (usingCaptureWaveform) {
+        "recording:${captureRecording.connectionGeneration}:${waveform.generation}"
+    } else {
+        "preview:$previewConnectionGeneration:${waveform.generation}"
+    }
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -470,6 +499,8 @@ private fun LiveSignalCard(
                 LiveWaveformAndMetrics(
                     waveform = waveform,
                     metrics = metrics,
+                    streamDiagnostics = streamDiagnostics,
+                    axisSourceToken = axisSourceToken,
                     displayMode = displayMode,
                     density = density,
                     onDisplayModeChange = onDisplayModeChange,
@@ -482,6 +513,7 @@ private fun LiveSignalCard(
 @Composable
 private fun RecordingActionBar(
     recording: CaptureRecordingSnapshot,
+    onOpenBloodPressure: () -> Unit,
     onStopCapture: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -496,9 +528,13 @@ private fun RecordingActionBar(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            FilledTonalButton(
+                onClick = onOpenBloodPressure,
+                modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+            ) { Text("血压记录") }
             Button(
                 onClick = onStopCapture,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                modifier = Modifier.weight(1f).heightIn(min = 52.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError,
@@ -627,6 +663,7 @@ private fun connectionStatusText(phase: BleConnectionPhase, isScanning: Boolean)
         when (phase) {
             BleConnectionPhase.Idle -> "等待扫描或连接"
             is BleConnectionPhase.Connecting -> "正在连接设备"
+            is BleConnectionPhase.NegotiatingMtu -> "正在协商 ATT MTU"
             is BleConnectionPhase.DiscoveringServices -> "正在发现服务"
             is BleConnectionPhase.DiscoveringCharacteristics -> "正在发现特征"
             is BleConnectionPhase.Subscribing -> "正在订阅通知"

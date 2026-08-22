@@ -88,6 +88,7 @@ data class BleCoordinatorSnapshot(
     val discoveredCharacteristics: List<BleCharacteristicDiagnostic>,
     val freshness: StreamFreshness,
     val lastError: String?,
+    val mtu: BleMtuSnapshot,
     val diagnostics: BleGattDiagnostics,
     val attemptDiagnostics: BleConnectionAttemptDiagnostics,
 )
@@ -371,6 +372,7 @@ class BleCoordinator(
         discoveredCharacteristics = owner.discoveredCharacteristics,
         freshness = owner.freshness,
         lastError = owner.lastError,
+        mtu = owner.mtu,
         diagnostics = owner.diagnostics,
         attemptDiagnostics = owner.attemptDiagnostics,
     )
@@ -396,6 +398,7 @@ class BleCoordinator(
             previous.availability != owner.availability ||
             previous.advertisedName != owner.advertisedName ||
             previous.connectionGeneration != owner.connectionGeneration ||
+            previous.mtu != owner.mtu ||
             previous.permission != permissions.snapshot ||
             previous.activeProfile != owner.activeProfile ||
             copiedDiscoveredDevicesEpoch != owner.discoveredDevicesEpoch

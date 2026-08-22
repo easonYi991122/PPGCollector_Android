@@ -311,7 +311,18 @@ internal fun SavedSessionDetailScreen(
                         "文件大小" to formatBytes(item.totalBytes),
                         "被试" to (item.participant?.subjectId ?: "未归档"),
                         "seq" to (item.participant?.sequence?.toString() ?: "—"),
-                        "参考血压" to "${item.bloodPressureCount} 组",
+                        "录制类型" to (item.sessionPrefix?.displayName ?: "未记录"),
+                        "录制模式" to SessionDetailUiPolicy.recordModeLabel(item.recordMode),
+                        "计划时长" to SessionDetailUiPolicy.durationLabel(
+                            item.plannedDurationSeconds?.toLong(),
+                        ),
+                        "实际时长" to SessionDetailUiPolicy.durationLabel(item.actualDurationSeconds),
+                        "录前参考血压" to if (item.systolicBp != null && item.diastolicBp != null) {
+                            "${item.systolicBp}/${item.diastolicBp} mmHg"
+                        } else {
+                            "—"
+                        },
+                        "参考事件" to "${item.bloodPressureCount} 组",
                         "停止原因" to (item.stopReason ?: "—"),
                         "设备" to (item.deviceName ?: "—"),
                         "开始" to formatInstant(item.startedUtc),
@@ -364,6 +375,13 @@ internal fun SavedSessionDetailScreen(
                     LabeledValue("性别", participant.sex ?: "—")
                     LabeledValue("年龄", participant.ageYears?.toString() ?: "—")
                     LabeledValue("身高 / 体重", "${participant.heightCm ?: "—"} cm / ${participant.weightKg ?: "—"} kg")
+                    LabeledValue("吸烟频率", participant.smokingFreq.ifBlank { "—" })
+                    LabeledValue("饮酒频率", participant.drinkingFreq.ifBlank { "—" })
+                    LabeledValue("会话备注", participant.additionalFields["notes"].orEmpty().ifBlank { "—" })
+                    participant.additionalFields
+                        .filterKeys { it != "notes" }
+                        .toSortedMap()
+                        .forEach { (key, value) -> LabeledValue(key, value.ifBlank { "—" }) }
                     LabeledValue("资料状态", if (participant.profileComplete) "完整" else "待补齐")
                     Text(
                         "该资料是录制时的不可变 snapshot；后续 subject profile revision 不会改写本会话。",
@@ -376,11 +394,25 @@ internal fun SavedSessionDetailScreen(
         item {
             CollapsibleSectionCard(
                 title = "参考血压",
-                summary = "手工参考 ${item.bloodPressureCount} 组 · 预测算法未接入",
+                summary = "录前 ${if (item.systolicBp != null && item.diastolicBp != null) "${item.systolicBp}/${item.diastolicBp}" else "未登记"} · 时间轴 ${item.bloodPressureCount} 组",
                 expanded = isExpanded(SessionDetailSection.BLOOD_PRESSURE),
                 onToggle = { toggle(SessionDetailSection.BLOOD_PRESSURE) },
                 modifier = Modifier.padding(horizontal = 16.dp),
             ) {
+                LabeledValue(
+                    "录前 / 会话级参考",
+                    if (item.systolicBp != null && item.diastolicBp != null) {
+                        "${item.systolicBp}/${item.diastolicBp} mmHg"
+                    } else {
+                        "—"
+                    },
+                )
+                LabeledValue("录制时间轴手工事件", "${item.bloodPressureCount} 组")
+                Text(
+                    "新会话的录前登记同时作为第 0 条时间轴事件；在此页修改只更正会话级参考，不伪造历史事件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 var systolicText by remember(item.directory, item.systolicBp) {
                     mutableStateOf(item.systolicBp?.toString().orEmpty())
                 }

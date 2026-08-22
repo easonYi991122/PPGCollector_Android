@@ -70,4 +70,28 @@ class CaptureStartGateTest {
             root.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun invalidTimedDurationIsTypedGateFailureAndNeverFallsBackToSixtySeconds() {
+        val root = Files.createTempDirectory("capture-gate-duration")
+        try {
+            val context = CaptureStartContext(
+                isRecording = false,
+                phase = BleConnectionPhase.Receiving("device"),
+                freshness = StreamFreshness.FRESH,
+                sessionsRoot = root,
+                sessionName = "PPG-S001-1",
+                availableBytes = Long.MAX_VALUE,
+                recordMode = CaptureRecordMode.TIMED,
+                plannedDurationSeconds = null,
+            )
+            assertTrue(CaptureStartGate.validateAll(context).any {
+                it is CaptureStartFailure.InvalidPlannedDuration
+            })
+            assertEquals(null, CaptureRecordModePolicy.effectiveDurationSeconds(CaptureRecordMode.TIMED, "bad"))
+            assertEquals(10, CaptureRecordModePolicy.effectiveDurationSeconds(CaptureRecordMode.TIMED, "10"))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
 }

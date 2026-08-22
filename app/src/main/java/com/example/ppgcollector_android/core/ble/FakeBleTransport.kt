@@ -30,6 +30,11 @@ sealed interface BleTransportEvent {
         val message: String? = null,
     ) : BleTransportEvent
     data class Connected(val deviceId: String) : BleTransportEvent
+    data class MtuChanged(
+        val deviceId: String,
+        val mtu: Int?,
+        val errorMessage: String?,
+    ) : BleTransportEvent
     data class FailedToConnect(val deviceId: String, val message: String?) : BleTransportEvent
     data class Disconnected(val deviceId: String, val message: String?) : BleTransportEvent
     data class ServicesDiscovered(
@@ -72,6 +77,7 @@ sealed interface FakeBleCommand {
     data object StartScanning : FakeBleCommand
     data object StopScanning : FakeBleCommand
     data class Connect(val deviceId: String) : FakeBleCommand
+    data class RequestMtu(val mtu: Int, val deviceId: String) : FakeBleCommand
     data class Disconnect(val deviceId: String) : FakeBleCommand
     data class DiscoverServices(val deviceId: String) : FakeBleCommand
     data class DiscoverCharacteristics(
@@ -92,6 +98,7 @@ interface BleTransport {
     fun startScanning()
     fun stopScanning()
     fun connect(deviceId: String)
+    fun requestMtu(mtu: Int, deviceId: String)
     fun disconnect(deviceId: String)
     fun discoverServices(deviceId: String)
     fun discoverCharacteristics(characteristicUuids: List<String>, serviceUuid: String, deviceId: String)
@@ -99,7 +106,9 @@ interface BleTransport {
     fun close() = Unit
 }
 
-class FakeBleTransport : BleTransport {
+class FakeBleTransport(
+    private val autoCompleteMtuRequest: Boolean = true,
+) : BleTransport {
     override var eventHandler: ((BleTransportEvent) -> Unit)? = null
     val commands = mutableListOf<FakeBleCommand>()
 
@@ -107,6 +116,10 @@ class FakeBleTransport : BleTransport {
     override fun startScanning() { commands.add(FakeBleCommand.StartScanning) }
     override fun stopScanning() { commands.add(FakeBleCommand.StopScanning) }
     override fun connect(deviceId: String) { commands.add(FakeBleCommand.Connect(deviceId)) }
+    override fun requestMtu(mtu: Int, deviceId: String) {
+        commands.add(FakeBleCommand.RequestMtu(mtu, deviceId))
+        if (autoCompleteMtuRequest) emit(BleTransportEvent.MtuChanged(deviceId, mtu, null))
+    }
     override fun disconnect(deviceId: String) { commands.add(FakeBleCommand.Disconnect(deviceId)) }
     override fun discoverServices(deviceId: String) { commands.add(FakeBleCommand.DiscoverServices(deviceId)) }
     override fun discoverCharacteristics(characteristicUuids: List<String>, serviceUuid: String, deviceId: String) =

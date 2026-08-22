@@ -54,7 +54,7 @@ class LiveMetricRuntimeTest {
     }
 
     @Test
-    fun gapClearsWindowAdvancesGenerationAndRequiresFreshEightSecondWarmup() {
+    fun wireGapKeepsAcceptedSampleWindowAndNextCadenceRemainsAvailable() {
         val scheduler = LiveMetricWindowScheduler()
         var first: com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest? = null
         for (frameIndex in 0 until 40) {
@@ -71,23 +71,23 @@ class LiveMetricRuntimeTest {
             measuredAt,
         )
         assertNull(gap)
-        assertEquals(20, scheduler.continuousSamples)
-        assertEquals(20, scheduler.bufferedSampleCount)
-        assertFalse(scheduler.isCurrent(beforeGap))
-        assertEquals(generationBeforeGap + 1, scheduler.generation)
+        assertEquals(820, scheduler.continuousSamples)
+        assertEquals(800, scheduler.bufferedSampleCount)
+        assertTrue(scheduler.isCurrent(beforeGap))
+        assertEquals(generationBeforeGap, scheduler.generation)
 
-        var rebuilt: com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest? = null
-        for (frameIndex in 1 until 40) {
-            rebuilt = scheduler.ingest(
+        var next: com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest? = null
+        for (frameIndex in 1..4) {
+            next = scheduler.ingest(
                 listOf(frame(42 + frameIndex, 800 + frameIndex * 20)),
                 measuredAt,
-            ) ?: rebuilt
+            ) ?: next
         }
-        assertNotNull(rebuilt)
-        assertEquals(1_599L, rebuilt!!.windowEndSampleIndex)
-        assertEquals(8.0, rebuilt.timeSeconds.first(), 1e-12)
-        assertEquals(15.99, rebuilt.timeSeconds.last(), 1e-12)
-        assertTrue(scheduler.isCurrent(rebuilt))
+        assertNotNull(next)
+        assertEquals(899L, next!!.windowEndSampleIndex)
+        assertEquals(1.0, next.timeSeconds.first(), 1e-12)
+        assertEquals(8.99, next.timeSeconds.last(), 1e-12)
+        assertTrue(scheduler.isCurrent(next))
     }
 
     @Test

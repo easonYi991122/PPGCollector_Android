@@ -122,6 +122,7 @@ data class CaptureSessionMetadata(
     val participant: CaptureParticipantSnapshot? = null,
     val systolicBp: Int? = null,
     val diastolicBp: Int? = null,
+    val recordMode: CaptureRecordMode? = null,
     val plannedDurationSeconds: Int? = null,
     val ecgSampleRateHz: Int? = null,
     val bloodPressureUpdatedUtc: Instant? = null,
@@ -224,6 +225,8 @@ object CaptureSessionMetadataCodec {
                 (metadata.participant?.let(::toJson) ?: JsonValue.NullValue),
             "sbp" to (metadata.systolicBp?.let { number(it.toLong()) } ?: JsonValue.NullValue),
             "dbp" to (metadata.diastolicBp?.let { number(it.toLong()) } ?: JsonValue.NullValue),
+            "record_mode" to
+                (metadata.recordMode?.let { string(it.name.lowercase()) } ?: JsonValue.NullValue),
             "ecg_sample_rate" to
                 (metadata.ecgSampleRateHz?.let { number(it.toLong()) } ?: JsonValue.NullValue),
             "bp_updated_at" to
@@ -338,6 +341,9 @@ object CaptureSessionMetadataCodec {
             participant = root.optionalObject("participant")?.let(::fromParticipantJson),
             systolicBp = root.optionalLong("sbp")?.toIntChecked("sbp"),
             diastolicBp = root.optionalLong("dbp")?.toIntChecked("dbp"),
+            recordMode = root.optionalString("record_mode")?.let { value ->
+                CaptureRecordMode.entries.firstOrNull { it.name.equals(value, ignoreCase = true) }
+            },
             plannedDurationSeconds = root.optionalLong("planned_duration_s")
                 ?.toIntChecked("planned_duration_s"),
             ecgSampleRateHz = root.optionalLong("ecg_sample_rate")?.toIntChecked("ecg_sample_rate"),

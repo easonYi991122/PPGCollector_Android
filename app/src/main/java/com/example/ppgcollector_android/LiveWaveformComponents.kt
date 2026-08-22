@@ -40,7 +40,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.ppgcollector_android.core.ble.LiveStreamDiagnostics
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
+import com.example.ppgcollector_android.core.signal.LiveRawWaveformAxisRuntime
 import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformScaleMath
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
@@ -52,6 +54,8 @@ import java.util.Locale
 internal fun LiveWaveformAndMetrics(
     waveform: LiveWaveformSnapshot,
     metrics: LiveMetricSnapshot?,
+    streamDiagnostics: LiveStreamDiagnostics,
+    axisSourceToken: String,
     displayMode: LiveWaveformDisplayMode,
     density: CaptureContentDensity,
     onDisplayModeChange: (LiveWaveformDisplayMode) -> Unit,
@@ -103,6 +107,7 @@ internal fun LiveWaveformAndMetrics(
         0
     }
     val ppgSegmentBreaks = displaySegmentBreakIndices(waveform, effectiveMode)
+    val axisResetToken = "$axisSourceToken:${effectiveMode.name}"
     val modeDescription = when (effectiveMode) {
         LiveWaveformDisplayMode.CAUSAL -> "因果滤波 0.5–12 Hz，取负 raw 后滤波"
         LiveWaveformDisplayMode.FIXED_LAG ->
@@ -132,6 +137,8 @@ internal fun LiveWaveformAndMetrics(
             publicationSequence = waveform.publicationSequence,
             excludedLeadingSampleCount = settlingSamples,
             segmentBreakSampleIndices = ppgSegmentBreaks,
+            stableRawAxis = effectiveMode == LiveWaveformDisplayMode.RAW,
+            axisResetToken = axisResetToken,
             semanticsDetail = modeDescription,
             compact = density == CaptureContentDensity.COMPACT,
         )
@@ -142,6 +149,8 @@ internal fun LiveWaveformAndMetrics(
             publicationSequence = waveform.publicationSequence,
             excludedLeadingSampleCount = settlingSamples,
             segmentBreakSampleIndices = ppgSegmentBreaks,
+            stableRawAxis = effectiveMode == LiveWaveformDisplayMode.RAW,
+            axisResetToken = axisResetToken,
             semanticsDetail = modeDescription,
             compact = density == CaptureContentDensity.COMPACT,
         )
@@ -157,6 +166,8 @@ internal fun LiveWaveformAndMetrics(
                     else (breakIndex.toDouble() * waveform.ecg.size / waveform.red.size)
                         .toInt()
                 },
+                stableRawAxis = false,
+                axisResetToken = "$axisSourceToken:ECG",
                 semanticsDetail = "ADS1292R 每 5 点均值显示，未取负；落盘仍为原始 ADC",
                 compact = density == CaptureContentDensity.COMPACT,
             )
@@ -175,6 +186,13 @@ internal fun LiveWaveformAndMetrics(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (streamDiagnostics.decodedFrameCount > 0L) {
+                Text(
+                    liveStreamDiagnosticText(streamDiagnostics),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         LiveMetricsPanel(metrics = metrics, density = density)
@@ -262,12 +280,25 @@ private fun WaveformPanel(
     publicationSequence: Long,
     excludedLeadingSampleCount: Int,
     segmentBreakSampleIndices: List<Int>,
+    stableRawAxis: Boolean,
+    axisResetToken: String,
     semanticsDetail: String,
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val verticalRange = remember(values, publicationSequence, excludedLeadingSampleCount) {
+    val candidateVerticalRange = remember(values, publicationSequence, excludedLeadingSampleCount) {
         LiveWaveformScaleMath.verticalRange(values, excludedLeadingSampleCount)
+    }
+    val rawAxisRuntime = remember(axisResetToken, stableRawAxis) {
+        LiveRawWaveformAxisRuntime()
+    }
+    val verticalRange = remember(
+        candidateVerticalRange,
+        publicationSequence,
+        rawAxisRuntime,
+        stableRawAxis,
+    ) {
+        if (stableRawAxis) rawAxisRuntime.update(candidateVerticalRange) else candidateVerticalRange
     }
     val plot = remember(values, publicationSequence) {
         LiveWaveformPlotMath.plot(values, maximumPointCount = 320)
@@ -298,79 +329,93 @@ private fun WaveformPanel(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
         ) {
-            Box(modifier = Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-                Spacer(
-                    Modifier.matchParentSize().drawWithCache {
-                        val scale = verticalRange
-                        val path = if (scale != null && plot.points.isNotEmpty()) {
-                            val span = (scale.upper - scale.lower).coerceAtLeast(1e-9)
-                            val breaks = segmentBreakSampleIndices.sorted()
-                            var nextBreak = 0
-                            var previousOffset: Int? = null
-                            Path().apply {
-                                plot.points.forEachIndexed { index, point ->
-                                    val x = if (values.size <= 1) size.width / 2f else {
-                                        point.offset.toFloat() / (values.size - 1).toFloat() * size.width
+            Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Spacer(
+                        Modifier.matchParentSize().drawWithCache {
+                            val scale = verticalRange
+                            val path = if (scale != null && plot.points.isNotEmpty()) {
+                                val span = (scale.upper - scale.lower).coerceAtLeast(1e-9)
+                                Path().apply {
+                                    plot.points.forEachIndexed { index, point ->
+                                        val x = if (values.size <= 1) size.width / 2f else {
+                                            point.offset.toFloat() /
+                                                (values.size - 1).toFloat() * size.width
+                                        }
+                                        val y = ((scale.upper - point.value) / span * size.height)
+                                            .toFloat().coerceIn(0f, size.height)
+                                        if (index == 0) moveTo(x, y) else lineTo(x, y)
                                     }
-                                    val y = ((scale.upper - point.value) / span * size.height)
-                                        .toFloat().coerceIn(0f, size.height)
-                                    while (nextBreak < breaks.size &&
-                                        breaks[nextBreak] <= (previousOffset ?: Int.MIN_VALUE)
-                                    ) {
-                                        nextBreak++
-                                    }
-                                    val crossesBreak = nextBreak < breaks.size &&
-                                        breaks[nextBreak] in ((previousOffset ?: point.offset) + 1)..point.offset
-                                    if (index == 0 || crossesBreak) moveTo(x, y) else lineTo(x, y)
-                                    if (crossesBreak) nextBreak++
-                                    previousOffset = point.offset
+                                }
+                            } else null
+                            onDrawBehind {
+                                repeat(3) { index ->
+                                    val y = size.height * (index + 1) / 4f
+                                    drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                                }
+                                if (excludedLeadingSampleCount > 0 && values.isNotEmpty()) {
+                                    drawRect(
+                                        settlingColor,
+                                        size = Size(
+                                            width = size.width * excludedLeadingSampleCount
+                                                .coerceAtMost(values.size).toFloat() / values.size.toFloat(),
+                                            height = size.height,
+                                        ),
+                                    )
+                                }
+                                if (path != null) {
+                                    drawPath(
+                                        path,
+                                        color,
+                                        style = Stroke(
+                                            1.75.dp.toPx(),
+                                            cap = StrokeCap.Round,
+                                            join = StrokeJoin.Round,
+                                        ),
+                                    )
                                 }
                             }
-                        } else null
-                        onDrawBehind {
-                            repeat(3) { index ->
-                                val y = size.height * (index + 1) / 4f
-                                drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                        },
+                    )
+                    if (values.isEmpty()) {
+                        Text(
+                            "等待 CUP 样本",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                val markerFractions = remember(values.size, segmentBreakSampleIndices) {
+                    segmentBreakMarkerFractions(segmentBreakSampleIndices, values.size)
+                }
+                Spacer(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(7.dp)
+                        .semantics {
+                            contentDescription = if (markerFractions.isEmpty()) {
+                                "$label 无序号中断"
+                            } else {
+                                "$label 序号中断 ${markerFractions.size} 处，标记位于波形下方"
                             }
-                            if (excludedLeadingSampleCount > 0 && values.isNotEmpty()) {
-                                drawRect(
-                                    settlingColor,
-                                    size = Size(
-                                        width = size.width * excludedLeadingSampleCount
-                                            .coerceAtMost(values.size).toFloat() / values.size.toFloat(),
-                                        height = size.height,
-                                    ),
-                                )
-                            }
-                            if (path != null) {
-                                drawPath(
-                                    path,
-                                    color,
-                                    style = Stroke(1.75.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
-                                )
-                            }
-                            segmentBreakSampleIndices.forEach { breakIndex ->
-                                if (values.size > 1) {
-                                    val x = breakIndex.coerceIn(0, values.lastIndex).toFloat() /
-                                        values.lastIndex.toFloat() * size.width
+                        }
+                        .drawWithCache {
+                            onDrawBehind {
+                                markerFractions.forEach { fraction ->
+                                    val x = fraction * size.width
                                     drawLine(
-                                        color.copy(alpha = 0.45f),
+                                        color.copy(alpha = 0.55f),
                                         Offset(x, 0f),
                                         Offset(x, size.height),
                                         strokeWidth = 1.dp.toPx(),
                                     )
                                 }
                             }
-                        }
-                    },
+                        },
                 )
-                if (values.isEmpty()) {
-                    Text(
-                        "等待 CUP 样本",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
         }
     }
@@ -382,7 +427,7 @@ private fun waveformDetailText(
     settlingSamples: Int,
 ): String = when (effectiveMode) {
     LiveWaveformDisplayMode.CAUSAL ->
-        "${waveform.displayCausalProfile ?: "causal-display-0.5-12hz-0.1"} · gap reset · " +
+        "${waveform.displayCausalProfile ?: "causal-display-0.5-12hz-0.1"} · 序号中断在图下标记 · " +
             if (settlingSamples > 0) "浅色区为滤波 settling" else "滤波状态稳定"
     LiveWaveformDisplayMode.FIXED_LAG ->
         "${waveform.fixedLagProfile ?: "fixed-lag-fir-0.5-12hz-0.1"} · 源窗口 " +
@@ -391,6 +436,58 @@ private fun waveformDetailText(
     LiveWaveformDisplayMode.RAW ->
         "100 Hz accepted RAW · 显示仅取负；落盘仍为原始 ADC"
 }
+
+internal fun segmentBreakMarkerFractions(
+    segmentBreakSampleIndices: List<Int>,
+    sampleCount: Int,
+): List<Float> {
+    if (sampleCount <= 1) return emptyList()
+    return segmentBreakSampleIndices.distinct().sorted().map { breakIndex ->
+        breakIndex.coerceIn(0, sampleCount - 1).toFloat() / (sampleCount - 1).toFloat()
+    }
+}
+
+internal data class LiveStreamDiagnosticRates(
+    val missingFrameRate: Double?,
+    val abnormalFrameRate: Double?,
+)
+
+internal fun liveStreamDiagnosticRates(diagnostics: LiveStreamDiagnostics): LiveStreamDiagnosticRates {
+    val decoded = diagnostics.decodedFrameCount.coerceAtLeast(0L).toDouble()
+    val missing = diagnostics.estimatedMissingFrameCount.coerceAtLeast(0L).toDouble()
+    val invalid = diagnostics.decoderInvalidFrameCount.coerceAtLeast(0L).toDouble()
+    val duplicate = diagnostics.duplicateFrameCount.coerceAtLeast(0L).toDouble()
+    val outOfOrder = diagnostics.outOfOrderFrameCount.coerceAtLeast(0L).toDouble()
+    val missingDenominator = decoded + missing
+    val abnormalDenominator = decoded + missing + invalid
+    return LiveStreamDiagnosticRates(
+        missingFrameRate = if (missingDenominator > 0.0) {
+            (missing / missingDenominator).coerceIn(0.0, 1.0)
+        } else {
+            null
+        },
+        abnormalFrameRate = if (abnormalDenominator > 0.0) {
+            ((missing + duplicate + outOfOrder + invalid) / abnormalDenominator)
+                .coerceIn(0.0, 1.0)
+        } else {
+            null
+        },
+    )
+}
+
+private fun formatDiagnosticRate(value: Double?): String =
+    value?.let { String.format(Locale.ROOT, "%.2f%%", it * 100.0) } ?: "—"
+
+internal fun liveStreamDiagnosticText(diagnostics: LiveStreamDiagnostics): String =
+    liveStreamDiagnosticRates(diagnostics).let { rates ->
+        "链路：帧 ${diagnostics.decodedFrameCount} · seq ${diagnostics.lastSequenceNumber ?: "—"}" +
+        "/Δ${diagnostics.lastSequenceStep ?: "—"} · gap ${diagnostics.gapEventCount}" +
+        "/缺 ${diagnostics.estimatedMissingFrameCount} · 重 ${diagnostics.duplicateFrameCount}" +
+        "/乱 ${diagnostics.outOfOrderFrameCount} · 解码弃 ${diagnostics.decoderDiscardedByteCount} B" +
+        "/坏 ${diagnostics.decoderInvalidFrameCount} · 缺帧率 ${formatDiagnosticRate(rates.missingFrameRate)}" +
+        "/异常帧率 ${formatDiagnosticRate(rates.abnormalFrameRate)}" +
+        " · App 丢块 ${diagnostics.appDroppedChunkCount}"
+    }
 
 internal fun waveformContentDescription(label: String, sampleCount: Int, detail: String? = null): String =
     buildString {

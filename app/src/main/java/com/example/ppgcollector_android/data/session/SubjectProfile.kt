@@ -79,8 +79,9 @@ class SubjectProfileStore(private val root: Path) {
         revisionId: String = UUID.randomUUID().toString(),
         now: Instant = Instant.now(),
     ): SubjectProfile {
+        val profileAdditionalFields = additionalFields.withoutSessionScopedParticipantFields()
         validateRevision(
-            sex, ageYears, heightCm, weightKg, smokingFreq, drinkingFreq, additionalFields,
+            sex, ageYears, heightCm, weightKg, smokingFreq, drinkingFreq, profileAdditionalFields,
         )
         val previous = read(subject)
         val revision = SubjectProfileRevision(
@@ -93,7 +94,7 @@ class SubjectProfileStore(private val root: Path) {
             weightKg = weightKg,
             smokingFreq = smokingFreq,
             drinkingFreq = drinkingFreq,
-            additionalFields = additionalFields.toSortedMap(),
+            additionalFields = profileAdditionalFields.toSortedMap(),
         )
         val profile = SubjectProfile(
             subject = subject,

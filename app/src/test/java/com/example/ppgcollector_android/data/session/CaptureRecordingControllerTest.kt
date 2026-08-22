@@ -5,6 +5,9 @@ import com.example.ppgcollector_android.core.ble.BleRawNotificationChunk
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import java.nio.file.Files
@@ -18,6 +21,61 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CaptureRecordingControllerTest {
+    @Test
+    fun preRecordingAndInRecordingBloodPressureShareOneMonotonicEventSeries() {
+        val root = Files.createTempDirectory("capture-dual-bp")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration().copy(systolicBp = 121, diastolicBp = 79),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 31,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            assertTrue(
+                controller.onRawChunk(
+                    BleRawNotificationChunk(31, 1L, encodeCupBatchFrame(frame())),
+                ),
+            )
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (controller.snapshot.acceptedSampleCount == 0L && System.nanoTime() < deadline) {
+                Thread.sleep(1)
+            }
+            val reference = controller.captureReferenceTimestamp()
+            assertNotNull(reference)
+            assertTrue(
+                controller.commitManualBloodPressure(
+                    ManualBloodPressureEvent(
+                        reference = reference!!,
+                        savedUtc = Instant.parse("2026-08-02T00:00:02Z"),
+                        systolicMmHg = 118,
+                        diastolicMmHg = 76,
+                    ),
+                ),
+            )
+            controller.stop(CaptureStopReason.USER)
+            val summary = controller.awaitFinalized(5, TimeUnit.SECONDS)
+            assertNotNull(summary)
+            val events = CaptureBloodPressureSeries.read(
+                summary!!.directory.resolve("controller_001.blood-pressure.csv"),
+            )
+            assertEquals(listOf(0L, 1L), events.map { it.reference.eventIndex })
+            assertEquals(listOf(0L, 19L), events.map { it.reference.sourceSampleIndex })
+            assertEquals(configuration().startedUtc, events.first().reference.dialogOpenUtc)
+            assertEquals(configuration().startedUtc, events.first().savedUtc)
+            assertEquals(2L, summary.writer.bloodPressureRows)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun timedRecordingStopsAfterAcceptedSamplesAndPersistsPlan() {
         val root = Files.createTempDirectory("capture-timed")
@@ -57,6 +115,7 @@ class CaptureRecordingControllerTest {
             val metadata = CaptureSessionMetadataCodec.decode(
                 Files.readString(summary.directory.resolve("controller_001.session.json")),
             )
+            assertEquals(CaptureRecordMode.TIMED, metadata.recordMode)
             assertEquals(10, metadata.plannedDurationSeconds)
         } finally {
             root.toFile().deleteRecursively()
@@ -161,6 +220,10 @@ class CaptureRecordingControllerTest {
             assertNotNull(summary)
             assertEquals(CaptureStopReason.RESOURCE_PRESSURE, summary!!.stopReason)
             assertTrue(controller.snapshot.queueOverflowCount > 0)
+            assertEquals(
+                controller.snapshot.queueOverflowCount,
+                controller.snapshot.streamDiagnostics.appDroppedChunkCount,
+            )
         } finally {
             gate.countDown()
             root.toFile().deleteRecursively()
@@ -286,6 +349,50 @@ class CaptureRecordingControllerTest {
         }
     }
 
+    @Test
+    fun frequentAdsWireGapsRemainVisibleButRecordingMetricsReachEightSeconds() {
+        val root = Files.createTempDirectory("capture-ads-gap-metrics")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            )
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration().copy(protocolProfile = Ads1292rPacketProtocol.profileIdentifier),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 31,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            repeat(200) { frameIndex ->
+                assertTrue(
+                    controller.onRawChunk(
+                        BleRawNotificationChunk(
+                            connectionGeneration = 31,
+                            hostMonotonicNanos = frameIndex * 40_000_000L,
+                            bytes = Ads1292rPacketProtocol.encode(adsPacket((frameIndex * 2).toUInt())),
+                            streamProtocolMode = CupStreamProtocolMode.ADS1292R_120,
+                        ),
+                    ),
+                )
+            }
+            controller.stop(CaptureStopReason.USER)
+            assertNotNull(controller.awaitFinalized(10, TimeUnit.SECONDS))
+
+            assertNotNull(controller.analysisSnapshot.value.lastResult)
+            assertEquals(800L, controller.waveformSnapshot.value.continuousSampleCount)
+            assertEquals(199L, controller.snapshot.streamDiagnostics.gapEventCount)
+            assertEquals(199L, controller.snapshot.streamDiagnostics.estimatedMissingFrameCount)
+            assertEquals(2L, controller.snapshot.streamDiagnostics.lastSequenceStep)
+            assertEquals(0L, controller.snapshot.streamDiagnostics.appDroppedChunkCount)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "controller-session-id",
         baseName = "controller_001",
@@ -312,6 +419,13 @@ class CaptureRecordingControllerTest {
             val pulse = (kotlin.math.sin(index * 2.0 * Math.PI / 25.0) * 120.0).toUInt()
             CupPpgSample(10_000u + pulse, 20_000u + pulse)
         },
+    )
+
+    private fun adsPacket(sequence: UInt) = Ads1292rPacket(
+        sequenceNumber = sequence,
+        ecg = List(20) { index -> (30_000 + index).toUInt() },
+        red = List(4) { index -> (10_000 + index).toUInt() },
+        ir = List(4) { index -> (20_000 + index).toUInt() },
     )
 }
 

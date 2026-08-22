@@ -4,6 +4,7 @@ import kotlin.math.max
 
 enum class BleConnectionOperation(val title: String) {
     CONNECT("连接设备"),
+    MTU_NEGOTIATION("协商 MTU"),
     SERVICE_DISCOVERY("发现服务"),
     CHARACTERISTIC_DISCOVERY("发现特征"),
     NOTIFICATION_SUBSCRIPTION("订阅通知"),
@@ -14,6 +15,7 @@ data class BleConnectionTimeoutPolicy(
     val serviceDiscoverySeconds: Double,
     val characteristicDiscoverySeconds: Double,
     val notificationSubscriptionSeconds: Double,
+    val mtuNegotiationSeconds: Double = 5.0,
 ) {
     companion object {
         val iosDefault = BleConnectionTimeoutPolicy(12.0, 8.0, 8.0, 8.0)
@@ -23,6 +25,7 @@ data class BleConnectionTimeoutPolicy(
         0.1,
         when (operation) {
             BleConnectionOperation.CONNECT -> connectSeconds
+            BleConnectionOperation.MTU_NEGOTIATION -> mtuNegotiationSeconds
             BleConnectionOperation.SERVICE_DISCOVERY -> serviceDiscoverySeconds
             BleConnectionOperation.CHARACTERISTIC_DISCOVERY -> characteristicDiscoverySeconds
             BleConnectionOperation.NOTIFICATION_SUBSCRIPTION -> notificationSubscriptionSeconds

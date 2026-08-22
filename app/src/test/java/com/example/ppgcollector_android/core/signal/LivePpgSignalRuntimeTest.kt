@@ -10,7 +10,6 @@ import kotlin.math.PI
 import kotlin.math.sin
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -76,7 +75,7 @@ class LivePpgSignalRuntimeTest {
     }
 
     @Test
-    fun gapResetsProcessingButRetainsBoundedDisplayHistoryAtomically() {
+    fun gapMarksDisplayButDoesNotRestartAcceptedSampleMetrics() {
         val runtime = LivePpgSignalRuntime()
         var beforeGap: LiveMetricAnalysisRequest? = null
         repeat(800 / CupBatchProtocolV1.samplesPerFrame) { frameIndex ->
@@ -99,8 +98,8 @@ class LivePpgSignalRuntimeTest {
 
         assertNull(gap.metricRequest)
         assertNotNull(gap.waveform)
-        assertFalse(runtime.isCurrent(beforeGap!!))
-        assertEquals(20L, runtime.continuousSamples)
+        assertTrue(runtime.isCurrent(beforeGap!!))
+        assertEquals(820L, runtime.continuousSamples)
         assertEquals(800, runtime.bufferedSampleCount)
         assertEquals(1L, gap.waveform!!.gapCount)
         assertEquals(800, gap.waveform.red.size)
@@ -120,6 +119,20 @@ class LivePpgSignalRuntimeTest {
         assertArrayEquals(intArrayOf(780), gap.waveform.segmentBreakSampleIndices)
         assertEquals(20L, gap.waveform.sourceSampleStartIndex)
         assertEquals(819L, gap.waveform.sourceSampleEndIndex)
+
+        var afterGapRequest: LiveMetricAnalysisRequest? = null
+        repeat(4) { offset ->
+            val sampleStart = 820 + offset * CupBatchProtocolV1.samplesPerFrame
+            afterGapRequest = runtime.ingest(
+                decodedFrames = listOf(frame(43 + offset, sampleStart)),
+                acceptedSampleStartIndex = sampleStart.toLong(),
+                measuredAt = measuredAt,
+                nowNanos = 8_200_000_000L + offset * 200_000_000L,
+            ).metricRequest ?: afterGapRequest
+        }
+        assertNotNull(afterGapRequest)
+        assertEquals(2L, afterGapRequest!!.metricEpoch)
+        assertEquals(899L, afterGapRequest!!.windowEndSampleIndex)
     }
 
     @Test

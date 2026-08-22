@@ -1,6 +1,8 @@
 package com.example.ppgcollector_android
 
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
+import com.example.ppgcollector_android.data.session.CaptureGateDiskSnapshot
+import com.example.ppgcollector_android.data.session.CaptureStartFailure
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -76,5 +78,33 @@ class CaptureUiPolicyTest {
     @Test
     fun decimalInputAllowsOnlyOneDecimalSeparator() {
         assertEquals("170.25", decimalInput("170..2cm5"))
+    }
+
+    @Test
+    fun duplicateRuntimeFailureIsScopedToTheNameConfirmedByDisk() {
+        val failure = CaptureStartFailure.SessionAlreadyExists
+        val existing = CaptureGateDiskSnapshot(
+            duplicate = true,
+            logicalDuplicate = true,
+            availableBytes = Long.MAX_VALUE,
+            sessionName = "PPG-A-1",
+        )
+        assertEquals(failure, scopedCaptureRuntimeFailure(failure, "PPG-A-1", existing))
+        assertEquals(null, scopedCaptureRuntimeFailure(failure, "PPG-A-2", existing))
+        assertEquals(
+            null,
+            scopedCaptureRuntimeFailure(
+                failure,
+                "PPG-A-1",
+                existing.copy(duplicate = false),
+            ),
+        )
+    }
+
+    @Test
+    fun dirtyParticipantDraftIsRetainedOnlyWithinTheSameSubject() {
+        assertEquals(false, shouldPrefillParticipantDraft("A", "A", "A"))
+        assertEquals(true, shouldPrefillParticipantDraft("A", "A", "B"))
+        assertEquals(true, shouldPrefillParticipantDraft("A", null, "A"))
     }
 }

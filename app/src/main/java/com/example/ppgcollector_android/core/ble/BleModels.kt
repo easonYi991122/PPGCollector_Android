@@ -3,6 +3,20 @@ package com.example.ppgcollector_android.core.ble
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import java.time.Instant
 
+/** Low-frequency counters used to classify live-stream faults without retaining per-frame logs. */
+data class LiveStreamDiagnostics(
+    val decodedFrameCount: Long = 0,
+    val lastSequenceNumber: UInt? = null,
+    val lastSequenceStep: Long? = null,
+    val gapEventCount: Long = 0,
+    val estimatedMissingFrameCount: Long = 0,
+    val duplicateFrameCount: Long = 0,
+    val outOfOrderFrameCount: Long = 0,
+    val decoderDiscardedByteCount: Long = 0,
+    val decoderInvalidFrameCount: Long = 0,
+    val appDroppedChunkCount: Long = 0,
+)
+
 object BleAdvertisedIdentity {
     const val NORDIC_UART_SERVICE = "Nordic_UART_Service"
 
@@ -84,6 +98,20 @@ enum class BluetoothAvailability(val title: String) {
     POWERED_ON("蓝牙可用"),
 }
 
+enum class BleMtuNegotiationStatus {
+    NOT_REQUESTED,
+    REQUESTING,
+    NEGOTIATED,
+    FALLBACK,
+}
+
+data class BleMtuSnapshot(
+    val requestedMtu: Int = CupBleGattStateMachine.REQUESTED_ATT_MTU,
+    val negotiatedMtu: Int? = null,
+    val status: BleMtuNegotiationStatus = BleMtuNegotiationStatus.NOT_REQUESTED,
+    val message: String? = null,
+)
+
 sealed interface BleConnectionPhase {
     val deviceId: String?
     val isBusy: Boolean
@@ -96,6 +124,11 @@ sealed interface BleConnectionPhase {
     }
 
     data class Connecting(override val deviceId: String) : BleConnectionPhase {
+        override val isBusy = true
+        override val isReadyToDisconnect = false
+    }
+
+    data class NegotiatingMtu(override val deviceId: String) : BleConnectionPhase {
         override val isBusy = true
         override val isReadyToDisconnect = false
     }

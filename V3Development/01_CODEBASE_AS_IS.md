@@ -1,6 +1,6 @@
 # 当前代码事实（以 app/src 为准）
 
-阅读日期：2026-08-19。本文件只记录当时 Kotlin 实现，不引用旧移植状态文档。
+阅读日期：2026-08-22。本文件以 Kotlin 实现和文末逐轮补充为准，不引用旧移植状态文档。
 
 包名：`com.example.ppgcollector_android`  
 主代码：`app/src/main/java/com/example/ppgcollector_android/`
@@ -205,6 +205,37 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - 普通 sequence gap 会重置指标预处理、HR/SQI/Combo warmup并保留 segment marker，但不会清空 display causal/fixed 的有界显示状态。FIXED 在初始右侧上下文 warmup 时可先选择，准备完成自动切换；fixed 的断点按其延迟后的 source cursor 映射。
 - ECG wire/CSV 继续保留需求定义的原始 uint32。显示新增有状态 5:1 boxcar（500 Hz 每五点均值到 100 Hz），跨 BLE chunk 保持相位；显示点不会超出对应五个 raw 输入的最小/最大值。若同一时间的 `_ecg.csv` 已含尖峰，应转查开发板/ADS1292R 前端。
 - R7 完整门禁为 204 JVM tests、0 failure/skip，lint 0 error；Debug、AndroidTest、Release 与 release privacy/lifecycle/BLE contracts 均成功。真实设备上的帧时序、主观滚动流畅度和 ECG CSV 对点仍待测。
+
+## R8 实际实现补充（2026-08-22）
+
+- 实时绘图仍保留最近 800 点，但纵轴不再由整个显示窗口控制：未满 800 点时参考最近最多 200 点，满 800 点后参考最近 600 点；RAW 数值仍仅取负，历史点本身不做视窗相关变换。
+- R7 所述“普通 sequence gap 重置指标 warmup”已由本轮替代。`LivePpgSignalRuntime` 现在把 wire gap 作为数据完整性事件：累计 gap/missing、切断绘图 path，但保留同一有序 accepted-sample ring、预处理状态和 800/100 指标调度。只有本地 accepted cursor 丢失、App preview/analysis 队列丢输入、连接/协议代际切换或处理失败才执行硬重置并清除旧指标；preview 溢出会丢弃其过期 backlog，但不影响独立的 recording raw sink。
+- sequence-gap 标记仍保留用于真机诊断，但已从贯穿波形的竖线移到每个波形面板下方的独立短刻度带，不参与纵轴，也不连接断点两侧 path。
+- Preview 与 recording 的低频快照新增链路诊断：解码帧数、最近 UInt32 `seq/Δ`、gap/估算缺帧、duplicate/out-of-order、decoder 丢弃字节/坏帧和 App 队列丢块。诊断跟随既有约 5 Hz 发布节流，不保留逐帧日志。
+- 诊断口径：`App 丢块 > 0` 优先排查 App 消费压力；decoder 丢弃/坏帧大于 0 排查通知字节流或帧边界；二者为 0 而 `Δ != 1` 表示 App 收到的完整帧序号已不连续，仍需用板端日志区分开发板发送和 BLE 链路丢通知。
+- 未扫描时的残留卡顿按用户决定暂缓，R8 未继续修改该路径。真实设备的序号来源和 ECG CSV 对点仍待测。
+
+## R8.1 实际实现补充（2026-08-22）
+
+- R8 的 200/600 规则继续生成每帧候选范围，但 RED/IR RAW 不再让约 5 Hz 更新的候选 min/max 直接替换当前坐标轴。
+- 每个 preview/recording 来源、signal generation、显示模式和通道独立持有 `LiveRawWaveformAxisRuntime`。首次 RAW 候选建立固定中心和 15% 安全边距；候选位于当前轴内时上下界完全不变，越界时保持中心并至少按 25% 阶梯对称扩展，本来源内不自动收缩。
+- 因此真实 ADC 基线变化会表现为波形相对固定轴移动，而滚动极值的进入/退出不会再让纵轴追随并制造缓慢上移/回跳。状态机只返回绘图范围，不写 waveform array、指标、BLE 或文件。
+- CAUSAL/FIXED/ECG 继续使用 R8 的即时候选范围；未扫描卡顿和信号算法不在 R8.1 范围。
+
+## R8.2 实际实现补充（2026-08-22）
+
+- M7.6 已有的录制中手工 BP 时间冻结、dialog、controller 幂等提交和 `blood-pressure.csv` 仍然完整；R8.2 将「血压记录」按钮重新接回录制底栏。录制前 BP 已在 R9 转为开始时第 0 条手工事件。
+- 实时 gap marker 仍在波形面板下方的 7 dp 独立 strip；生理曲线不再在每个 marker 处切成大量短 path，避免高 gap 滚动时的闪烁/碎片感。gap/missing 数字证据不变。
+- 低频诊断行新增两个估算比例：缺帧率使用 `missing/(decoded+missing)`，异常帧率使用 `(missing+duplicate+out-of-order+invalid)/(decoded+missing+invalid)`。decoder 弃字节和 App 丢块无法准确换算帧数，仍保留独立计数。
+- 离线 raw replay 在 gap 时使用了与实时 metric/BP 不同的时钟，并将密集 gap 全部作为硬分段；该剩余缺口属于 R10。
+
+## R9/R9.1 实际实现补充（2026-08-22）
+
+- GATT 连接后先请求 ATT `MTU=247`，收到实际 MTU 或失败/5 s 超时后再发现服务；拒绝和超时只进入 FALLBACK，不单独断开。Android 14+ 可能返回 517，诊断显示请求值与实际值。该能力不能证明板端 sequence gap 已修复。
+- 完整录前 BP 在 writer 接受会话时同时保留 metadata，并写入 `blood-pressure.csv` 的第 0 条、source time/index 0；录中 dialog 从第 1 条继续追加。两路可以在同一会话共存。
+- `notes` 与录前 BP 是会话字段：notes 不再写入/回填 subject profile；实际录制进入终态后清空 BP、notes 和未提交 dialog。重名 runtime failure 只在当前名称与磁盘事实匹配时进入 gate，完成终态立即使缓存失效。
+- 定时录制无效时长现在是 typed gate failure，不再静默回落到 60 s。participant dirty 状态按 canonical subject 作用，同一 subject 换序号可保留编辑，切换 subject 必须重新加载对应 profile。
+- metadata 新增 optional `record_mode`；详情页从 stem 显示 PPG/MB，补齐模式、计划/实际时长、生活方式、notes、录前会话级 BP 和时间轴 BP 事件数。旧 metadata 不猜测模式。
 
 ## R7 后代码结构审计（2026-08-20）
 

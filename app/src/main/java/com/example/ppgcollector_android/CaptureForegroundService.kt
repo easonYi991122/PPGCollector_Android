@@ -35,6 +35,7 @@ import com.example.ppgcollector_android.data.session.CaptureStorageCapacityProvi
 import com.example.ppgcollector_android.data.session.CaptureStopReason
 import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
 import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
+import com.example.ppgcollector_android.data.session.sessionScopedParticipantFields
 import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
 import com.example.ppgcollector_android.data.session.CaptureRecordMode
 import com.example.ppgcollector_android.data.session.SubjectProfileStore
@@ -73,6 +74,7 @@ class CaptureForegroundService : Service() {
             this@CaptureForegroundService.waveformFlow()
         fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?> =
             this@CaptureForegroundService.runtimeFailureFlow()
+        fun clearRuntimeFailure(): Unit = this@CaptureForegroundService.clearRuntimeFailure()
         fun stop(): Unit = this@CaptureForegroundService.stopRecording(CaptureStopReason.USER)
         fun captureReferenceTimestamp(
             dialogOpenUtc: Instant = Instant.now(),
@@ -167,6 +169,10 @@ class CaptureForegroundService : Service() {
     fun waveformFlow(): StateFlow<LiveWaveformSnapshot> = recordingController.waveformSnapshot
 
     fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?> = _runtimeFailure
+
+    private fun clearRuntimeFailure() {
+        _runtimeFailure.value = null
+    }
 
     fun captureReferenceTimestamp(
         dialogOpenUtc: Instant = Instant.now(),
@@ -346,11 +352,14 @@ class CaptureForegroundService : Service() {
                     additionalFields = participant.additionalFields,
                 )
             }.getOrNull() ?: return@launch
-            val updated = saved.latest?.asParticipantSnapshot(subject)?.copy(sequence = participant.sequence)
-            if (updated != null) {
-                kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
-                    recordingController.updateParticipantProfile(updated)
-                }
+            val latest = saved.latest ?: return@launch
+            val updated = latest.asParticipantSnapshot(subject).copy(
+                sequence = participant.sequence,
+                additionalFields = latest.additionalFields +
+                    participant.additionalFields.sessionScopedParticipantFields(),
+            )
+            kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+                recordingController.updateParticipantProfile(updated)
             }
         }
     }

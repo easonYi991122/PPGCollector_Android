@@ -559,6 +559,7 @@ class CaptureSessionWriter(
             participant = participantSnapshot,
             systolicBp = this.configuration.systolicBp,
             diastolicBp = this.configuration.diastolicBp,
+            recordMode = this.configuration.recordMode,
             plannedDurationSeconds = this.configuration.plannedDurationSeconds,
             ecgSampleRateHz = ecgInitialized.takeIf { it }?.let { CaptureEcgCsv.sampleRateHz },
         )

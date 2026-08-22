@@ -1,9 +1,62 @@
 # V3.0 开发状态（简版）
 
-更新：2026-08-20
-当前轮次：**V3.R7（代码与完整门禁已完成；真机复验待执行）**
+更新：2026-08-22
+当前轮次：**V3.R9/R9.1（编码与完整自动门禁已完成；等待 R9 真机节点）**
 
-> 本文件后面的 R6/R5.1 记录保留作历史基线；以下先记录 R7 实际状态。
+> 本文件后面的 R8.2/R8.1/R8/R7/R6/R5.1 记录保留作历史基线；以下先记录 R9/R9.1 实际状态。
+
+## R9/R9.1 本轮落地
+
+- Android GATT 在连接成功后、服务发现前请求 ATT `MTU=247`；记录实际回调值。请求被拒、回调失败或 5 s 超时均显示 FALLBACK 并继续服务发现，不因 MTU 单项失败断开。fake BLE 覆盖请求顺序、实际 517、拒绝、超时和迟到回调。
+- 录前完整 BP 在会话 writer 接受时写成第 0 条手工 BP 事件（source index/time 为 0，UTC 使用 started time），录中事件从第 1 条继续；metadata BP 仍保留，二者可同会话共存。
+- BP、notes 与未提交 BP dialog 在实际录制进入 FINALIZED/FAILED 后清空；notes 从 subject profile 保存与回填中过滤。人口学和生活方式资料仍可按同一 subject 继承。
+- gate 磁盘事实带被评估名称，录制终态立即 invalidate/刷新；service duplicate failure 仅在当前名称仍匹配事实时参与 gate，改名/表单修改会清除事务失败。无效定时时长进入 typed gate，不再回落 60 s；dirty draft 只在同一 canonical subject 内保留。
+- metadata 新增 optional `record_mode`，恢复副本保留；详情页补齐 PPG/MB、模式、计划/实际时长、吸烟/饮酒、notes、录前会话级 BP 和手工时间轴事件数，旧会话模式显示「未记录」。
+
+## R9/R9.1 JVM/构建验收
+
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；223 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 均成功。
+- 未执行真机。真机节点需同一会话录前 BP + 两条录中 BP，核对停止后 BP/notes 清空、原名即时重复、改名解除、详情三条事件，并同时记录 MTU 请求/实际/FALLBACK 和 gap 诊断。该节点通过前不进入 R10。
+
+## R8.2 本轮落地
+
+- 录制中手工 BP 的 M7.6 底层契约一直存在，本轮恢复底栏「血压记录」入口。录制前 BP 转开始时事件、表单清理和 gate 失效在 R9 实施。
+- 实时波形不再在每个 sequence gap 处主动切断 path；高 gap 滚动时的大量短段闪烁因素已移除。gap 依然以独立图下短刻度带和诊断数字呈现，不覆盖生理曲线。
+- 诊断行增加缺帧率和异常帧率估算；无帧证据时显示「—」。App 丢块和 decoder 弃字节仍单独显示，不做不可证的帧数换算。
+- 开发规划已将剩余任务限定为 R9–R10 两轮：R9 收口双路 BP/表单/gate/详情元数据，R10 收口 gap-aware repaired signal、指标来源和详情 marker 层级。每轮各有一个真机验证节点。
+
+## R8.2 JVM/构建验收
+
+- 定向 `LiveWaveformComponentsTest` 通过；覆盖 marker 映射、诊断证据、比例分母和空证据。
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；214 JVM tests、0 failure/error/skip，lint 通过，Debug、AndroidTest、Release 与 release privacy/lifecycle/BLE contracts 均成功。
+- 未执行真机。R9 编码完成后执行第一个真机节点，未通过前不进入 R10。
+
+## R8.1 本轮落地
+
+- 剩余 RAW“漂移”仍来自坐标轴：R8 虽只参考最近 200/600 点，但 `WaveformPanel` 每约 200 ms 直接采用新 min/max，滚动极值会移动纵轴中心，使未改变的历史 ADC 点在屏幕上缓慢上移或偶发回跳。
+- RED/IR RAW 现使用有状态坐标轴：按 preview/recording 来源、signal generation、模式和通道隔离；首次候选建立固定中心和 15% 余量；范围内波动不改上下界；越界时保持中心、至少按 25% 阶梯对称扩展；本来源内不自动缩轴。
+- R8 的 200/600 候选窗、RAW 逐点取负、800 点显示 ring 均保留。CAUSAL/FIXED/ECG、指标、BLE、录制和 CSV 未改变。
+
+## R8.1 JVM/构建验收
+
+- 新增纯状态测试：候选轻微双向移动时范围逐位保持；单边越界时中心不变并对称阶梯扩展；后续候选收窄不缩轴；新状态重新定标。
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；212 JVM tests、0 failure/error/skip，lint 0 issue，Debug、AndroidTest、Release 与 release privacy/lifecycle/BLE contracts 均成功。
+- 未执行真机。复验时应同时观察 RAW 右上角 ADC 数值与曲线：ADC 稳定而历史曲线整体移动才属于坐标轴问题；ADC 同步变化则是真实输入变化。
+
+## R8 本轮落地
+
+- RAW 数据值继续保持仅取负显示，没有重新引入逐窗口去趋势。实时面板仍绘制最新 800 点，但纵轴在未满 800 点时只参考最近最多 200 点，满 800 点后只参考最近 600 点；较老异常值退出参考窗后不再持续牵动整窗缩放。
+- 波形与指标确认共用 `LivePpgSignalRuntime` 的同一 accepted-sample ring。普通 wire sequence gap 现在只累计 gap/missing 并切断绘图 path，不再清空 800 点指标 warmup、预处理或 fixed-lag；本地 accepted cursor 丢失、App preview/analysis 队列丢输入、协议/连接 generation 切换或处理失败仍硬重置，并立即清除旧指标。Preview 溢出会清掉其过期 backlog，独立 recording raw sink 不受影响。
+- 原先贯穿波形的“竖线”已明确为 sequence-gap marker，并移到每个 RED/IR/ECG 面板下方的独立短刻度带；marker 不参与纵轴，波形本身仍在断点处断开。
+- Preview 与 recording 快照新增一行低频诊断：已解码帧、最近完整 UInt32 `seq/Δ`、gap/缺帧、重复/乱序、decoder 丢弃字节/坏帧、App 队列丢块。诊断随既有波形/录制进度节流发布，没有逐包日志或无界集合。
+- 真机判读：`App 丢块 > 0` 指向软件消费压力；decoder 丢弃/坏帧大于 0 指向字节流/帧边界；两者为 0 但 `Δ != 1` 表示 App 收到的完整帧序号已不连续，需结合板端日志再区分开发板发送和 BLE 链路丢通知。
+- 未扫描时残留卡顿依用户决定暂缓，本轮没有继续修改该路径。
+
+## R8 JVM/构建验收
+
+- 定向覆盖：纵轴 200/600 边界；普通 gap 后指标计数继续增长并在 800 点产出；本地 cursor 丢失仍硬重置；高频 ADS gap 下 preview/recording 均填满波形并生成指标；序号、decoder 损伤与 App queue overflow 诊断；图下 marker 映射与诊断文案。
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；211 JVM tests、0 failure/error/skip，lint 0 issue，Debug、AndroidTest、Release 与 release privacy/lifecycle/BLE contracts 均成功。
+- 未执行真机。下一次真机需要在问题发生时记录详细模式下的诊断行，并导出对应问题会话；ECG 异常仍需把屏幕时刻与 `_ecg.csv` 同时间点对照。
 
 ## R7 本轮落地
 
@@ -43,7 +96,7 @@
 ## 当前事实
 
 - Android 采集 App 已能扫描/连接 CUP（名称前缀 `CUP`）和 `Nordic_UART_Service`（NUS），解析 CUP batch 168、Nordic sensor packet 168、以及 ads1292r 120（CUP 名前缀与 Nordic 精确名均可锁定）。
-- R1–R7 产品与稳定性修正已落地；当前实现以 `app/src` 与本状态文件为准。
+- R1–R8.1 产品与稳定性修正已落地；当前实现以 `app/src` 与本状态文件为准。
 - Combo SQI Python 全量对齐、部分离线分析回归失败不在本轮。
 - 规划与参考已收口到 `V3Development/`。旧 iOS 移植文档在 `archive/2026-08-ios-migration/`。
 

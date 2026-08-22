@@ -253,7 +253,9 @@ tasks.register("verifyReleaseLifecycleContract") {
             "fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?>",
             "runtimeFailure = localBinder.runtimeFailureFlow().value",
             "runtimeFailureJob = observeRuntimeFailure(localBinder)",
-            "?: service.runtimeFailure",
+            "val runtimeFailure = scopedCaptureRuntimeFailure(",
+            "+ listOfNotNull(notificationFailure, runtimeFailure)",
+            "serviceClient.clearRuntimeFailure()",
         )
         val missingFailureFlow = requiredFailureFlowFragments.filterNot { fragment ->
             source.contains(fragment) || viewModelSource.contains(fragment)
@@ -270,7 +272,7 @@ tasks.register("verifyReleaseLifecycleContract") {
             appendLine("stop_observer=capture_recording_snapshot_flow")
             appendLine("notification_action=immutable_stop_and_save")
             appendLine("on_destroy=cancel_observer_then_close_controller_then_remove_foreground")
-            appendLine("runtime_failure=service_stateflow_to_capture_gate")
+            appendLine("runtime_failure=service_stateflow_scoped_to_current_capture_gate")
             appendLine("status=passed")
         }
         releaseLifecycleContractReport.get().asFile.apply {

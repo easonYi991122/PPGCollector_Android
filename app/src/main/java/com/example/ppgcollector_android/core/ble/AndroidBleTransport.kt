@@ -162,6 +162,19 @@ class AndroidBleTransport(
             }
         }
 
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            post {
+                if (!isCurrentGatt(gatt)) return@post
+                emit(
+                    BleTransportEvent.MtuChanged(
+                        deviceId = gatt.device.address,
+                        mtu = mtu,
+                        errorMessage = if (status == BluetoothGatt.GATT_SUCCESS) null else "GATT status=$status",
+                    ),
+                )
+            }
+        }
+
         override fun onDescriptorWrite(
             gatt: BluetoothGatt,
             descriptor: BluetoothGattDescriptor,
@@ -317,6 +330,25 @@ class AndroidBleTransport(
             } catch (_: SecurityException) {
                 releaseGatt(deviceId, gatt, disconnect = false)
                 emit(BleTransportEvent.Disconnected(deviceId, "未获得蓝牙连接权限"))
+            }
+        }
+    }
+
+    override fun requestMtu(mtu: Int, deviceId: String) {
+        post {
+            val gatt = gattsById[deviceId]
+            if (gatt == null) {
+                emit(BleTransportEvent.MtuChanged(deviceId, null, "GATT unavailable"))
+                return@post
+            }
+            try {
+                if (!gatt.requestMtu(mtu)) {
+                    emit(BleTransportEvent.MtuChanged(deviceId, null, "MTU request rejected"))
+                }
+            } catch (_: SecurityException) {
+                emit(BleTransportEvent.MtuChanged(deviceId, null, "未获得蓝牙连接权限"))
+            } catch (error: IllegalArgumentException) {
+                emit(BleTransportEvent.MtuChanged(deviceId, null, error.message ?: "invalid MTU"))
             }
         }
     }

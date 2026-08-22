@@ -28,7 +28,7 @@ object CaptureRecordModePolicy {
         } else {
             text.toIntOrNull()?.takeIf {
                 it in minimumDurationSeconds..maximumDurationSeconds
-            } ?: defaultDurationSeconds
+            }
         }
 
     fun remainingSeconds(

@@ -6,11 +6,8 @@ import org.junit.Test
 
 class CaptureRecordModePolicyTest {
     @Test
-    fun timedDurationUsesDefaultForInvalidInputAndAcceptsBounds() {
-        assertEquals(
-            CaptureRecordModePolicy.defaultDurationSeconds,
-            CaptureRecordModePolicy.effectiveDurationSeconds(CaptureRecordMode.TIMED, "9"),
-        )
+    fun timedDurationRejectsInvalidInputAndAcceptsBounds() {
+        assertNull(CaptureRecordModePolicy.effectiveDurationSeconds(CaptureRecordMode.TIMED, "9"))
         assertEquals(
             CaptureRecordModePolicy.minimumDurationSeconds,
             CaptureRecordModePolicy.effectiveDurationSeconds(

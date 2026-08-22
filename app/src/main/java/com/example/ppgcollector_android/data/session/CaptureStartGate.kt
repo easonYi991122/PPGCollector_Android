@@ -14,6 +14,7 @@ sealed interface CaptureStartFailure {
     data object NotificationPermissionDenied : CaptureStartFailure
     data object SessionAlreadyExists : CaptureStartFailure
     data object LogicalSessionAlreadyExists : CaptureStartFailure
+    data class InvalidPlannedDuration(val detail: String) : CaptureStartFailure
     data class ParticipantIncomplete(val fields: List<String>) : CaptureStartFailure
     data object InsufficientStorage : CaptureStartFailure
 }
@@ -39,6 +40,8 @@ data class CaptureStartContext(
     val participant: CaptureParticipantDraft? = null,
     val sessionNameIsDuplicate: Boolean? = null,
     val sessionNameIsLogicalDuplicate: Boolean? = null,
+    val recordMode: CaptureRecordMode = CaptureRecordMode.MANUAL,
+    val plannedDurationSeconds: Int? = null,
 )
 
 object CaptureStartGate {
@@ -65,6 +68,7 @@ object CaptureStartGate {
         context.participant?.blockingValidationErrors()
             ?.takeIf { it.isNotEmpty() }
             ?.let { add(CaptureStartFailure.ParticipantIncomplete(it)) }
+        plannedDurationFailure(context)?.let(::add)
         if (context.availableBytes != null &&
             context.availableBytes < CaptureSessionWriterPolicy.minimumAvailableCapacityBytes
         ) add(CaptureStartFailure.InsufficientStorage)
@@ -96,6 +100,7 @@ object CaptureStartGate {
         context.participant?.blockingValidationErrors()
             ?.takeIf { it.isNotEmpty() }
             ?.let { return CaptureStartFailure.ParticipantIncomplete(it) }
+        plannedDurationFailure(context)?.let { return it }
         if (context.availableBytes != null &&
             context.availableBytes < CaptureSessionWriterPolicy.minimumAvailableCapacityBytes
         ) {
@@ -103,12 +108,29 @@ object CaptureStartGate {
         }
         return null
     }
+
+    private fun plannedDurationFailure(context: CaptureStartContext): CaptureStartFailure? {
+        if (context.recordMode == CaptureRecordMode.MANUAL) return null
+        val duration = context.plannedDurationSeconds
+        return if (duration == null ||
+            duration !in CaptureRecordModePolicy.minimumDurationSeconds..
+                CaptureRecordModePolicy.maximumDurationSeconds
+        ) {
+            CaptureStartFailure.InvalidPlannedDuration(
+                "录制时长范围：${CaptureRecordModePolicy.minimumDurationSeconds}–" +
+                    "${CaptureRecordModePolicy.maximumDurationSeconds} 秒",
+            )
+        } else {
+            null
+        }
+    }
 }
 
 internal data class CaptureGateDiskSnapshot(
     val duplicate: Boolean,
     val logicalDuplicate: Boolean,
     val availableBytes: Long?,
+    val sessionName: String? = null,
 )
 
 internal class CaptureGateDiskCache(
@@ -136,6 +158,7 @@ internal class CaptureGateDiskCache(
                 duplicate = SessionNamePolicy.isDuplicate(name, root),
                 logicalDuplicate = SessionNamePolicy.isLogicalDuplicate(name, root),
                 availableBytes = runCatching { Files.getFileStore(capacityRoot).usableSpace }.getOrNull(),
+                sessionName = name,
             )
             lastName = name
             lastAtMs = now

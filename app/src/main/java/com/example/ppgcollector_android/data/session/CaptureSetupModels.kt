@@ -6,6 +6,14 @@ enum class CaptureParticipantValidationCategory {
     REFERENCE_BLOOD_PRESSURE,
 }
 
+const val SESSION_NOTES_FIELD = "notes"
+
+fun Map<String, String>.withoutSessionScopedParticipantFields(): Map<String, String> =
+    filterKeys { it != SESSION_NOTES_FIELD }
+
+fun Map<String, String>.sessionScopedParticipantFields(): Map<String, String> =
+    filterKeys { it == SESSION_NOTES_FIELD }
+
 data class CaptureParticipantValidationIssue(
     val category: CaptureParticipantValidationCategory,
     val message: String,
@@ -34,7 +42,8 @@ data class CaptureParticipantDraft(
                 weightKg = snapshot?.weightKg?.toString().orEmpty(),
                 smokingFreq = snapshot?.smokingFreq.orEmpty(),
                 drinkingFreq = snapshot?.drinkingFreq.orEmpty(),
-                additionalFields = snapshot?.additionalFields.orEmpty(),
+                additionalFields = snapshot?.additionalFields.orEmpty()
+                    .withoutSessionScopedParticipantFields(),
             )
     }
 
@@ -78,6 +87,12 @@ data class CaptureParticipantDraft(
     fun blockingValidationErrors(): List<String> = validationIssues()
         .filter { it.category != CaptureParticipantValidationCategory.REFERENCE_BLOOD_PRESSURE }
         .map { it.message }
+
+    fun clearSessionScopedFields(): CaptureParticipantDraft = copy(
+        systolicBp = "",
+        diastolicBp = "",
+        additionalFields = additionalFields.withoutSessionScopedParticipantFields(),
+    )
 
     fun toSnapshot(
         identity: CanonicalSessionIdentity?,

@@ -18,6 +18,7 @@ import com.example.ppgcollector_android.data.session.CaptureStartGate
 import com.example.ppgcollector_android.data.session.CaptureGateDiskCache
 import com.example.ppgcollector_android.data.session.CaptureGateDiskSnapshot
 import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.data.session.CaptureRecordingState
 import com.example.ppgcollector_android.data.session.CaptureRecordMode
 import com.example.ppgcollector_android.data.session.CaptureRecordModePolicy
 import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
@@ -98,6 +99,7 @@ private fun CaptureStartFailure.message(): String = when (this) {
         "通知权限未授予，请允许通知后再开始录制，否则持续采集状态可能无法显示"
     CaptureStartFailure.SessionAlreadyExists -> "会话名已存在"
     CaptureStartFailure.LogicalSessionAlreadyExists -> "次数重复：当前前缀下该被试的采集序号已存在"
+    is CaptureStartFailure.InvalidPlannedDuration -> detail
     is CaptureStartFailure.ParticipantIncomplete ->
         "请补齐被试信息必填项：${fields.joinToString("、")}"
     CaptureStartFailure.InsufficientStorage -> "可用存储不足"
@@ -238,6 +240,11 @@ class CaptureServiceClient(
     fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
         binder?.updateParticipantProfile(participant) == true
 
+    fun clearRuntimeFailure() {
+        binder?.clearRuntimeFailure()
+        _state.update { it.copy(runtimeFailure = null) }
+    }
+
     private fun observeRecording(localBinder: CaptureForegroundService.LocalBinder): Job =
         scope.launch {
             localBinder.recordingFlow().collect { recording ->
@@ -300,6 +307,12 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val participant: CaptureParticipantDraft,
     )
 
+    private data class CaptureGateForm(
+        val participant: CaptureParticipantDraft,
+        val recordMode: CaptureRecordMode,
+        val plannedDurationText: String,
+    )
+
     private val collectorApplication = application as PpgCollectorApplication
     private val serviceClient = CaptureServiceClient(application, viewModelScope)
     private val _sessionName = MutableStateFlow("")
@@ -314,7 +327,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private val _plannedDurationText = MutableStateFlow(
         CaptureRecordModePolicy.defaultDurationSeconds.toString(),
     )
-    private var participantDraftDirty = false
+    private var participantDraftSubject: String? = null
+    private var participantDraftDirtySubject: String? = null
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
     private val _gateDiskSnapshot = MutableStateFlow(CaptureGateDiskSnapshot(false, false, null))
     private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
@@ -325,6 +339,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private var gateDiskJob: Job? = null
     private var participantPrefillJob: Job? = null
     private var firstActivityStart = true
+    private var pendingSessionScopedClearName: String? = null
+    private var recordingAcceptedForPendingSession = false
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
     val serviceStatus: StateFlow<CaptureServiceStatusObservation> = serviceClient.state
@@ -360,6 +376,13 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         _sessionName.value = "${_sessionPrefix.value.wireValue}-${SessionNamePolicy.exampleSuggestedName.substringAfter('-')}"
         initializeCaptureForm()
         viewModelScope.launch {
+            val gateForm = combine(
+                _participantDraft,
+                _recordMode,
+                _plannedDurationText,
+            ) { participant, recordMode, duration ->
+                CaptureGateForm(participant, recordMode, duration)
+            }
             combine(
                 combine(_sessionName, _gateDiskSnapshot) { name, disk -> name to disk },
                 collectorApplication.bleCoordinator.snapshotFlow
@@ -367,23 +390,25 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                     .distinctUntilChanged(),
                 serviceStatus,
                 _notificationPermissionFailure,
-                _participantDraft,
-            ) { nameAndDisk, bleSlice, service, notificationFailure, participant ->
+                gateForm,
+            ) { nameAndDisk, bleSlice, service, notificationFailure, form ->
                 val name = nameAndDisk.first
                 val disk = nameAndDisk.second
-                // Keep the release lifecycle contract's terminal fallback
-                // explicit even while both failure sources remain visible.
-                val runtimeFailure = notificationFailure ?: service.runtimeFailure
+                val runtimeFailure = scopedCaptureRuntimeFailure(
+                    service.runtimeFailure,
+                    name,
+                    disk,
+                )
                 val failures = evaluateGate(
                     name,
                     disk,
                     bleSlice.first,
                     bleSlice.second,
                     service.recording,
-                    participant,
-                ) + listOfNotNull(notificationFailure, service.runtimeFailure, runtimeFailure.takeIf {
-                    it != notificationFailure && it != service.runtimeFailure
-                })
+                    form.participant,
+                    form.recordMode,
+                    form.plannedDurationText,
+                ) + listOfNotNull(notificationFailure, runtimeFailure)
                 CaptureGateUiState(
                     sessionName = name,
                     failures = failures,
@@ -391,12 +416,50 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 )
             }.collect { _captureGate.value = it }
         }
+        viewModelScope.launch {
+            serviceStatus
+                .map { it.recording.state to it.runtimeFailure }
+                .distinctUntilChanged()
+                .collect { (state, runtimeFailure) ->
+                    if (state == CaptureRecordingState.RECORDING || state == CaptureRecordingState.STOPPING) {
+                        recordingAcceptedForPendingSession = pendingSessionScopedClearName != null
+                    }
+                    if ((state == CaptureRecordingState.FINALIZED || state == CaptureRecordingState.FAILED) &&
+                        recordingAcceptedForPendingSession
+                    ) {
+                        clearSessionScopedFormAfterRecording()
+                    }
+                    if (runtimeFailure == CaptureStartFailure.SessionAlreadyExists ||
+                        runtimeFailure == CaptureStartFailure.LogicalSessionAlreadyExists
+                    ) {
+                        diskCache.invalidate()
+                        refreshGateDiskSnapshot(immediate = true)
+                    }
+                }
+        }
     }
 
     fun setSessionName(value: String) {
-        _sessionName.value = SessionNamePolicy.normalizeCanonical(value) ?: value
-        SessionNamePolicy.parseCanonical(value)?.let { _sessionPrefix.value = it.prefix }
-        if (!participantDraftDirty) prefillParticipantFor(value)
+        val normalized = SessionNamePolicy.normalizeCanonical(value) ?: value
+        val identity = SessionNamePolicy.parseCanonical(normalized)
+        _sessionName.value = normalized
+        identity?.let { _sessionPrefix.value = it.prefix }
+        if (shouldPrefillParticipantDraft(
+                participantDraftSubject,
+                participantDraftDirtySubject,
+                identity?.subject,
+            )
+        ) {
+            if (identity?.subject != participantDraftSubject) {
+                participantDraftDirtySubject = null
+                participantDraftSubject = identity?.subject
+                // Do not leave the previous subject's values startable while
+                // the new profile is being read on the I/O dispatcher.
+                _participantDraft.value = CaptureParticipantDraft()
+            }
+            prefillParticipantFor(normalized)
+        }
+        serviceClient.clearRuntimeFailure()
         refreshGateDiskSnapshot()
     }
 
@@ -433,20 +496,24 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     }
 
     fun setParticipantDraft(value: CaptureParticipantDraft) {
-        participantDraftDirty = true
+        participantDraftSubject = SessionNamePolicy.parseCanonical(_sessionName.value)?.subject
+        participantDraftDirtySubject = participantDraftSubject
         _participantDraft.value = value
+        serviceClient.clearRuntimeFailure()
     }
 
     fun setRecordMode(value: CaptureRecordMode) {
         _recordMode.value = value
+        serviceClient.clearRuntimeFailure()
     }
 
     fun setPlannedDurationText(value: String) {
         _plannedDurationText.value = value.filter(Char::isDigit).take(4)
+        serviceClient.clearRuntimeFailure()
     }
 
     fun resetParticipantDraftFromSubject() {
-        participantDraftDirty = false
+        participantDraftDirtySubject = null
         prefillParticipantFor(_sessionName.value)
     }
 
@@ -522,6 +589,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 ),
             )
         }.onSuccess {
+            pendingSessionScopedClearName = gate.sessionName
+            recordingAcceptedForPendingSession = false
             serviceClient.bind(createIfNeeded = true)
         }.onFailure { error ->
             _captureGate.value = gate.copy(failure = mapCaptureServiceStartFailure(error))
@@ -538,10 +607,11 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             val latest = withContext(Dispatchers.IO) {
                 identity?.let { subjectProfileStore().read(it.subject)?.latest }
             }
-            if (!participantDraftDirty && _sessionName.value == name) {
+            if (participantDraftDirtySubject != identity?.subject && _sessionName.value == name) {
                 _participantDraft.value = CaptureParticipantDraft.fromSnapshot(
                     latest?.asParticipantSnapshot(identity?.subject.orEmpty()),
                 )
+                participantDraftSubject = identity?.subject
             }
         }
     }
@@ -580,8 +650,11 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         freshness: StreamFreshness,
         recording: CaptureRecordingSnapshot,
         participant: CaptureParticipantDraft,
+        recordMode: CaptureRecordMode,
+        plannedDurationText: String,
     ): List<CaptureStartFailure> {
         val root = collectorApplication.sessionsRoot
+        val diskMatchesName = disk.sessionName == name
         return CaptureStartGate.validateAll(
             CaptureStartContext(
                 isRecording = recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.IDLE &&
@@ -591,10 +664,15 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 freshness = freshness,
                 sessionsRoot = root,
                 sessionName = name,
-                availableBytes = disk.availableBytes,
+                availableBytes = disk.availableBytes.takeIf { diskMatchesName },
                 participant = participant,
-                sessionNameIsDuplicate = disk.duplicate,
-                sessionNameIsLogicalDuplicate = disk.logicalDuplicate,
+                sessionNameIsDuplicate = disk.duplicate && diskMatchesName,
+                sessionNameIsLogicalDuplicate = disk.logicalDuplicate && diskMatchesName,
+                recordMode = recordMode,
+                plannedDurationSeconds = CaptureRecordModePolicy.effectiveDurationSeconds(
+                    recordMode,
+                    plannedDurationText,
+                ),
             ),
         )
     }
@@ -624,20 +702,41 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             if (_sessionName.value == bootstrap.initialName) {
                 _sessionName.value = bootstrap.suggestedName
                 _gateDiskSnapshot.value = bootstrap.disk
-                if (!participantDraftDirty) _participantDraft.value = bootstrap.participant
+                val subject = SessionNamePolicy.parseCanonical(bootstrap.suggestedName)?.subject
+                if (participantDraftDirtySubject != subject) {
+                    _participantDraft.value = bootstrap.participant
+                    participantDraftSubject = subject
+                }
             }
         }
     }
 
-    private fun refreshGateDiskSnapshot() {
+    private fun refreshGateDiskSnapshot(immediate: Boolean = false) {
         gateDiskJob?.cancel()
         val name = _sessionName.value
         gateDiskJob = viewModelScope.launch {
-            delay(120L)
-            _gateDiskSnapshot.value = withContext(Dispatchers.IO) {
+            if (!immediate) delay(120L)
+            val next = withContext(Dispatchers.IO) {
                 diskCache.snapshot(name)
             }
+            _gateDiskSnapshot.value = next
+            if (recordingAcceptedForPendingSession &&
+                pendingSessionScopedClearName == name &&
+                next.sessionName == name && next.duplicate
+            ) {
+                clearSessionScopedFormAfterRecording()
+            }
         }
+    }
+
+    private fun clearSessionScopedFormAfterRecording() {
+        _participantDraft.value = _participantDraft.value.clearSessionScopedFields()
+        _bloodPressureReference.value = null
+        pendingSessionScopedClearName = null
+        recordingAcceptedForPendingSession = false
+        serviceClient.clearRuntimeFailure()
+        diskCache.invalidate()
+        refreshGateDiskSnapshot(immediate = true)
     }
 
     override fun onCleared() {
@@ -656,3 +755,23 @@ internal fun mapCaptureServiceStartFailure(error: Throwable): CaptureStartFailur
     } else {
         CaptureStartFailure.DeviceNotReady
     }
+
+internal fun scopedCaptureRuntimeFailure(
+    failure: CaptureStartFailure?,
+    sessionName: String,
+    disk: CaptureGateDiskSnapshot,
+): CaptureStartFailure? = when (failure) {
+    CaptureStartFailure.SessionAlreadyExists -> failure.takeIf {
+        disk.sessionName == sessionName && disk.duplicate
+    }
+    CaptureStartFailure.LogicalSessionAlreadyExists -> failure.takeIf {
+        disk.sessionName == sessionName && disk.logicalDuplicate
+    }
+    else -> failure
+}
+
+internal fun shouldPrefillParticipantDraft(
+    currentDraftSubject: String?,
+    dirtySubject: String?,
+    nextSubject: String?,
+): Boolean = nextSubject != currentDraftSubject || dirtySubject != nextSubject

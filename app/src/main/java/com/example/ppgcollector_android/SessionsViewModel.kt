@@ -22,6 +22,9 @@ import com.example.ppgcollector_android.data.session.CaptureParticipantSnapshot
 import com.example.ppgcollector_android.data.session.CaptureBloodPressureSeries
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.CaptureSessionMetadataEditor
+import com.example.ppgcollector_android.data.session.CaptureRecordMode
+import com.example.ppgcollector_android.data.session.SessionNamePolicy
+import com.example.ppgcollector_android.data.session.SessionNamePrefix
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -79,6 +82,10 @@ data class SessionListItemUi(
     val bloodPressureCount: Int = 0,
     val systolicBp: Int? = null,
     val diastolicBp: Int? = null,
+    val sessionPrefix: SessionNamePrefix? = null,
+    val recordMode: CaptureRecordMode? = null,
+    val plannedDurationSeconds: Int? = null,
+    val actualDurationSeconds: Long? = null,
 )
 
 data class SessionDetailUi(
@@ -179,6 +186,12 @@ object SessionListItemMapper {
             }.getOrDefault(0),
             systolicBp = metadata?.systolicBp,
             diastolicBp = metadata?.diastolicBp,
+            sessionPrefix = SessionNamePolicy.parseCanonical(session.baseName)?.prefix,
+            recordMode = metadata?.recordMode,
+            plannedDurationSeconds = metadata?.plannedDurationSeconds,
+            actualDurationSeconds = metadata?.endedUtc?.let { ended ->
+                java.time.Duration.between(metadata.startedUtc, ended).seconds.coerceAtLeast(0L)
+            },
         )
     }
 }

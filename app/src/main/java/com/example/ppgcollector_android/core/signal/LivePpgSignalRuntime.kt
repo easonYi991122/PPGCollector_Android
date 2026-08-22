@@ -13,9 +13,10 @@ data class LivePpgIngestResult(
  * Single causal PPG state owner for one ordered live stream.
  *
  * Raw and causal waveform snapshots and 800/100 metric requests are derived
- * from the same preprocessors and bounded rings. A discontinuity resets the
- * processing state, while keeping the bounded display history so one missing
- * packet cannot make all three live windows look newly connected.
+ * from the same preprocessors and bounded rings. Wire gaps remain visible and
+ * diagnosable, but only loss of the local accepted-sample cursor resets the
+ * processing state; otherwise frequent small wire gaps could prevent metrics
+ * from ever reaching their bounded input window.
  */
 class LivePpgSignalRuntime(
     val profile: LiveMetricRuntimeProfile = LiveMetricRuntimeProfile.iosBaseline01,
@@ -83,7 +84,7 @@ class LivePpgSignalRuntime(
         acceptedEcgSamples: List<UInt> = emptyList(),
     ): LivePpgIngestResult {
         if (acceptedSampleStartIndex != nextAcceptedSampleIndex) {
-            invalidateContinuity(acceptedSampleStartIndex, resetDisplayFilters = true)
+            invalidateContinuity(acceptedSampleStartIndex)
         }
 
         var analysisIsDue = false
@@ -92,10 +93,9 @@ class LivePpgSignalRuntime(
             if (decoded.sequenceEvent is CupSequenceEvent.Gap) {
                 gapCount++
                 markSegmentBreak(nextAcceptedSampleIndex)
-                // A missing wire frame invalidates metrics, but it must not
-                // repeatedly restart presentation-only filters. The segment
-                // marker communicates the discontinuity to the plot.
-                invalidateContinuity(nextAcceptedSampleIndex, resetDisplayFilters = false)
+                // The accepted-sample stream remains ordered. Preserve its
+                // bounded filters/metric window and expose the wire loss as a
+                // segment marker plus diagnostics instead of permanent warmup.
             }
             for (sample in decoded.frame.samples) {
                 val rawRedValue = sample.red.toDouble()
@@ -105,10 +105,7 @@ class LivePpgSignalRuntime(
                 val red = redPreprocessor.process(rawRedValue).sample
                 val ir = irPreprocessor.process(rawIrValue).sample
                 if (red == null || ir == null) {
-                    invalidateContinuity(
-                        nextAcceptedSampleIndex + 1L,
-                        resetDisplayFilters = true,
-                    )
+                    invalidateContinuity(nextAcceptedSampleIndex + 1L)
                     acceptedSampleCount++
                     continue
                 }
@@ -181,6 +178,12 @@ class LivePpgSignalRuntime(
     fun isCurrent(request: LiveMetricAnalysisRequest): Boolean =
         request.generation == generation && request.requestSequence == requestSequence
 
+    /** Hard reset for an App-side loss while preserving the absolute accepted-sample cursor. */
+    fun invalidateLocalInput(nextAcceptedSampleIndex: Long) {
+        require(nextAcceptedSampleIndex >= 0L)
+        invalidateContinuity(nextAcceptedSampleIndex)
+    }
+
     fun reset() {
         ringStart = 0
         ringSize = 0
@@ -191,7 +194,7 @@ class LivePpgSignalRuntime(
         requestSequence = 0L
         gapCount = 0L
         segmentBreaks.clear()
-        invalidateContinuity(0L, resetDisplayFilters = true)
+        invalidateContinuity(0L)
     }
 
     private fun metricRequest(measuredAt: Instant): LiveMetricAnalysisRequest? {
@@ -298,26 +301,21 @@ class LivePpgSignalRuntime(
         return result
     }
 
-    private fun invalidateContinuity(
-        nextIndex: Long,
-        resetDisplayFilters: Boolean,
-    ) {
+    private fun invalidateContinuity(nextIndex: Long) {
         redPreprocessor.reset()
         irPreprocessor.reset()
-        if (resetDisplayFilters) {
-            ringStart = 0
-            ringSize = 0
-            ecgRingStart = 0
-            ecgRingSize = 0
-            segmentBreaks.clear()
-            nextPublishNanos = null
-            displayCausalRedFilter.reset()
-            displayCausalIrFilter.reset()
-            fixedLagRuntime.reset(nextIndex)
-            fixedLagSamples.clear()
-            ecgDisplayDownsampler.reset()
-            displayContinuousSampleCount = 0L
-        }
+        ringStart = 0
+        ringSize = 0
+        ecgRingStart = 0
+        ecgRingSize = 0
+        segmentBreaks.clear()
+        nextPublishNanos = null
+        displayCausalRedFilter.reset()
+        displayCausalIrFilter.reset()
+        fixedLagRuntime.reset(nextIndex)
+        fixedLagSamples.clear()
+        ecgDisplayDownsampler.reset()
+        displayContinuousSampleCount = 0L
         nextAcceptedSampleIndex = nextIndex
         continuousSampleCount = 0L
         nextAnalysisContinuousSampleCount = profile.windowSampleCount.toLong()

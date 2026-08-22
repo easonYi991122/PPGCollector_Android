@@ -96,13 +96,13 @@ class LiveWaveformRuntimeTest {
     @Test
     fun causalAutoscaleDrawsButExcludesOnlyVisibleSettlingPrefix() {
         val values = DoubleArray(800) { 5.0 }.also {
-            it[0] = 1_000.0
+            it[250] = 1_000.0
         }
 
         val rawRange = LiveWaveformScaleMath.verticalRange(values)!!
         val causalRange = LiveWaveformScaleMath.verticalRange(
             values = values,
-            excludedLeadingSampleCount = 200,
+            excludedLeadingSampleCount = 400,
         )!!
 
         assertTrue(rawRange.upper > 900.0)
@@ -110,6 +110,56 @@ class LiveWaveformRuntimeTest {
         assertEquals(4.92, causalRange.lower, 1e-12)
         assertEquals(5.08, causalRange.upper, 1e-12)
         assertEquals(null, LiveWaveformScaleMath.verticalRange(doubleArrayOf()))
+    }
+
+    @Test
+    fun liveAutoscaleUsesTwoSecondTailUntilFullThenSixSecondTail() {
+        val one = LiveWaveformScaleMath.verticalRange(doubleArrayOf(12.0))!!
+        assertTrue(one.lower < 12.0)
+        assertTrue(one.upper > 12.0)
+
+        val filling = DoubleArray(799) { 5.0 }.also {
+            it[0] = 1_000.0
+            it[it.lastIndex] = 6.0
+        }
+        val fillingRange = LiveWaveformScaleMath.verticalRange(filling)!!
+        assertTrue(fillingRange.upper < 10.0)
+
+        val full = DoubleArray(800) { 5.0 }.also {
+            it[199] = 1_000.0
+            it[200] = 7.0
+        }
+        val fullRange = LiveWaveformScaleMath.verticalRange(full)!!
+        assertTrue(fullRange.upper < 10.0)
+        assertTrue(fullRange.upper > 7.0)
+
+        val justOverFillingTail = DoubleArray(201) { 5.0 }.also {
+            it[0] = 1_000.0
+            it[1] = 6.0
+        }
+        assertTrue(LiveWaveformScaleMath.verticalRange(justOverFillingTail)!!.upper < 10.0)
+    }
+
+    @Test
+    fun rawAxisHoldsItsCenterAndRangeUntilAThresholdIsActuallyExceeded() {
+        val axis = LiveRawWaveformAxisRuntime()
+        val initial = axis.update(WaveformVerticalRange(0.0, 10.0))!!
+
+        assertEquals(initial, axis.update(WaveformVerticalRange(0.5, 10.5)))
+        assertEquals(initial, axis.update(WaveformVerticalRange(-0.5, 9.5)))
+
+        val expanded = axis.update(WaveformVerticalRange(0.0, 12.0))!!
+        assertEquals(
+            (initial.lower + initial.upper) / 2.0,
+            (expanded.lower + expanded.upper) / 2.0,
+            1e-12,
+        )
+        assertTrue(expanded.upper - expanded.lower >= (initial.upper - initial.lower) * 1.25)
+        assertEquals(expanded, axis.update(WaveformVerticalRange(4.0, 6.0)))
+
+        val newSourceAxis = LiveRawWaveformAxisRuntime()
+        val recentered = newSourceAxis.update(WaveformVerticalRange(100.0, 110.0))!!
+        assertEquals(105.0, (recentered.lower + recentered.upper) / 2.0, 1e-12)
     }
 
     private fun event(sequence: UByte, start: Int): CupDecodedFrameEvent =

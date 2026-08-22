@@ -346,6 +346,8 @@ object CaptureSessionRecoveryService {
         canonicalSubjectId = source?.canonicalSubjectId,
         canonicalSequence = source?.canonicalSequence,
         participant = source?.participant,
+        recordMode = source?.recordMode,
+        plannedDurationSeconds = source?.plannedDurationSeconds,
     )
 
     private fun copyPrefix(source: Path, count: Long, destination: Path) {

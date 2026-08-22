@@ -2,11 +2,10 @@ package com.example.ppgcollector_android.core.signal
 
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
-import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
-import java.time.Instant
-import kotlin.math.max
 import com.example.ppgcollector_android.core.signal.combo.ComboSqi
 import com.example.ppgcollector_android.core.signal.combo.ComboSqiResult
+import java.time.Instant
+import kotlin.math.max
 
 data class LiveMetricRuntimeProfile(
     val identifier: String,
@@ -43,7 +42,7 @@ data class LiveMetricAnalysisRequest(
     val bandpassedRed: List<Double> = emptyList(),
     val bandpassedIr: List<Double>,
     val timeSeconds: List<Double>,
-    /** 1 Hz epoch number within one continuous connection generation. */
+    /** 1 Hz epoch number within one locally continuous accepted-sample generation. */
     val metricEpoch: Long = requestSequence,
 )
 
@@ -91,7 +90,6 @@ class LiveMetricWindowScheduler(
 
         var analysisIsDue = false
         decodedFrames.filter { it.isAccepted }.forEach { decoded ->
-            if (decoded.sequenceEvent is CupSequenceEvent.Gap) invalidateContinuity()
             decoded.frame.samples.forEach { sample ->
                 val redResult = redPreprocessor.process(sample.red.toDouble())
                 val irResult = irPreprocessor.process(sample.ir.toDouble())

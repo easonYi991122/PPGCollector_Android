@@ -7,14 +7,83 @@ import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BlePreviewRuntimeTest {
+    @Test
+    fun previewQueueOverflowClearsStaleWaveformAndMetricAsLocalInputLoss() {
+        val blockCallbacks = AtomicBoolean(false)
+        val callbackEntered = CountDownLatch(1)
+        val releaseCallback = CountDownLatch(1)
+        val runtime = BlePreviewRuntime(
+            queueCapacity = 2,
+            onAcceptedFrame = {
+                if (blockCallbacks.get()) {
+                    callbackEntered.countDown()
+                    releaseCallback.await(2, TimeUnit.SECONDS)
+                }
+            },
+        )
+        try {
+            runtime.reset(generation = 11)
+            repeat(40) { frameIndex ->
+                assertTrue(
+                    runtime.offer(
+                        BleRawNotificationChunk(
+                            connectionGeneration = 11,
+                            hostMonotonicNanos = frameIndex.toLong(),
+                            bytes = encodeCupBatchFrame(frame(frameIndex.toUByte())),
+                        ),
+                    ),
+                )
+                awaitTrue {
+                    runtime.diagnostics().receivedFrameCount == frameIndex + 1
+                }
+            }
+            awaitTrue { runtime.snapshot.value.lastAnalysis != null }
+
+            blockCallbacks.set(true)
+            assertTrue(
+                runtime.offer(
+                    BleRawNotificationChunk(11, 40L, encodeCupBatchFrame(frame(40u))),
+                ),
+            )
+            assertTrue(callbackEntered.await(2, TimeUnit.SECONDS))
+            assertTrue(
+                runtime.offer(
+                    BleRawNotificationChunk(11, 41L, encodeCupBatchFrame(frame(41u))),
+                ),
+            )
+            assertTrue(
+                runtime.offer(
+                    BleRawNotificationChunk(11, 42L, encodeCupBatchFrame(frame(42u))),
+                ),
+            )
+            assertFalse(
+                runtime.offer(
+                    BleRawNotificationChunk(11, 43L, encodeCupBatchFrame(frame(43u))),
+                ),
+            )
+
+            val overflow = runtime.snapshot.value
+            assertEquals(3L, overflow.droppedChunkCount)
+            assertEquals(3L, overflow.streamDiagnostics.appDroppedChunkCount)
+            assertTrue(overflow.waveform.red.isEmpty())
+            assertEquals(null, overflow.lastAnalysis)
+        } finally {
+            releaseCallback.countDown()
+            runtime.close()
+        }
+    }
+
     @Test
     fun idleRuntimeDoesNotStartWorkersOrClockTicksUntilDataArrives() {
         val runtime = BlePreviewRuntime(clockTickIntervalNanos = 10_000_000L)
@@ -193,6 +262,75 @@ class BlePreviewRuntimeTest {
             assertTrue(afterGap.red.isNotEmpty())
             assertTrue(afterGap.ir.isNotEmpty())
             assertTrue(afterGap.ecg.isNotEmpty())
+            val diagnostics = runtime.snapshot.value.streamDiagnostics
+            assertEquals(81u, diagnostics.lastSequenceNumber)
+            assertEquals(2L, diagnostics.lastSequenceStep)
+            assertEquals(1L, diagnostics.gapEventCount)
+            assertEquals(1L, diagnostics.estimatedMissingFrameCount)
+            assertEquals(0L, diagnostics.appDroppedChunkCount)
+        } finally {
+            runtime.close()
+        }
+    }
+
+    @Test
+    fun frequentAdsSequenceGapsRemainDiagnosableButDoNotBlockMetrics() {
+        val runtime = BlePreviewRuntime()
+        try {
+            runtime.reset(generation = 5, streamProtocolMode = CupStreamProtocolMode.ADS1292R_120)
+            repeat(200) { index ->
+                assertTrue(
+                    runtime.offer(
+                        BleRawNotificationChunk(
+                            connectionGeneration = 5,
+                            hostMonotonicNanos = index * 40_000_000L,
+                            bytes = Ads1292rPacketProtocol.encode(adsPacket((index * 2).toUInt())),
+                            streamProtocolMode = CupStreamProtocolMode.ADS1292R_120,
+                        ),
+                    ),
+                )
+            }
+
+            awaitTrue {
+                runtime.snapshot.value.waveform.red.size == 800 &&
+                    runtime.snapshot.value.lastAnalysis != null
+            }
+            val snapshot = runtime.snapshot.value
+            assertEquals(800L, snapshot.waveform.continuousSampleCount)
+            assertEquals(199L, snapshot.streamDiagnostics.gapEventCount)
+            assertEquals(199L, snapshot.streamDiagnostics.estimatedMissingFrameCount)
+            assertEquals(2L, snapshot.streamDiagnostics.lastSequenceStep)
+            assertEquals(0L, snapshot.streamDiagnostics.decoderDiscardedByteCount)
+            assertEquals(0L, snapshot.streamDiagnostics.appDroppedChunkCount)
+        } finally {
+            runtime.close()
+        }
+    }
+
+    @Test
+    fun adsFramingDamageIsVisibleInLowFrequencyDiagnostics() {
+        val runtime = BlePreviewRuntime()
+        try {
+            runtime.reset(generation = 6, streamProtocolMode = CupStreamProtocolMode.ADS1292R_120)
+            val bad = Ads1292rPacketProtocol.encode(adsPacket(4u)).also { it[it.lastIndex] = 0 }
+            val valid = Ads1292rPacketProtocol.encode(adsPacket(5u))
+            assertTrue(
+                runtime.offer(
+                    BleRawNotificationChunk(
+                        connectionGeneration = 6,
+                        hostMonotonicNanos = 1L,
+                        bytes = byteArrayOf(1, 2, 3) + bad + valid,
+                        streamProtocolMode = CupStreamProtocolMode.ADS1292R_120,
+                    ),
+                ),
+            )
+
+            awaitTrue { runtime.snapshot.value.streamDiagnostics.decodedFrameCount == 1L }
+            val diagnostics = runtime.snapshot.value.streamDiagnostics
+            assertEquals(5u, diagnostics.lastSequenceNumber)
+            assertTrue(diagnostics.decoderDiscardedByteCount >= 123L)
+            assertEquals(1L, diagnostics.decoderInvalidFrameCount)
+            assertEquals(0L, diagnostics.appDroppedChunkCount)
         } finally {
             runtime.close()
         }
