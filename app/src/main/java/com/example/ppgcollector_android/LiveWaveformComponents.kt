@@ -569,10 +569,11 @@ private fun MetricTileRow(tiles: List<MetricTileModel>, modifier: Modifier = Mod
 
 @Composable
 private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modifier = Modifier) {
+    val accent = model.accentColorHex?.let { hex ->
+        runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
+    }
     val statusColor = when {
-        model.accentColorHex != null -> runCatching {
-            Color(android.graphics.Color.parseColor(model.accentColorHex))
-        }.getOrDefault(MaterialTheme.colorScheme.primary)
+        accent != null -> accent
         !model.valid -> MaterialTheme.colorScheme.onSurfaceVariant
         model.provisional -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.tertiary
@@ -584,7 +585,11 @@ private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modif
                 contentDescription = "${model.detailedLabel} ${model.value}，${model.state}"
             },
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        color = if (accent != null) {
+            accent.copy(alpha = 0.18f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        },
     ) {
         Column(
             modifier = Modifier.padding(if (compact) 7.dp else 12.dp),
@@ -600,8 +605,17 @@ private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modif
                 model.value,
                 style = if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
+                color = if (accent != null) statusColor else Color.Unspecified,
                 maxLines = 1,
             )
+            if (compact && accent != null) {
+                Text(
+                    model.state,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = statusColor,
+                    maxLines = 1,
+                )
+            }
             if (!compact) {
                 Text(model.state, style = MaterialTheme.typography.bodySmall, color = statusColor)
                 Text(

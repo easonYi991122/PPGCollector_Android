@@ -14,6 +14,7 @@ import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
+import com.example.ppgcollector_android.core.signal.combo.ComboSqiDebounce
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -88,6 +89,7 @@ class BlePreviewRuntime(
     private var adsDecoder = Ads1292rStreamDecoder()
     private var sequenceTracker = CupFrameSequenceTracker()
     private var signalRuntime = LivePpgSignalRuntime()
+    private var comboSqiDebounce = ComboSqiDebounce()
     private val analysisQueue = ArrayBlockingQueue<LiveMetricAnalysisRequest>(1)
     private var worker: Thread? = null
     private var analysisWorker: Thread? = null
@@ -141,6 +143,7 @@ class BlePreviewRuntime(
                 analysisQueue.clear()
                 droppedChunkCount += staleQueuedChunkCount + 1L
                 signalRuntime.invalidateLocalInput(acceptedSampleIndex)
+                comboSqiDebounce.reset()
                 _snapshot.value = _snapshot.value.copy(
                     waveform = LiveWaveformSnapshot(generation = signalRuntime.generation),
                     lastAnalysis = null,
@@ -167,6 +170,7 @@ class BlePreviewRuntime(
             adsDecoder = Ads1292rStreamDecoder()
             sequenceTracker = CupFrameSequenceTracker()
             signalRuntime = LivePpgSignalRuntime()
+            comboSqiDebounce = ComboSqiDebounce()
             acceptedSampleIndex = 0L
             droppedChunkCount = 0L
             lastSequenceNumber = null
@@ -282,6 +286,7 @@ class BlePreviewRuntime(
                     acceptedEcgSamples = acceptedEcgSamples,
                 )
                 if (signalRuntime.generation != signalGenerationBefore) {
+                    comboSqiDebounce.reset()
                     _snapshot.value = _snapshot.value.copy(lastAnalysis = null)
                 }
                 acceptedSampleIndex += events.filter { it.isAccepted }
@@ -307,7 +312,12 @@ class BlePreviewRuntime(
                     val result = runCatching { LiveMetricAnalyzer.analyze(request) }.getOrNull() ?: continue
                     synchronized(lock) {
                         if (!stopRequested && signalRuntime.isCurrent(request)) {
-                            _snapshot.value = _snapshot.value.copy(lastAnalysis = result)
+                            val combo = comboSqiDebounce.update(result.comboSqiCandidate)
+                            _snapshot.value = _snapshot.value.copy(
+                                lastAnalysis = result.copy(
+                                    snapshot = result.snapshot.copy(comboSqi = combo),
+                                ),
+                            )
                         }
                     }
                 } else if (shouldStop) {

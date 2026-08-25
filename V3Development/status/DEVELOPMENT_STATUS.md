@@ -1,9 +1,24 @@
 # V3.0 开发状态（简版）
 
-更新：2026-08-22
-当前轮次：**V3.R10（编码与完整自动门禁已完成；R9/R10 真机节点待测）**
+更新：2026-08-25
+当前轮次：**R3 综合 SQI 口径收口已完成自动门禁；R9/R10 真机节点仍待测**
 
-> 本文件后面的 R9/R9.1、R8.2/R8.1/R8/R7/R6/R5.1 记录保留作历史基线；以下先记录 R10 实际状态。
+> 本文件后面的 R10–R5.1 记录保留作历史基线；以下先记录 2026-08-25 对 R3/R4.1E/R6 F.5 遗留综合 SQI 的收口。
+
+## R3 综合 SQI 口径收口（2026-08-25）
+
+对照 `03_DEVELOPMENT_PLAN.md` R3 / R4.1 E / R6 F.5：此前 `ComboSqi.evaluate()` 是简化近似（无取负 + MA 2/2/10 + 0.5–12 Hz；压力特征不完整；预览磁贴未去抖、未写入 snapshot）。本收口按只读 `references/需求V3.0/code/` 对齐 V4.4.2。
+
+- 输入构造：原始 IR 最近 500 点；SQI_tm = 取负 → MA 2/2/10 → SciPy `butter(2, 0.5–12 Hz)` 零相位带通 → 既有 `TemplateMatchSqi`；SQI_corr = 取负 → MA 2/2/10 → 40–150 bpm 自相关峰；flat = std/DC 或 p2p/DC < 0.0003；压力 = 取负 + 同带通 → fiducials / `compute_rapid_decline` 四特征 + p2_height 中位。
+- 仲裁与去抖保持 1 s 指标帧：flat > pressure 四闸门 > SQI_tm 0.88 二分；`enablePressureBranch=true`；**不写** CSV `sqi`。
+- 预览 `BlePreviewRuntime` 与录制一样做 `ComboSqiDebounce`，generation/溢流/reset 清 unknown。采集页 SQI 磁贴用状态色底 + 提示文本 + 分数。
+- JVM：Python `combo_sqi.py` 三类合成波（干净 → good、平直 → flat、强噪声 → unstable）跨语言金标；恒定 IR → 红「信号平直」；debounce 2 帧；压力闸门注入测试；`TemplateMatchSqiTest` / `CaptureCsvTest` 回归。
+
+## R3 收口 JVM/构建验收
+
+- 定向 `ComboSqiTest`（5）、`TemplateMatchSqiTest`、`CaptureCsvTest` 通过；Python 三类合成波状态/文案/颜色对齐。
+- `env JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon`：通过；234 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 均成功。
+- 未执行真机。R9/R10 真机节点仍待测，不能由本收口替代。
 
 ## R10 本轮落地
 
@@ -110,7 +125,7 @@
 
 - Android 采集 App 已能扫描/连接 CUP（名称前缀 `CUP`）和 `Nordic_UART_Service`（NUS），解析 CUP batch 168、Nordic sensor packet 168、以及 ads1292r 120（CUP 名前缀与 Nordic 精确名均可锁定）。
 - R1–R8.1 产品与稳定性修正已落地；当前实现以 `app/src` 与本状态文件为准。
-- Combo SQI Python 全量对齐、部分离线分析回归失败不在本轮。
+- Combo SQI 已按 V4.4.2 参考 Python 对齐显示层（2026-08-25 收口）；录制 CSV `sqi` 仍为模板匹配。
 - 规划与参考已收口到 `V3Development/`。旧 iOS 移植文档在 `archive/2026-08-ios-migration/`。
 
 ## R5.1 本轮落地
@@ -151,9 +166,9 @@
 
 ## 残留（本轮不做）
 
-- Combo SQI Python 全量对齐。
-- 上述两个离线分析回归。
-- 档案 UI 可能仍缺 PPG/MB 分段标题；扫描文案仍偏 CUP。
+- R9 / R10 真机节点。
+- 档案 UI 扫描文案若仍偏 CUP，不在本收口改。
+- 未扫描时残留卡顿仍按用户决定暂缓。
 
 ## 真机门禁
 

@@ -45,7 +45,7 @@ R10 gap-aware repaired signal + 指标来源 + 详情重放
 
 依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。**R5.1 依赖 R4.1 的 120 decoder / ECG 显示环 / uiSnapshotFlow 骨架。R6 依赖先保全 R5.1 当前工作区并形成可回退基线；不得在未区分用户已有修改时覆盖或回滚。**
 
-**当前轮次：`V3.R10` 编码与自动门禁已完成；R9/R10 真机节点均待测。用户已明确要求在开发板检修期间先完成 R10；未扫描时残留卡顿仍暂不处理。**
+**当前轮次：R3 综合 SQI 口径收口已完成编码；R9/R10 真机节点均待测。未扫描时残留卡顿仍暂不处理。**
 
 ---
 
@@ -218,6 +218,10 @@ ECG、SQI、导出结构。
 ### 本轮不做
 
 `sqi_state` CSV 列、腕部关闭压力分支的产品开关 UI（代码里可留 `enablePressureBranch=true` 常量）。
+
+### R3 实际收口（2026-08-25）
+
+R3 编码后 `arbitrate` 常量已对齐，但 `evaluate()` 长期是简化近似（R4.1 E / R6 F.5 记下未完）。2026-08-25 已按只读 Python 补齐预处理、SQI_tm/SQI_corr/flat/overpressure、预览去抖与跨语言合成波金标；CSV `sqi` 未改。详见 `status/DEVELOPMENT_STATUS.md`。
 
 ---
 
