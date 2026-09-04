@@ -80,6 +80,10 @@ class Ads1292rStreamDecoder(
     var stats: Ads1292rDecoderStats = Ads1292rDecoderStats()
         private set
 
+    /** Bytes retained because a complete 120-byte frame has not arrived yet. */
+    val pendingByteCount: Int
+        get() = buffer.size
+
     fun feed(data: ByteArray): List<Ads1292rPacket> {
         data.forEach(buffer::add)
         val decoded = ArrayList<Ads1292rPacket>()

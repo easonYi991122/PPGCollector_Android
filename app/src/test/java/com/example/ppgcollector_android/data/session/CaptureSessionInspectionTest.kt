@@ -3,6 +3,9 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
+import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import java.nio.file.Files
 import java.nio.file.Path
@@ -114,6 +117,38 @@ class CaptureSessionInspectionTest {
         assertEquals(1, report.decodedFrames)
         assertEquals(20L, report.acceptedSamples)
         assertTrue(report.isStructurallyClean)
+    }
+
+    @Test
+    fun adsReplayReportUsesAdsDecoderForLeadingDiscardAndPendingBytes() {
+        val first = Ads1292rPacket(
+            sequenceNumber = 7u,
+            ecg = List(20) { (30_000 + it).toUInt() },
+            red = List(4) { (10_000 + it).toUInt() },
+            ir = List(4) { (20_000 + it).toUInt() },
+        )
+        val second = first.copy(sequenceNumber = 8u)
+        val root = Files.createTempDirectory("ads-replay-report")
+        try {
+            val path = root.resolve("sample.cupraw")
+            CupRawWriter(path).use { writer ->
+                writer.append(1_000u, byteArrayOf(0x01, 0x02) + Ads1292rPacketProtocol.encode(first))
+                writer.append(2_000u, Ads1292rPacketProtocol.encode(second).copyOfRange(0, 11))
+            }
+
+            val report = CupRawReplayEngine.replay(path, CupStreamProtocolMode.ADS1292R_120)
+
+            assertEquals(1, report.decodedFrames)
+            assertEquals(1, report.acceptedFrames)
+            assertEquals(4L, report.acceptedSamples)
+            assertEquals(2, report.leadingAlignmentBytes)
+            assertEquals(2, report.discardedBytes)
+            assertEquals(11, report.pendingDecoderBytes)
+            assertEquals(0, report.structurallyInvalidFrames)
+            assertTrue(report.isStructurallyClean)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     @Test

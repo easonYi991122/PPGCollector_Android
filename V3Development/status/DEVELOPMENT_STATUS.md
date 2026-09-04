@@ -1,7 +1,22 @@
 # V3.0 开发状态（简版）
 
-更新：2026-08-25
-当前轮次：**R3 综合 SQI 口径收口已完成自动门禁；R9/R10 真机节点仍待测**
+更新：2026-09-04
+当前轮次：**R11 代码修正已通过自动门禁；R12 回放呈现与分阶段加载待实施；R9/R10/R11 真机节点仍待测**
+
+## 当前代码审计（2026-09-04，仅规划）
+
+- 基线 `12d2d11`；保留工作区已有 SQI 排版/测试、`.idea` 与 `app/release/` 改动。本次仅更新规划和状态，不修改生产代码。
+- 已定位：启动 I/O 失败清理不完整、ADS 离线报告读取错误 decoder、恢复副本遗漏字段及 ECG 身份误报、RAW 回放隐式去趋势、指标无效区间/孤点/身份校验缺口、波形加载与全量指标后备耦合。
+- 详见 `03_DEVELOPMENT_PLAN.md` 的 2026-09-04 审计及 R11/R12；下一开发轮为 **R11（待执行）**。R12 处理回放与呈现，不重做信号滤波。空闲卡顿仍按用户决定暂缓。
+- 当前工作区 `:app:testDebugUnitTest --no-configuration-cache --no-daemon` 通过：235 tests，0 failure/error/skip；这是既有回归基线，不代表新发现问题已修复。未执行真机或完整 lint/build 门禁。
+
+## R11 本轮落地（2026-09-04）
+
+- 启动事务在录前 BP sidecar 成功写入后才发布 active writer；初始化异常会回收无 raw 临时目录、清理队列和 generation，并以 `RecordingStartFailed` 提供可见错误；service 对未知启动异常也有边界捕获，不再统一显示 DeviceNotReady。
+- ADS 120 replay 报告读取 ADS decoder 的 frames、invalid、discarded、pending；CUP/Nordic 168 保留各自 decoder 统计。恢复副本保留 BP/模式/计划时长/ECG 采样率，ECG 指针从实际复制文件生成；inspection 允许恢复溯源 source session id。
+- 新增启动 I/O 故障注入、ADS 前导/尾部 replay、ADS+ECG/BP recovery 测试。
+- 完整门禁通过：235 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均成功。未执行真机；R9/R10/R11 真机节点待测。
+- 下一轮：R12 RAW 显示口径、指标 sidecar/断线绘制、分阶段加载与局部失败。
 
 > 本文件后面的 R10–R5.1 记录保留作历史基线；以下先记录 2026-08-25 对 R3/R4.1E/R6 F.5 遗留综合 SQI 的收口。
 

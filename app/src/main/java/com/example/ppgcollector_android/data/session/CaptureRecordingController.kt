@@ -173,12 +173,11 @@ class CaptureRecordingController(
             if (snapshotValue.state == CaptureRecordingState.STOPPING) {
                 return CaptureRecordingStartResult.Failed("recording is stopping")
             }
+            var acceptedWriter: CaptureSessionWriter? = null
             return try {
-                val acceptedWriter = writerFactory(configuration, sessionsRoot, capacityProvider)
-                writer = acceptedWriter
-                activeGeneration = connectionGeneration
-                activeStreamProtocolMode =
-                    CupStreamProtocolMode.fromProtocolProfileIdentifier(configuration.protocolProfile)
+                acceptedWriter = writerFactory(configuration, sessionsRoot, capacityProvider)
+                val writerForStart = acceptedWriter
+                    ?: error("writer factory returned null")
                 stopReason = null
                 stopRequested = false
                 queue.clear()
@@ -193,14 +192,21 @@ class CaptureRecordingController(
                 analysisInputDropCount = 0L
                 streamDiagnosticsValue = LiveStreamDiagnostics()
                 val initialBloodPressure = initialBloodPressureEvent(
-                    configuration = acceptedWriter.configuration,
+                    configuration = writerForStart.configuration,
                     connectionGeneration = connectionGeneration,
                 )
                 if (initialBloodPressure != null) {
-                    acceptedWriter.appendBloodPressure(initialBloodPressure)
+                    // The pre-record BP sidecar is part of the startup
+                    // transaction. Do not publish an active recording until
+                    // this write has succeeded.
+                    writerForStart.appendBloodPressure(initialBloodPressure)
                     committedReferenceTokens +=
                         "${initialBloodPressure.reference.sessionId}:${initialBloodPressure.reference.eventIndex}"
                 }
+                writer = writerForStart
+                activeGeneration = connectionGeneration
+                activeStreamProtocolMode =
+                    CupStreamProtocolMode.fromProtocolProfileIdentifier(configuration.protocolProfile)
                 nextReferenceEventIndex = if (initialBloodPressure == null) 0L else 1L
                 analysisStopRequested = false
                 finalizedLatch = CountDownLatch(1)
@@ -220,7 +226,29 @@ class CaptureRecordingController(
                 worker = thread(start = true, name = "ppg-capture-writer") { workerLoop() }
                 publish(CaptureRecordingState.RECORDING)
                 CaptureRecordingStartResult.Started
-            } catch (error: CaptureSessionWriterException) {
+            } catch (error: Exception) {
+                acceptedWriter?.let { startupWriter ->
+                    runCatching {
+                        if (!startupWriter.discardIfEmptyBeforeRecording()) {
+                            startupWriter.close()
+                        }
+                    }
+                }
+                writer = null
+                activeGeneration = null
+                activeStreamProtocolMode = null
+                stopReason = null
+                stopRequested = false
+                analysisStopRequested = false
+                queue.clear()
+                analysisQueue.clear()
+                metricQueue.clear()
+                bloodPressureQueue.clear()
+                participantQueue.clear()
+                committedReferenceTokens.clear()
+                acceptedSampleCount = 0L
+                latestAcceptedSourceSampleIndex = null
+                finalSummary = null
                 lastError = error.message
                 publish(CaptureRecordingState.FAILED)
                 finalizedLatch.countDown()

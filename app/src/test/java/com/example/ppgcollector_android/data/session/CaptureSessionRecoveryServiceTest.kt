@@ -3,6 +3,8 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupBatchProtocolV1
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol
 import com.example.ppgcollector_android.core.protocol.encodeCupBatchFrame
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -102,6 +104,68 @@ class CaptureSessionRecoveryServiceTest {
             } catch (_: CaptureSessionRecoveryException.DestinationAlreadyExists) {
                 // expected
             }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun recoveryPreservesBpEcgMetadataAndAcceptsSourceSessionIdsInCopiedEcg() {
+        val root = Files.createTempDirectory("session-recovery-ecg")
+        try {
+            val configuration = configuration("ads_source").copy(
+                protocolProfile = Ads1292rPacketProtocol.profileIdentifier,
+                systolicBp = 126,
+                diastolicBp = 82,
+                recordMode = CaptureRecordMode.TIMED,
+                plannedDurationSeconds = 30,
+            )
+            val writer = CaptureSessionWriter(configuration, root) { Long.MAX_VALUE }
+            val packet = Ads1292rPacket(
+                sequenceNumber = 4u,
+                ecg = List(20) { (30_000 + it).toUInt() },
+                red = List(4) { (10_000 + it).toUInt() },
+                ir = List(4) { (20_000 + it).toUInt() },
+            )
+            val wire = Ads1292rPacketProtocol.encode(packet)
+            writer.appendRawThenDerive(1_000u, wire) { emptyList() }
+            writer.appendAds1292rPacket(1_000u, packet)
+            writer.appendBloodPressure(
+                ManualBloodPressureEvent(
+                    reference = CaptureReferenceTimestamp(
+                        sessionId = configuration.sessionId,
+                        connectionGeneration = 1,
+                        eventIndex = 0,
+                        sourceSampleIndex = 0,
+                        sourceTimeSeconds = 0.0,
+                        dialogOpenHostMonotonicNanoseconds = 1u,
+                        dialogOpenUtc = configuration.startedUtc,
+                    ),
+                    savedUtc = configuration.startedUtc,
+                    systolicMmHg = 126,
+                    diastolicMmHg = 82,
+                ),
+            )
+            writer.finish(CaptureStopReason.WRITE_ERROR, "synthetic incomplete ADS session")
+
+            val stored = CaptureSessionRepository.listSessions(root).single()
+            val result = CaptureSessionRecoveryService.recover(
+                stored,
+                requestedBaseName = "ads_source_recovered",
+                recoverySessionId = "ads-recovery-id",
+                recoveredAt = Instant.parse("2026-08-02T01:00:00Z"),
+            )
+            val recovered = CaptureSessionMetadataCodec.decode(result.metadataPath)
+            assertEquals(126, recovered.systolicBp)
+            assertEquals(82, recovered.diastolicBp)
+            assertEquals(CaptureRecordMode.TIMED, recovered.recordMode)
+            assertEquals(30, recovered.plannedDurationSeconds)
+            assertEquals(500, recovered.ecgSampleRateHz)
+            assertEquals("ads_source_recovered_ecg.csv", recovered.files.ecg)
+            assertEquals(20L, CaptureEcgCsv.scan(result.ecgPath!!).completeDataRowCount)
+
+            val inspection = CaptureSessionInspectionService.inspect(result.directory)
+            assertTrue(inspection.findings.none { it.id == "ecg-session-id" })
         } finally {
             root.toFile().deleteRecursively()
         }

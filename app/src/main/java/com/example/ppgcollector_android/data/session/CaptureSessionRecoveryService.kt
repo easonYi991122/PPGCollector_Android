@@ -252,7 +252,9 @@ object CaptureSessionRecoveryService {
                 csv = csvScan,
                 metrics = metricsScan,
                 bloodPressure = bloodPressureScan,
+                ecg = ecgScan,
             )
+            val copiedEcgBytes = destinationFiles.ecg?.let { Files.size(it) } ?: 0L
             writeMetadataAtomically(destinationFiles.metadata, recoveredMetadata)
             moveStaging(staging, destination)
             committed = true
@@ -274,7 +276,7 @@ object CaptureSessionRecoveryService {
                     ?.let { destination.resolve(it.fileName.toString()) },
                 metricsCopiedBytes = metricsScan?.validByteCount ?: 0L,
                 bloodPressureCopiedBytes = bloodPressureScan?.validByteCount ?: 0L,
-                ecgCopiedBytes = destinationFiles.ecg?.let { Files.size(it) } ?: 0L,
+                ecgCopiedBytes = copiedEcgBytes,
             )
         } catch (error: CaptureSessionRecoveryException) {
             throw error
@@ -296,6 +298,7 @@ object CaptureSessionRecoveryService {
         csv: CaptureCsvScanReport,
         metrics: CaptureSidecarScanReport?,
         bloodPressure: CaptureSidecarScanReport?,
+        ecg: CaptureSidecarScanReport?,
     ) = CaptureSessionMetadata(
         schemaVersion = CaptureSessionWriterPolicy.sessionSchemaVersion,
         sessionId = recoverySessionId,
@@ -340,14 +343,18 @@ object CaptureSessionRecoveryService {
                     samples = "$baseName.csv",
                     metrics = metrics?.let { "$baseName.metrics.csv" },
                     bloodPressure = bloodPressure?.let { "$baseName.blood-pressure.csv" },
-                    ecg = source?.files?.ecg?.let { "$baseName" + "_ecg.csv" },
+                    ecg = ecg?.let { "$baseName" + "_ecg.csv" },
                 ),
         recovery = recovery,
         canonicalSubjectId = source?.canonicalSubjectId,
         canonicalSequence = source?.canonicalSequence,
         participant = source?.participant,
+        systolicBp = source?.systolicBp,
+        diastolicBp = source?.diastolicBp,
         recordMode = source?.recordMode,
         plannedDurationSeconds = source?.plannedDurationSeconds,
+        ecgSampleRateHz = source?.ecgSampleRateHz,
+        bloodPressureUpdatedUtc = source?.bloodPressureUpdatedUtc,
     )
 
     private fun copyPrefix(source: Path, count: Long, destination: Path) {

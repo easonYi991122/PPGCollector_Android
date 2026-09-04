@@ -3,7 +3,7 @@
 原计划约束是编码工作不超过五轮（`V3.R1` … `V3.R5`）；后续已因复验插入 R4.1/R5.1，并按稳定性审计追加 R6。R6 真机复验暴露实时显示回归与残留空闲卡顿，因此继续追加 R7，不把自动化门禁通过等同于真机体验完成。
 **V3.R4.1** 插在 R4 与 R5 之间。**V3.R5.1** 是 R4.1/R5 代码提交后，针对真机/CUP 名模拟腕带复验发现的直播缺口（采集页仍卡顿、ECG 在 CUP 身份上不可用）追加的修正轮。**V3.R6** 是对 M7.6 之后增量的稳定性审计轮，收口生命周期卡死、录制/波形连续性、主线程 I/O 与 R1–R5 文件/业务契约缺口。每轮交付可 JVM 验收的增量。需求依据 [`02_REQUIREMENTS_REBASED.md`](02_REQUIREMENTS_REBASED.md)，代码基线见 [`01_CODEBASE_AS_IS.md`](01_CODEBASE_AS_IS.md)。
 
-轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`、`V3.R8`、`V3.R8.1`、`V3.R8.2`、`V3.R9`、`V3.R10`。
+轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`、`V3.R8`、`V3.R8.1`、`V3.R8.2`、`V3.R9`、`V3.R10`；新增审计修正规划 `V3.R11`、`V3.R12`（尚未实施）。
 
 ---
 
@@ -24,6 +24,8 @@ R8.1 RAW 纵轴中心锁定 + 分级对称扩展
 R8.2 恢复录中 BP 入口 + 实时 gap 渲染/诊断比例
 R9/R9.1 双路 BP + 表单/gate + 详情元数据 + ATT MTU 协商
 R10 gap-aware repaired signal + 指标来源 + 详情重放
+R11 录制启动失败清理 + ADS 离线诊断 + 恢复副本契约（待开发）
+R12 RAW 回放口径 + 指标证据与呈现 + 分阶段加载（待开发）
 ```
 
 | 轮 | 主题 | 主风险 | 可独立演示 |
@@ -1107,6 +1109,55 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - 不修改板端 sequence 生成，不用 App 修复来宣称链路已无丢帧。
 - 不将缺失样本插值成新 raw，不覆盖原会话或原 analysis artifact。
 - 不引入未校准预测 BP/SpO2，不在这两轮重做 BLE transport 或暂缓的空闲页卡顿。
+
+---
+
+## 2026-09-04 代码审计与后续修正规划（未实施）
+
+审计基线：`12d2d11`，包括当前工作区中已有的 SQI 文案/排版及其测试修改；不覆盖或提交这些已有改动。检查重点为录制启动、协议重放、恢复副本、详情波形与指标加载。以下为源码可确认的缺陷/风险，不是开发板故障结论，也不是对全库无遗漏的保证。R11 已实施，R12 仍待执行。
+
+当前工作区执行 `:app:testDebugUnitTest --no-configuration-cache --no-daemon` 通过：235 tests，0 failure/error/skip。现有测试通过不代表以下边界已被覆盖；本次仅规划，未改生产代码、未做真机、未重新执行完整构建门禁。
+
+### 已定位问题（按应用表现归组）
+
+1. **P1：开始录制遇到存储异常时，可能失败后无法正常重试，甚至异常退出。** `data/session/CaptureRecordingController.kt:start` 在写录前 BP 之前已设置 `writer`，但此时 worker/latch 尚未完整建立；catch 只处理 `CaptureSessionWriterException`，也未清理已赋值 writer。`CaptureSessionWriter.appendBloodPressure/ensureBloodPressureFile/appendBytes` 的文件 I/O 异常可直接抛出；`CaptureForegroundService` 的启动协程没有对应失败清理。触发条件包括 BP sidecar 创建/写入失败、空间在检查后耗尽。即使收到 typed Failed，service 当前还把它映射为 DeviceNotReady，掩盖存储原因。不是正常录制必现问题。
+2. **P1：120-byte 会话的离线诊断会错误显示零解码帧/零损伤。** `data/session/CupRawReplay.kt:ReplayAccumulator.receive` 使用 `adsDecoder` 解码 ADS，首帧对齐和 `report` 却无条件读取 CUP `decoder.stats/pendingByteCount`。因此 accepted samples 可非零，而 decoded/invalid/discarded/pending 均错误为零。完整性复核、恢复 metadata、离线分析输入报告都会继承错误；序号 tracker 的 gap/duplicate/out-of-order 是另一条路径，不能据此认定它们也全错。
+3. **P2：恢复副本的详情信息丢失，并可能误报 ECG 身份不一致。** `CaptureSessionRecoveryService.buildRecoveredMetadata` 新建 metadata 时遗漏 `systolicBp/diastolicBp/bpUpdatedAt/ecgSampleRateHz`；ECG 指针依据旧 metadata，而非实际复制文件。恢复会生成新 session ID，但按契约原样复制 CSV 前缀并保留源 ID。`CaptureSessionInspection.kt` 的 ECG 检查只接受新 metadata.sessionId，不识别 recovery.sourceSessionId，因此合法恢复副本也可被报错。须保留副本来源语义，而非篡改源 CSV 来消除错误。
+4. **P2：详情 RAW 与实时 RAW 不是同一显示口径。** `SessionSignalWorkbench.kt` 的详情和工作台 RAW 都调用 `core/signal/PpgDisplayTransform.rawPeakUpForPlot`，该方法在取负后减去整段线性拟合趋势和 DC；实时仅逐点取负。常量输入在离线图可变为零，真实缓慢斜坡可被消去。这是可视化改变，不是 raw 文件漂移；当前调用对整段 trace 变换，不能据此声称每次滚动都重新拟合。
+5. **P2：指标可跨无效区间连线、孤立有效点看不见，错误 sidecar 还可能被错位呈现。** `CaptureMetricSeries.readTimeline` 不校验会话身份、时间单调/非负及 cursor 对 raw 范围的一致性；标为有效但数字非法的项被转 null。`resolveMetricTimeline` 有任意非空指标即判录制期有效；离线后备直接过滤 rejected windows。`SessionSignalWorkbench.buildPersistedMetricSeries` 再丢弃 null，Canvas 无条件连接剩余点，单点只有 moveTo；越界 cursor 则走 nearestTimeIndex，能被夹到首尾。这会把不可用区间画成看似连续的指标趋势，或把无关指标画到当前会话。源文件完整的普通会话不必然触发身份问题。
+6. **P2：旧/损坏指标会话打开时，RAW 被迫等待全量后备分析；后备失败会连带使波形加载失败。** `CaptureSessionOfflineAnalysisService.loadSignalTrace` 串行完成 raw、ZERO、FIXED、`resolveMetricTimeline` 后才返回；后者在 sidecar 缺失/无效时调用完整 `OfflinePpgAnalyzer.analyze`，没有对计算异常做局部降级。它在后台执行，不是已证实的主线程阻塞；长会话耗时/内存影响仍需测量，不能用来解释已暂缓的未扫描卡顿。
+
+### V3.R11 录制与文件可靠性修正
+
+目标：先修复会影响录制可恢复性和诊断可信度的问题 1–3，不改信号算法。
+
+1. **启动事务收口。** 初始化全部必要文件（含录前 BP）成功后才提交 active writer 和启动 worker；失败统一关闭资源、恢复非活动状态并使等待方结束，保留有必要的恢复证据。service 用明确的存储/启动失败结果退出准备状态和前台通知；取消必须先清理再传播，不吞取消。测试注入 writer 创建、BP 创建/追加失败，验证无悬挂 writer/线程、stop 不阻塞、换合法新会话可重试，旧会话证据不误删。
+2. **使用活动协议的诊断。** 为 ADS/CUP 提供统一的 decoder 诊断快照，ADS 补待处理字节读取；decoded/坏帧/弃字节/首帧对齐/pending 从实际 decoder 取，gap/重/乱继续走共同 tracker。定义并测试“初始对齐弃字节”与后续损伤的边界，不把通知分块视为坏帧。三协议分别覆盖正常、拆包/粘包、损坏帧、前缀/残尾及高 gap；ADS fixture 必须穿过 replay→inspection→analysis report，不能仅测 live decoder。
+3. **恢复副本完整保留与溯源。** 明确保留会话 BP、BP 编辑时间、ECG 采样率及既有 participant/模式字段；文件指针来自实际复制结果。校验复制的 sidecar 时仅允许当前会话身份或明确记录且符合恢复契约的源身份，不任意豁免 ID 检查。测试 ADS+录前/录中 BP 的恢复副本，验证字段、ECG 行数/身份及源文件 hash/复制前缀不变。
+
+必要验收：上述故障注入/三协议/恢复文件契约回归及完整 JVM、lint、Debug/AndroidTest、privacy/BLE/lifecycle 门禁。更新状态后按 `V3.R11 <主题>` commit，仅包含本轮改动。真机只需正常录制含 BP→停止→再次开始的冒烟及恢复会话详情对照，不要求破坏真机存储来制造故障。
+
+### V3.R11 实施状态（2026-09-04）
+
+- 已完成启动事务收口、typed 录制初始化失败、活动协议 replay 诊断和恢复副本字段/ECG 溯源修正；新增故障注入与 ADS/recovery 回归。
+- 自动门禁：`test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 通过；235 JVM tests，0 failure/error/skip。未执行真机。
+- R11 commit 只包含本轮生产代码、测试和本轮文档事实；工作区原有 `.idea`、`app/release/`、SQI UI/测试修改不纳入。
+
+### V3.R12 回放呈现与加载一致性修正（待实施）
+
+目标：修复问题 4–6；依赖 R11 的可信 replay 报告，不重做已验证的滤波算法。
+
+1. **RAW 口径统一。** 详情和工作台 RAW 改为与实时相同的仅逐点取负显示；不隐式去趋势。若未来确需去趋势，应使用明确命名的派生模式，本轮不增加它。测试常量、斜坡和真实 fixture 的逐点映射及源数组不变；保持现有 raw gap 证据、marker 下层/开关和 repaired accepted 时钟。
+2. **指标证据和画线统一。** 读取时校验 session/provenance、有效数值、时间/cursor/范围一致性，兼容旧 schema 的差异须显式说明而非夹到首尾。保留每个指标自己的不可用 epoch 与离线 rejected window 边界，绘图跨这些区间断线，单点画可见点，当前可视区无值时明确提示。wire gap 压缩不等于指标无效：不得因原始 gap 再清空/切断所有 repaired 指标。录制期模板 SQI 与实时综合 SQI 在标签上区分，不改变 CSV 口径；后备只产 HR/PI 时应逐项说明 SQI/RR 未提供。覆盖 valid→invalid→valid、单点、越界/错会话/逆序时间、离线拒绝窗口；绘图策略测试须被真实 Canvas 使用，避免只测试独立未接线的层级常量。
+3. **分阶段加载和局部失败。** RAW 可独立就绪，ZERO/FIXED/指标有各自加载和失败状态；后备分析异常不得隐藏已成功读取的 raw，快速切换会话可取消旧任务且不发布旧结果。优先复用同 raw hash、算法/repair profile 的已验证结果；不使用不匹配的旧 artifact。用短/长 fixture 记录加载耗时与峰值资源，验证不重复启动全量分析；不设置没有测量依据的性能达标数字。
+
+必要验收：上述映射/指标/加载状态 JVM 与文件契约回归、完整门禁；对一份正常、一份密集 gap、一个缺 metrics 的会话检查 RAW/ZERO/FIXED、指标断线/孤点/来源和 marker 开关。真机节点用于呈现验证，不等同于医疗有效性验证。更新状态后按 `V3.R12 <主题>` commit。
+
+### 边界与文档同步
+
+- 本次仅审计与规划，R11/R12 待用户要求实施；原 R9/R10 真机节点仍待测。暂缓的空闲页面卡顿不重新纳入，不根据手机代码断言开发板已修复或仍故障。
+- 保持 raw 文件不可变，不补造生理样本，不引入未校准 BP/SpO2，不更换协议选择策略。
+- 实施时同步 `01_CODEBASE_AS_IS.md`，并纠正 `02_REQUIREMENTS_REBASED.md` 1.2/2.3 中已被用户与 R9 废止的“取消录中 BP”描述：当前要求录前/录中参考血压共存，后期 metadata 编辑不伪造历史事件。旧文档不能覆盖当前需求。
 
 ---
 

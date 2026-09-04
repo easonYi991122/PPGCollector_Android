@@ -305,17 +305,23 @@ class CaptureForegroundService : Service() {
             val result = if (preflightFailure != null) {
                 CaptureRecordingStartResult.Rejected(preflightFailure)
             } else {
-                recordingController.start(
-                    configuration = configuration,
-                    phase = current.phase,
-                    freshness = current.freshness,
-                    connectionGeneration = current.connectionGeneration,
-                    availableBytes = runCatching {
-                        Files.getFileStore((application as PpgCollectorApplication).sessionsRoot.parent)
-                            .usableSpace
-                    }.getOrNull(),
-                    participant = participant,
-                )
+                try {
+                    recordingController.start(
+                        configuration = configuration,
+                        phase = current.phase,
+                        freshness = current.freshness,
+                        connectionGeneration = current.connectionGeneration,
+                        availableBytes = runCatching {
+                            Files.getFileStore((application as PpgCollectorApplication).sessionsRoot.parent)
+                                .usableSpace
+                        }.getOrNull(),
+                        participant = participant,
+                    )
+                } catch (error: Exception) {
+                    CaptureRecordingStartResult.Failed(
+                        error.message ?: error::class.simpleName ?: "recording start failed",
+                    )
+                }
             }
             kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
                 if (result is CaptureRecordingStartResult.Started) {
@@ -327,7 +333,7 @@ class CaptureForegroundService : Service() {
                     if (result is CaptureRecordingStartResult.Rejected) {
                         _runtimeFailure.value = result.failure
                     } else if (result is CaptureRecordingStartResult.Failed) {
-                        _runtimeFailure.value = CaptureStartFailure.DeviceNotReady
+                        _runtimeFailure.value = CaptureStartFailure.RecordingStartFailed(result.message)
                     }
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()

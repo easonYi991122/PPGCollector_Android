@@ -17,6 +17,7 @@ sealed interface CaptureStartFailure {
     data class InvalidPlannedDuration(val detail: String) : CaptureStartFailure
     data class ParticipantIncomplete(val fields: List<String>) : CaptureStartFailure
     data object InsufficientStorage : CaptureStartFailure
+    data class RecordingStartFailed(val detail: String) : CaptureStartFailure
 }
 
 object CaptureNotificationPermissionPolicy {

@@ -246,6 +246,13 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - 详情波形区即使没有 analysis artifact 也会显示指标时间轴。详情和横屏工作台的 gap marker 可开关；低密度默认开、高密度默认关。marker 在波形下层低透明绘制并按像素去重，RAW path 可按 break 断开，ZERO/FIXED 保持连续；missing/break/source 诊断数字始终保留。
 - R10 完整自动门禁为 231 JVM tests、0 failure/error/skip；lint、Debug、AndroidTest、Release 与 API/lifecycle/BLE/privacy contracts 全部通过。开发板修复前/后的真机会话对照仍待执行。
 
+## R11 实际实现补充（2026-09-04）
+
+- 录制启动现在把录前 BP sidecar 写入视为启动事务的一部分；writer 只有在该写入和状态初始化成功后才发布为 active。初始化异常会清空队列、关闭/删除无 raw 的临时会话并发布 typed `RecordingStartFailed`，service 不再把文件错误伪装成设备未就绪；同一 controller 可在失败后重试。
+- `Ads1292rStreamDecoder` 暴露 bounded pending byte count；`CupRawReplayEngine` 对 ADS 120-byte 使用 ADS decoder 的 frames/invalid/discarded/pending 统计，CUP/Nordic 168 仍使用原 decoder。序号异常仍来自共同 tracker；leading alignment 只从当前活动 decoder 统计。
+- 恢复副本保留 session BP、BP 更新时间、record mode/planned duration、ECG sample rate 与 participant；ECG 文件指针来自实际复制的 sidecar。详情 inspection 对恢复副本允许 metadata session id 或 recovery source session id 的 sidecar 身份，源 CSV/ECG 内容不被改写。
+- R11 新增启动故障、ADS replay、ADS+ECG/BP recovery JVM/file-contract 回归。完整 R11 门禁：235 tests（当前工作区含用户新增 UI 测试），0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均通过。真机仍待测。
+
 ## R7 后代码结构审计（2026-08-20）
 
 - `app/src/main/java` 共 76 个 Kotlin 文件、约 2.14 万行；`core/ble`、`core/protocol`、`core/signal`、`data/session` 的分包边界与当前项目规模相称。短文件主要承载单一协议、策略或文件契约，不适合为了减少文件数量而合并。

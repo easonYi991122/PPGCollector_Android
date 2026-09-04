@@ -164,7 +164,11 @@ object CaptureSessionInspectionService {
                 )
             }
             if (ecg != null) {
-                if (ecg.sessionId != null && ecg.sessionId != metadata.sessionId) {
+                val allowedSidecarSessionIds = setOfNotNull(
+                    metadata.sessionId,
+                    metadata.recovery?.sourceSessionId,
+                )
+                if (ecg.sessionId != null && ecg.sessionId !in allowedSidecarSessionIds) {
                     findings += finding(
                         "ecg-session-id",
                         CaptureInspectionSeverity.ERROR,

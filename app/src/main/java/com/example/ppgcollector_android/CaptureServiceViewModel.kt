@@ -103,6 +103,7 @@ private fun CaptureStartFailure.message(): String = when (this) {
     is CaptureStartFailure.ParticipantIncomplete ->
         "请补齐被试信息必填项：${fields.joinToString("、")}"
     CaptureStartFailure.InsufficientStorage -> "可用存储不足"
+    is CaptureStartFailure.RecordingStartFailed -> "录制初始化失败：$detail"
 }
 
 /**

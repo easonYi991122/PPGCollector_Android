@@ -131,7 +131,11 @@ object CupRawReplayEngine {
                 // Raw-first capture can attach while the shared live decoder is already
                 // inside a frame. Replay has no earlier context, so this prefix is an
                 // auditable alignment condition rather than post-alignment corruption.
-                leadingAlignmentBytes = decoder.stats.bytesDiscarded
+                leadingAlignmentBytes = if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                    adsDecoder.stats.discardedBytes
+                } else {
+                    decoder.stats.bytesDiscarded.toLong()
+                }.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
                 hasDecodedFrame = true
             }
             frames.forEach { frame ->
@@ -176,7 +180,9 @@ object CupRawReplayEngine {
         }
 
         fun report(summary: CupRawScanSummary): CupRawReplayReport {
+            val isAds = protocolMode == CupStreamProtocolMode.ADS1292R_120
             val decoderStats = decoder.stats
+            val adsStats = adsDecoder.stats
             val sequenceStats = sequenceTracker.stats
             return CupRawReplayReport(
                 peakRawRecordBufferBytes = summary.peakRecordBufferBytes,
@@ -185,22 +191,28 @@ object CupRawReplayEngine {
                 validRawBytes = summary.validByteCount,
                 totalRawBytes = summary.totalByteCount,
                 tailIssue = summary.tailIssue,
-                decodedFrames = decoderStats.frames,
-                auxiliaryFrames = decoderStats.auxiliaryFrames,
+                decodedFrames = (if (isAds) adsStats.frames else decoderStats.frames.toLong()).toIntSaturated(),
+                auxiliaryFrames = if (isAds) 0 else decoderStats.auxiliaryFrames,
                 acceptedFrames = acceptedFrames,
                 acceptedSamples = acceptedSamples,
                 missingFrames = sequenceStats.missingFrames,
                 duplicateFrames = sequenceStats.duplicateFrames,
                 outOfOrderFrames = sequenceStats.outOfOrderFrames,
-                structurallyInvalidFrames = decoderStats.invalidFunction +
-                    decoderStats.invalidLength + decoderStats.invalidTail,
-                discardedBytes = decoderStats.bytesDiscarded,
-                pendingDecoderBytes = decoder.pendingByteCount,
+                structurallyInvalidFrames = (if (isAds) {
+                    adsStats.invalidHeaders + adsStats.invalidTails
+                } else {
+                    (decoderStats.invalidFunction + decoderStats.invalidLength + decoderStats.invalidTail).toLong()
+                }).toIntSaturated(),
+                discardedBytes = (if (isAds) adsStats.discardedBytes else decoderStats.bytesDiscarded.toLong())
+                    .toIntSaturated(),
+                pendingDecoderBytes = if (isAds) adsDecoder.pendingByteCount else decoder.pendingByteCount,
                 firstFrameHostNanoseconds = firstFrameHostNanoseconds,
                 lastFrameHostNanoseconds = lastFrameHostNanoseconds,
                 recentSamples = recentSamples.toList(),
                 leadingAlignmentBytes = leadingAlignmentBytes,
             )
         }
+
+        private fun Long.toIntSaturated(): Int = coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
     }
 }

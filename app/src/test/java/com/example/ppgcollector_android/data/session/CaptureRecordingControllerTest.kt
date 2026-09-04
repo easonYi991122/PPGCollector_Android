@@ -77,6 +77,49 @@ class CaptureRecordingControllerTest {
     }
 
     @Test
+    fun initialBloodPressureWriteFailureCleansUpAndAllowsRetry() {
+        val root = Files.createTempDirectory("capture-start-failure")
+        try {
+            val controller = CaptureRecordingController(
+                sessionsRoot = root,
+                capacityProvider = CaptureStorageCapacityProvider { Long.MAX_VALUE },
+                writerFactory = { configuration, sessionsRoot, capacityProvider ->
+                    val writer = CaptureSessionWriter(configuration, sessionsRoot, capacityProvider)
+                    if (configuration.systolicBp != null) {
+                        Files.createDirectory(writer.bloodPressurePath)
+                    }
+                    writer
+                },
+            )
+            val failed = controller.start(
+                configuration().copy(systolicBp = 121, diastolicBp = 79),
+                BleConnectionPhase.Receiving("device"),
+                StreamFreshness.FRESH,
+                connectionGeneration = 32,
+                availableBytes = Long.MAX_VALUE,
+            )
+            assertTrue(failed is CaptureRecordingStartResult.Failed)
+            assertEquals(CaptureRecordingState.FAILED, controller.snapshot.state)
+            assertTrue(Files.notExists(root.resolve("controller_001")))
+
+            assertEquals(
+                CaptureRecordingStartResult.Started,
+                controller.start(
+                    configuration(),
+                    BleConnectionPhase.Receiving("device"),
+                    StreamFreshness.FRESH,
+                    connectionGeneration = 33,
+                    availableBytes = Long.MAX_VALUE,
+                ),
+            )
+            controller.stop(CaptureStopReason.USER)
+            assertNotNull(controller.awaitFinalized(5, TimeUnit.SECONDS))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun timedRecordingStopsAfterAcceptedSamplesAndPersistsPlan() {
         val root = Files.createTempDirectory("capture-timed")
         try {
