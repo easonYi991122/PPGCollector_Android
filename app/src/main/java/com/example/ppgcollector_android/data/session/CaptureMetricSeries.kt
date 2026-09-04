@@ -10,6 +10,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.util.Locale
+import kotlin.math.abs
 
 /** One atomically published 1 Hz metric epoch. */
 data class CaptureMetricEpoch(
@@ -92,11 +93,19 @@ object CaptureMetricSeries {
     fun scan(path: Path): CaptureSidecarScanReport =
         scanSessionSidecar(path, header, ::validateRow)
 
-    fun readTimeline(path: Path): List<CaptureMetricTimelinePoint> {
+    fun readTimeline(
+        path: Path,
+        expectedSessionId: String? = null,
+        acceptedSessionIds: Set<String> = emptySet(),
+    ): List<CaptureMetricTimelinePoint> {
         if (!Files.isRegularFile(path)) return emptyList()
         Files.newBufferedReader(path).use { reader ->
             require(reader.readLine()?.removeSuffix("\r") == header.trimEnd('\n')) {
                 "unexpected metrics header"
+            }
+            val allowedSessionIds = buildSet {
+                expectedSessionId?.let(::add)
+                addAll(acceptedSessionIds)
             }
             val result = ArrayList<CaptureMetricTimelinePoint>()
             var previousEpoch = -1L
@@ -110,10 +119,21 @@ object CaptureMetricSeries {
                 val fields = parseSessionCsvFields(line.removeSuffix("\r"))
                 require(fields.size == columns.size) { "expected ${columns.size} metrics fields" }
                 require(fields[0] == schemaVersion) { "unsupported metrics schema" }
+                if (allowedSessionIds.isNotEmpty()) {
+                    require(fields[1] in allowedSessionIds) {
+                        "metrics session_id does not match expected session"
+                    }
+                }
                 val epoch = fields[3].toLong()
                 val source = fields[4].toLong()
                 val sourceTime = fields[5].toDouble()
-                require(epoch > previousEpoch && source > previousSource && sourceTime.isFinite()) {
+                require(epoch >= 0L && source >= 0L && sourceTime.isFinite() && sourceTime >= 0.0) {
+                    "metrics timeline contains negative or non-finite cursor"
+                }
+                require(abs(sourceTime - source.toDouble() / 100.0) <= 0.000001) {
+                    "source_time_s does not match source_sample_index"
+                }
+                require(epoch > previousEpoch && source > previousSource) {
                     "metrics timeline is not monotonic"
                 }
                 result += CaptureMetricTimelinePoint(
@@ -143,6 +163,7 @@ object CaptureMetricSeries {
     private fun validMetric(fields: List<String>, valueIndex: Int, validIndex: Int): Double? {
         if (!fields[validIndex].toBooleanStrict()) return null
         return fields[valueIndex].toDoubleOrNull()?.takeIf(Double::isFinite)
+            ?: error("valid metric value is not finite")
     }
 
     private fun validateRow(fields: List<String>, previous: List<String>?): String? {
@@ -152,7 +173,11 @@ object CaptureMetricSeries {
         val epoch = fields[3].toLongOrNull() ?: return "invalid metric_epoch"
         val source = fields[4].toLongOrNull() ?: return "invalid source_sample_index"
         val time = fields[5].toDoubleOrNull() ?: return "invalid source_time_s"
+        if (epoch < 0L || source < 0L) return "metric cursor is negative"
         if (!time.isFinite()) return "non-finite source_time_s"
+        if (time < 0.0 || abs(time - source.toDouble() / 100.0) > 0.000001) {
+            return "source_time_s does not match source_sample_index"
+        }
         if (previous != null) {
             if (fields[1] != previous[1]) return "session_id changed within sidecar"
             val previousEpoch = previous[3].toLongOrNull()

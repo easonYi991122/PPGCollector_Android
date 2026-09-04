@@ -38,8 +38,8 @@
 | 标识 | 含义 |
 |---|---|
 | V3.R1 … V3.R11 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R9/R9.1、R10 与 R11 自动门禁已通过，真机节点待测 |
-| V3.R12 | 回放呈现与分阶段加载，已规划、待实施 |
-| 当前代码基线 | R1–R11 已落地，R3 综合 SQI 显示口径已按 combo_sqi.py V4.4.2 收口；BLE、录制、连续性、实时/离线显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
+| V3.R12 | 回放呈现与分阶段加载，已实施并通过自动门禁；真机待测 |
+| 当前代码基线 | R1–R12 已落地，R3 综合 SQI 显示口径已按 combo_sqi.py V4.4.2 收口；BLE、录制、连续性、实时/离线显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
 
 ## 证据优先级（本阶段）
 

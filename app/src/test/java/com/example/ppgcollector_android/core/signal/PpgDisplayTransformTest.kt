@@ -19,4 +19,18 @@ class PpgDisplayTransformTest {
         val grown = PpgDisplayTransform.liveRawPeakUp(doubleArrayOf(100.0, 101.0, 102.0))
         assertArrayEquals(first, grown.copyOfRange(0, first.size), 0.0)
     }
+
+    @Test
+    fun offlineRawPlotKeepsConstantAndRampValuesInsteadOfRemovingTrend() {
+        assertArrayEquals(
+            doubleArrayOf(-100.0, -100.0, -100.0),
+            PpgDisplayTransform.rawPeakUpForPlot(doubleArrayOf(100.0, 100.0, 100.0)),
+            0.0,
+        )
+        assertArrayEquals(
+            doubleArrayOf(-100.0, -101.0, -102.0),
+            PpgDisplayTransform.rawPeakUpForPlot(doubleArrayOf(100.0, 101.0, 102.0)),
+            0.0,
+        )
+    }
 }

@@ -1,7 +1,7 @@
 # V3.0 开发状态（简版）
 
 更新：2026-09-04
-当前轮次：**R11 代码修正已通过自动门禁；R12 回放呈现与分阶段加载待实施；R9/R10/R11 真机节点仍待测**
+当前轮次：**R12 代码修正已通过完整自动门禁并待提交；R9/R10/R11/R12 真机节点仍待测**
 
 ## 当前代码审计（2026-09-04，仅规划）
 
@@ -17,6 +17,13 @@
 - 新增启动 I/O 故障注入、ADS 前导/尾部 replay、ADS+ECG/BP recovery 测试。
 - 完整门禁通过：235 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均成功。未执行真机；R9/R10/R11 真机节点待测。
 - 下一轮：R12 RAW 显示口径、指标 sidecar/断线绘制、分阶段加载与局部失败。
+
+## R12 本轮落地（2026-09-04）
+
+- RAW 回放和工作台改为实时同口径逐点取负；旧 `rawPeakUpForPlot` API 保留但不再去趋势。metrics sidecar 增加 session/provenance、非负单调 cursor、时间对齐、有限值和 accepted raw 范围校验。
+- 指标时间轴保留无效 epoch/rejected window 的 source cursor；Canvas 跨无效区间断线、单点绘制圆点，并将 sidecar SQI 标签改为「录制 SQI」。
+- `loadSignalTrace` 先回调已完成 raw/滤波的 partial signal，之后加载指标；离线后备异常只将指标置为不可用，不隐藏已成功读取的波形。恢复 provenance 的 source session id 可继续读取复制 sidecar。
+- R12 定向/完整 JVM：242 tests，0 failure/error/skip；完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 门禁通过，lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均成功。未执行真机。
 
 > 本文件后面的 R10–R5.1 记录保留作历史基线；以下先记录 2026-08-25 对 R3/R4.1E/R6 F.5 遗留综合 SQI 的收口。
 

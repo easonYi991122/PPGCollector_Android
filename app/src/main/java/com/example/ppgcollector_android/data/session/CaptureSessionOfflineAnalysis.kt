@@ -58,6 +58,7 @@ data class CaptureSessionAnalysisInputReport(
 )
 
 enum class PersistedMetricSidecarState {
+    LOADING,
     PERSISTED_VALID,
     PERSISTED_NO_VALID_VALUES,
     SIDECAR_MISSING,
@@ -143,6 +144,7 @@ data class CaptureSessionSignalTrace(
         source = CaptureMetricTimelineSource.UNAVAILABLE,
         detail = "未加载指标证据",
     ),
+    val metricUnavailableSourceIndices: IntArray = intArrayOf(),
     val bloodPressureEvents: List<ManualBloodPressureEvent> = emptyList(),
 )
 
@@ -256,6 +258,7 @@ object CaptureSessionOfflineAnalysisService {
     fun loadSignalTrace(
         session: StoredCaptureSession,
         cancellationCheck: () -> Unit = {},
+        onPartial: ((CaptureSessionSignalTrace) -> Unit)? = null,
     ): CaptureSessionSignalTrace {
         val files = CaptureSessionRepository.expectedFiles(session.directory)
         require(Files.isRegularFile(files.raw)) { "会话缺少 raw 文件" }
@@ -269,7 +272,35 @@ object CaptureSessionOfflineAnalysisService {
         cancellationCheck()
         val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.analysisInput, cancellationCheck)
         val fixedLag = OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.analysisInput, cancellationCheck)
-        val metrics = resolveMetricTimeline(files.metrics, loaded.analysisInput, cancellationCheck)
+        val partial = CaptureSessionSignalTrace(
+            timeSeconds = loaded.rawInput.timeSeconds,
+            rawRed = loaded.rawInput.red,
+            rawIr = loaded.rawInput.ir,
+            filteredRed = filtered.red,
+            filteredIr = filtered.ir,
+            fixedLagRed = fixedLag.red,
+            fixedLagIr = fixedLag.ir,
+            breakIndices = loaded.rawInput.breakIndices,
+            replay = loaded.replay,
+            preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
+            fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
+            metricTimelineEvidence = CaptureMetricTimelineEvidence(
+                persistedState = PersistedMetricSidecarState.LOADING,
+                source = CaptureMetricTimelineSource.UNAVAILABLE,
+                detail = "raw/滤波已就绪，指标时间轴加载中",
+            ),
+        )
+        onPartial?.invoke(partial)
+        cancellationCheck()
+        val metrics = resolveMetricTimeline(
+            metricsPath = files.metrics,
+            analysisInput = loaded.analysisInput,
+            acceptedSessionIds = setOfNotNull(
+                session.metadata?.sessionId,
+                session.metadata?.recovery?.sourceSessionId,
+            ),
+            cancellationCheck = cancellationCheck,
+        )
         val bloodPressure = files.bloodPressure?.let { path ->
             runCatching { CaptureBloodPressureSeries.read(path) }.getOrDefault(emptyList())
         }.orEmpty()
@@ -287,6 +318,7 @@ object CaptureSessionOfflineAnalysisService {
             fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
             metricTimeline = metrics.points,
             metricTimelineEvidence = metrics.evidence,
+            metricUnavailableSourceIndices = metrics.unavailableSourceIndices,
             bloodPressureEvents = bloodPressure,
         )
     }
@@ -351,6 +383,7 @@ object CaptureSessionOfflineAnalysisService {
     private fun resolveMetricTimeline(
         metricsPath: Path?,
         analysisInput: OfflinePpgInput,
+        acceptedSessionIds: Set<String>,
         cancellationCheck: () -> Unit,
     ): ResolvedMetricTimeline {
         val persisted = when {
@@ -360,7 +393,13 @@ object CaptureSessionOfflineAnalysisService {
                 "metrics sidecar 不存在",
             )
             else -> try {
-                val points = CaptureMetricSeries.readTimeline(metricsPath)
+                val points = CaptureMetricSeries.readTimeline(
+                    metricsPath,
+                    acceptedSessionIds = acceptedSessionIds,
+                )
+                require(points.all { it.sourceSampleIndex in analysisInput.red.indices }) {
+                    "metrics source_sample_index exceeds accepted raw samples"
+                }
                 if (points.any { it.hasValidValue() }) {
                     PersistedMetricLoad(
                         PersistedMetricSidecarState.PERSISTED_VALID,
@@ -391,20 +430,36 @@ object CaptureSessionOfflineAnalysisService {
                     CaptureMetricTimelineSource.RECORDED_1_HZ,
                     persisted.detail,
                 ),
+                unavailableSourceIndices = persisted.points
+                    .filterNot { it.hasValidValue() }
+                    .map { it.sourceSampleIndex.toInt() }
+                    .toIntArray(),
             )
         }
 
         cancellationCheck()
-        val analysis = OfflinePpgAnalyzer.analyze(
-            analysisInput,
-            progress = { _, _ -> cancellationCheck() },
-            cancellationCheck = cancellationCheck,
-        )
+        val analysis = try {
+            OfflinePpgAnalyzer.analyze(
+                analysisInput,
+                progress = { _, _ -> cancellationCheck() },
+                cancellationCheck = cancellationCheck,
+            )
+        } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
+            return ResolvedMetricTimeline(
+                points = emptyList(),
+                evidence = CaptureMetricTimelineEvidence(
+                    persisted.state,
+                    CaptureMetricTimelineSource.UNAVAILABLE,
+                    persisted.detail + "；离线重算失败：${boundedError(error)}",
+                ),
+            )
+        }
         val recomputed = analysis.windows.asSequence()
-            .filter(OfflinePulseWindow::accepted)
             .mapIndexedNotNull { epoch, window ->
                 val sourceIndex = ((window.startIndex + window.stopIndex) / 2)
                     .coerceIn(0, maxOf(0, analysisInput.red.lastIndex))
+                if (!window.accepted) return@mapIndexedNotNull null
                 val heartRate = window.peakBpm?.takeIf(Double::isFinite)
                 val perfusionIndex = when (window.usedChannel ?: window.bestChannel) {
                     "RED" -> window.redAcDcPercent
@@ -422,6 +477,13 @@ object CaptureSessionOfflineAnalysisService {
                 )
             }
             .toList()
+        val unavailableSourceIndices = analysis.windows.asSequence()
+            .filterNot(OfflinePulseWindow::accepted)
+            .map { window ->
+                ((window.startIndex + window.stopIndex) / 2)
+                    .coerceIn(0, maxOf(0, analysisInput.red.lastIndex))
+            }
+            .toList()
         val source = if (recomputed.isEmpty()) {
             CaptureMetricTimelineSource.UNAVAILABLE
         } else {
@@ -435,6 +497,7 @@ object CaptureSessionOfflineAnalysisService {
         return ResolvedMetricTimeline(
             recomputed,
             CaptureMetricTimelineEvidence(persisted.state, source, persisted.detail + outcome),
+            unavailableSourceIndices.toIntArray(),
         )
     }
 
@@ -607,6 +670,7 @@ object CaptureSessionOfflineAnalysisService {
     private data class ResolvedMetricTimeline(
         val points: List<CaptureMetricTimelinePoint>,
         val evidence: CaptureMetricTimelineEvidence,
+        val unavailableSourceIndices: IntArray = intArrayOf(),
     )
 
     private class DoubleArrayBuilder(initialCapacity: Int) {

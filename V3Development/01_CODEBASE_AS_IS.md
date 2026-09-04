@@ -253,6 +253,14 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - 恢复副本保留 session BP、BP 更新时间、record mode/planned duration、ECG sample rate 与 participant；ECG 文件指针来自实际复制的 sidecar。详情 inspection 对恢复副本允许 metadata session id 或 recovery source session id 的 sidecar 身份，源 CSV/ECG 内容不被改写。
 - R11 新增启动故障、ADS replay、ADS+ECG/BP recovery JVM/file-contract 回归。完整 R11 门禁：235 tests（当前工作区含用户新增 UI 测试），0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均通过。真机仍待测。
 
+## R12 实际实现补充（2026-09-04）
+
+- 详情和全屏工作台 RAW 使用与实时一致的逐点取负；兼容名称 `rawPeakUpForPlot` 不再移除 DC/线性趋势，源数组与 gap evidence 不变。
+- metrics sidecar 读取校验允许的 session/provenance、非负且单调的 epoch/cursor、`source_time_s == source_sample_index / 100`、有效值有限性及 raw cursor 范围；恢复副本可使用 recovery source session id。无效或缺失 sidecar 的离线重算失败会保留 raw/滤波结果并显示有界不可用原因。
+- 指标时间轴保留无值 epoch/离线 rejected window 的 source cursor；UI 按无效 epoch/大 cursor 跳变断线，单个有效点绘制圆点，并将录制期模板 SQI 标为「录制 SQI」。
+- `loadSignalTrace` 先通过 `onPartial` 发布 raw/滤波 signal，再加载 sidecar/后备指标；SessionsViewModel 可先展示波形，旧任务切换仍按目录校验。R12 未设置未经测量的性能目标或引入无界缓存。
+- R12 新增 RAW 变换、metrics 校验、partial signal 和指标断线策略回归。完整门禁：242 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均通过。真机仍待测。
+
 ## R7 后代码结构审计（2026-08-20）
 
 - `app/src/main/java` 共 76 个 Kotlin 文件、约 2.14 万行；`core/ble`、`core/protocol`、`core/signal`、`data/session` 的分包边界与当前项目规模相称。短文件主要承载单一协议、策略或文件契约，不适合为了减少文件数量而合并。

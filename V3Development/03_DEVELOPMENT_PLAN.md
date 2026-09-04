@@ -1143,7 +1143,7 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - 自动门禁：`test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 通过；235 JVM tests，0 failure/error/skip。未执行真机。
 - R11 commit 只包含本轮生产代码、测试和本轮文档事实；工作区原有 `.idea`、`app/release/`、SQI UI/测试修改不纳入。
 
-### V3.R12 回放呈现与加载一致性修正（待实施）
+### V3.R12 回放呈现与加载一致性修正
 
 目标：修复问题 4–6；依赖 R11 的可信 replay 报告，不重做已验证的滤波算法。
 
@@ -1152,6 +1152,12 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 3. **分阶段加载和局部失败。** RAW 可独立就绪，ZERO/FIXED/指标有各自加载和失败状态；后备分析异常不得隐藏已成功读取的 raw，快速切换会话可取消旧任务且不发布旧结果。优先复用同 raw hash、算法/repair profile 的已验证结果；不使用不匹配的旧 artifact。用短/长 fixture 记录加载耗时与峰值资源，验证不重复启动全量分析；不设置没有测量依据的性能达标数字。
 
 必要验收：上述映射/指标/加载状态 JVM 与文件契约回归、完整门禁；对一份正常、一份密集 gap、一个缺 metrics 的会话检查 RAW/ZERO/FIXED、指标断线/孤点/来源和 marker 开关。真机节点用于呈现验证，不等同于医疗有效性验证。更新状态后按 `V3.R12 <主题>` commit。
+
+### R12 实施状态（2026-09-04）
+
+- 已完成 RAW 逐点口径统一、metrics session/provenance/cursor/finite 校验、无效 epoch/rejected window 断线和单点绘制、录制 SQI 标签区分，以及 partial signal 回调与离线指标局部失败降级。
+- 未添加未经测量的性能承诺或无界缓存；同 raw hash artifact 复用留待有性能基线后再做，避免在当前真机问题未量化前引入缓存一致性风险。
+- 定向与完整 JVM 已通过；完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 门禁通过：242 tests，0 failure/error/skip。未执行真机。
 
 ### 边界与文档同步
 

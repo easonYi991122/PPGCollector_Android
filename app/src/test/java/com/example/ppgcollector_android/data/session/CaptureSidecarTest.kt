@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class CaptureSidecarTest {
@@ -105,6 +106,32 @@ class CaptureSidecarTest {
             assertEquals(1L, stored.metadata?.writer?.bloodPressureRows)
         } finally {
             root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun metricTimelineRejectsWrongSessionAndNonCursorTime() {
+        val path = Files.createTempFile("metrics-invalid", ".csv")
+        try {
+            val fields = MutableList(CaptureMetricSeries.columns.size) { "" }
+            fields[0] = CaptureMetricSeries.schemaVersion
+            fields[1] = "other-session"
+            fields[2] = "1"
+            fields[3] = "0"
+            fields[4] = "100"
+            fields[5] = "2.0"
+            fields[6] = Instant.parse("2026-08-08T00:00:01Z").toString()
+            fields[8] = "false"
+            fields[13] = "false"
+            fields[18] = "false"
+            fields[23] = "false"
+            Files.writeString(path, CaptureMetricSeries.header + fields.joinToString(",") + "\n")
+
+            assertThrows(IllegalArgumentException::class.java) {
+                CaptureMetricSeries.readTimeline(path, expectedSessionId = "expected-session")
+            }
+        } finally {
+            Files.deleteIfExists(path)
         }
     }
 }

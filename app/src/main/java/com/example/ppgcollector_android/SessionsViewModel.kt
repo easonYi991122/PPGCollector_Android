@@ -442,6 +442,15 @@ class SessionsViewModel(application: android.app.Application) : AndroidViewModel
                     cancellationCheck = {
                         if (workerJob?.isActive != true) throw CancellationException()
                     },
+                    onPartial = { partial ->
+                        updateSelected(item.directory) {
+                            it.copy(
+                                isLoadingSignal = false,
+                                signal = partial,
+                                signalError = null,
+                            )
+                        }
+                    },
                 )
             }
             result.onSuccess { signal ->

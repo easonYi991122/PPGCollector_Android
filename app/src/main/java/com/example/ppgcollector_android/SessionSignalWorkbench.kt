@@ -143,14 +143,14 @@ internal fun CompleteSignalReplayPanel(
     )
     val red = remember(trace, stage) {
         when (stage) {
-            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
+            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawRed)
             ReplaySignalStage.ZERO_PHASE -> trace.filteredRed
             ReplaySignalStage.FIXED -> trace.fixedLagRed
         }
     }
     val ir = remember(trace, stage) {
         when (stage) {
-            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
+            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
             ReplaySignalStage.ZERO_PHASE -> trace.filteredIr
             ReplaySignalStage.FIXED -> trace.fixedLagIr
         }
@@ -288,6 +288,7 @@ private data class AlignedMetricSeries(
     val label: String,
     val color: Color,
     val points: List<Pair<Int, Double>>,
+    val unavailableSourceIndices: IntArray = intArrayOf(),
 )
 
 @Composable
@@ -297,11 +298,26 @@ private fun AlignedMetricTimelineChart(
     modifier: Modifier = Modifier,
 ) {
     val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
-    val series = remember(trace.metricTimeline, trace.timeSeconds) {
-        buildPersistedMetricSeries(trace.metricTimeline, trace.timeSeconds)
+    val series = remember(
+        trace.metricTimeline,
+        trace.timeSeconds,
+        trace.metricUnavailableSourceIndices,
+    ) {
+        buildPersistedMetricSeries(
+            trace.metricTimeline,
+            trace.timeSeconds,
+            trace.metricUnavailableSourceIndices,
+        )
     }
     val visibleSeries = remember(series, visibleRange) {
-        series.map { item -> item.copy(points = item.points.pointsIn(visibleRange)) }
+        series.map { item ->
+            item.copy(
+                points = item.points.pointsIn(visibleRange),
+                unavailableSourceIndices = item.unavailableSourceIndices
+                    .filter { it in visibleRange }
+                    .toIntArray(),
+            )
+        }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(
@@ -366,7 +382,16 @@ private fun AlignedMetricTimelineChart(
                             val x = xFor(point.first)
                             val y = bottom - 4.dp.toPx() -
                                 ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat()
-                            if (previousSourceIndex < 0) path.moveTo(x, y) else path.lineTo(x, y)
+                            if (metricPathBreakBefore(
+                                    previousSourceIndex,
+                                    point.first,
+                                    item.unavailableSourceIndices,
+                                )
+                            ) {
+                                path.moveTo(x, y)
+                            } else {
+                                path.lineTo(x, y)
+                            }
                             previousSourceIndex = point.first
                         }
                         drawPath(
@@ -374,6 +399,13 @@ private fun AlignedMetricTimelineChart(
                             item.color,
                             style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
                         )
+                        if (visible.size == 1) {
+                            val point = visible.single()
+                            val x = xFor(point.first)
+                            val y = bottom - 4.dp.toPx() -
+                                ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat()
+                            drawCircle(item.color, 3.dp.toPx(), Offset(x, y))
+                        }
                     }
                 }
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
@@ -389,22 +421,57 @@ private fun AlignedMetricTimelineChart(
 private fun buildPersistedMetricSeries(
     points: List<CaptureMetricTimelinePoint>,
     timeSeconds: DoubleArray,
+    globalUnavailableSourceIndices: IntArray = intArrayOf(),
 ): List<AlignedMetricSeries> {
+    fun sourceIndex(point: CaptureMetricTimelinePoint): Int? =
+        point.sourceSampleIndex.takeIf { it in 0 until timeSeconds.size.toLong() }?.toInt()
+
     fun values(selector: (CaptureMetricTimelinePoint) -> Double?): List<Pair<Int, Double>> =
         points.mapNotNull { point ->
             val value = selector(point)?.takeIf(Double::isFinite) ?: return@mapNotNull null
-            val sourceIndex = point.sourceSampleIndex
-                .takeIf { it in 0 until timeSeconds.size.toLong() }
-                ?.toInt()
-                ?: nearestTimeIndex(timeSeconds, point.sourceTimeSeconds)
-            sourceIndex?.let { it to value }
+            sourceIndex(point)?.let { it to value }
         }
+    fun unavailable(selector: (CaptureMetricTimelinePoint) -> Double?): IntArray =
+        (globalUnavailableSourceIndices.asSequence().asIterable() + points.mapNotNull { point ->
+            if (selector(point)?.takeIf(Double::isFinite) != null) null else sourceIndex(point)
+        }).distinct().sorted().toIntArray()
     return listOf(
-        AlignedMetricSeries("HR bpm", Color(0xFFD74747), values(CaptureMetricTimelinePoint::heartRateBpm)),
-        AlignedMetricSeries("PI %", Color(0xFF7B61C9), values(CaptureMetricTimelinePoint::perfusionIndexPercent)),
-        AlignedMetricSeries("SQI", Color(0xFF2E8B57), values(CaptureMetricTimelinePoint::signalQuality)),
-        AlignedMetricSeries("RR", Color(0xFFB26A00), values(CaptureMetricTimelinePoint::ratioOfRatios)),
+        AlignedMetricSeries(
+            "HR bpm",
+            Color(0xFFD74747),
+            values(CaptureMetricTimelinePoint::heartRateBpm),
+            unavailable(CaptureMetricTimelinePoint::heartRateBpm),
+        ),
+        AlignedMetricSeries(
+            "PI %",
+            Color(0xFF7B61C9),
+            values(CaptureMetricTimelinePoint::perfusionIndexPercent),
+            unavailable(CaptureMetricTimelinePoint::perfusionIndexPercent),
+        ),
+        AlignedMetricSeries(
+            "录制 SQI",
+            Color(0xFF2E8B57),
+            values(CaptureMetricTimelinePoint::signalQuality),
+            unavailable(CaptureMetricTimelinePoint::signalQuality),
+        ),
+        AlignedMetricSeries(
+            "RR",
+            Color(0xFFB26A00),
+            values(CaptureMetricTimelinePoint::ratioOfRatios),
+            unavailable(CaptureMetricTimelinePoint::ratioOfRatios),
+        ),
     ).filter { it.points.isNotEmpty() }
+}
+
+/** Keeps metric lines from implying continuity across rejected or missing epochs. */
+internal fun metricPathBreakBefore(
+    previousSourceIndex: Int,
+    currentSourceIndex: Int,
+    unavailableSourceIndices: IntArray,
+): Boolean {
+    if (previousSourceIndex < 0 || currentSourceIndex <= previousSourceIndex) return true
+    if (currentSourceIndex - previousSourceIndex > 150) return true
+    return unavailableSourceIndices.any { it > previousSourceIndex && it <= currentSourceIndex }
 }
 
 @Composable
@@ -1281,8 +1348,8 @@ private fun signalValues(
     stage: WorkbenchSignalStage,
 ): DoubleArray = when {
     stage == WorkbenchSignalStage.RAW && channel == "RED" ->
-        PpgDisplayTransform.rawPeakUpForPlot(trace.rawRed)
-    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUpForPlot(trace.rawIr)
+        PpgDisplayTransform.rawPeakUp(trace.rawRed)
+    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
     stage == WorkbenchSignalStage.FIXED && channel == "RED" -> trace.fixedLagRed
     stage == WorkbenchSignalStage.FIXED -> trace.fixedLagIr
     channel == "RED" -> trace.filteredRed

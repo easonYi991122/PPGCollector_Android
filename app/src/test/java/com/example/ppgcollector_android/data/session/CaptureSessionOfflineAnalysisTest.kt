@@ -111,9 +111,16 @@ class CaptureSessionOfflineAnalysisTest {
         withSession { session ->
             val files = CaptureSessionRepository.expectedFiles(session.directory)
             val beforeRaw = sha256(files.raw)
+            val partial = ArrayList<CaptureSessionSignalTrace>()
 
-            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(
+                session,
+                onPartial = partial::add,
+            )
 
+            assertEquals(1, partial.size)
+            assertEquals(3_000, partial.single().rawRed.size)
+            assertTrue(partial.single().metricTimeline.isEmpty())
             assertEquals(3_000, trace.timeSeconds.size)
             assertEquals(3_000, trace.rawRed.size)
             assertEquals(3_000, trace.rawIr.size)
@@ -129,6 +136,18 @@ class CaptureSessionOfflineAnalysisTest {
             assertEquals("offline-biquad-filtfilt-0.5-12hz-0.1", trace.preprocessProfile)
             assertEquals("fixed-lag-fir-0.5-12hz-0.1", trace.fixedLagProfile)
             assertEquals(beforeRaw, sha256(files.raw))
+        }
+    }
+
+    @Test
+    fun metricSidecarWithWrongSessionIsRejectedBeforeOfflineFallback() {
+        withSession(metricSidecar = metricSidecar(valid = true).replace("offline-session-id", "other")) {
+            session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+
+            assertEquals(PersistedMetricSidecarState.SIDECAR_INVALID, trace.metricTimelineEvidence.persistedState)
+            assertTrue(trace.metricTimelineEvidence.detail.contains("session"))
+            assertEquals(CaptureMetricTimelineSource.OFFLINE_RECOMPUTED, trace.metricTimelineEvidence.source)
         }
     }
 
