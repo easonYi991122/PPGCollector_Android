@@ -80,6 +80,8 @@ internal fun LiveCaptureScreen(
     onParticipantDraftChange: (CaptureParticipantDraft) -> Unit,
     onUseSuggestedName: () -> Unit,
     onStartCapture: () -> Unit,
+    onRequestNotificationPermission: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     onStopCapture: () -> Unit,
     onOpenBloodPressure: () -> Unit,
     onScan: () -> Unit,
@@ -92,7 +94,8 @@ internal fun LiveCaptureScreen(
 ) {
     var displayMode by rememberSaveable { mutableStateOf(LiveWaveformDisplayMode.FIXED_LAG) }
     var recordingDensity by rememberSaveable { mutableStateOf(CaptureContentDensity.COMPACT) }
-    val recordingActive = captureStatus.recording.state == CaptureRecordingState.RECORDING ||
+    val recordingActive = captureStatus.recording.state == CaptureRecordingState.STARTING ||
+        captureStatus.recording.state == CaptureRecordingState.RECORDING ||
         captureStatus.recording.state == CaptureRecordingState.STOPPING
     val effectiveDensity = if (recordingActive) recordingDensity else CaptureContentDensity.DETAILED
 
@@ -123,6 +126,9 @@ internal fun LiveCaptureScreen(
                     compact = recordingActive && effectiveDensity == CaptureContentDensity.COMPACT,
                     onOpenSessions = onOpenSessions,
                 )
+            }
+            CaptureUiPolicy.recordingTransitionMessage(captureStatus.recording.state)?.let { message ->
+                item(key = "capture-transition") { Text(message, color = MaterialTheme.colorScheme.primary) }
             }
             item(key = "connection-summary") {
                 ConnectionSummaryCard(
@@ -201,6 +207,8 @@ internal fun LiveCaptureScreen(
                 item(key = "capture-setup-start") {
                     CaptureStartCard(
                         captureGate = captureGate,
+                        onRequestNotificationPermission = onRequestNotificationPermission,
+                        onOpenNotificationSettings = onOpenNotificationSettings,
                         onStartCapture = {
                             recordingDensity = CaptureUiPolicy.reduce(
                                 recordingDensity,
@@ -530,17 +538,23 @@ private fun RecordingActionBar(
         ) {
             FilledTonalButton(
                 onClick = onOpenBloodPressure,
+                enabled = recording.state == CaptureRecordingState.RECORDING,
                 modifier = Modifier.weight(1f).heightIn(min = 52.dp),
             ) { Text("血压记录") }
             Button(
                 onClick = onStopCapture,
+                enabled = recording.state != CaptureRecordingState.STOPPING,
                 modifier = Modifier.weight(1f).heightIn(min = 52.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError,
                 ),
             ) {
-                val label = if (recording.recordMode == CaptureRecordMode.TIMED) {
+                val label = if (recording.state == CaptureRecordingState.STOPPING) {
+                    "上一会话仍在收尾"
+                } else if (recording.state == CaptureRecordingState.STARTING) {
+                    "取消准备"
+                } else if (recording.recordMode == CaptureRecordMode.TIMED) {
                     val remaining = recording.remainingDurationSeconds ?: 0
                     "停止（剩 ${remaining / 60}:${(remaining % 60).toString().padStart(2, '0')}）"
                 } else {

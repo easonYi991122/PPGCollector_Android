@@ -31,6 +31,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import com.example.ppgcollector_android.data.session.CaptureArtifactSummary
+import com.example.ppgcollector_android.data.session.CaptureArtifactReadState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,7 +51,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
 import com.example.ppgcollector_android.data.session.CaptureInspectionSeverity
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
 import com.example.ppgcollector_android.data.session.CupRawReplayReport
@@ -157,9 +159,12 @@ internal fun FlatSessionsContent(
                 SessionSummaryCard(
                     item = item,
                     analysisCount = state.artifactsBySession[item.directory]?.size ?: 0,
+                    busy = item.directory in state.busyDirectories,
+                    analysisError = state.artifactIndexErrors[item.directory] ?: state.artifactsBySession[item.directory]
+                        ?.firstOrNull { it.state != CaptureArtifactReadState.READY }?.detail,
                     selectionMode = state.sessionSelectionMode,
                     selected = item.directory in state.archiveSelectedDirectories,
-                    onClick = { if (state.sessionSelectionMode) onToggleSelection(item.directory) else onSelect(item) },
+                    onClick = { if (state.sessionSelectionMode) { if (item.directory !in state.busyDirectories) onToggleSelection(item.directory) } else onSelect(item) },
                     onToggleSelection = { onToggleSelection(item.directory) },
                 )
             }
@@ -171,6 +176,8 @@ internal fun FlatSessionsContent(
 private fun SessionSummaryCard(
     item: SessionListItemUi,
     analysisCount: Int,
+    busy: Boolean,
+    analysisError: String?,
     selectionMode: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
@@ -191,6 +198,8 @@ private fun SessionSummaryCard(
             Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
+            if (busy) Text("占用中 · 暂不可选择/删除/导出", color = MaterialTheme.colorScheme.error)
+            analysisError?.let { Text("分析索引：$it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -200,6 +209,7 @@ private fun SessionSummaryCard(
                     androidx.compose.material3.Checkbox(
                         checked = selected,
                         onCheckedChange = { onToggleSelection() },
+                        enabled = !busy,
                     )
                 }
                 Column(Modifier.weight(1f)) {
@@ -263,6 +273,8 @@ internal fun SavedSessionDetailScreen(
     onCancelAnalysis: (NioPath) -> Unit,
     onOpenFullscreenWorkbench: () -> Unit,
     onUpdateBloodPressure: (Int?, Int?) -> Unit,
+    onRetrySignal: () -> Unit,
+    onLoadArtifacts: (List<CaptureArtifactSummary>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val detail = state.selected
@@ -275,6 +287,10 @@ internal fun SavedSessionDetailScreen(
     }
     val item = detail.item
     val artifacts = state.artifactsBySession[item.directory].orEmpty()
+    var selectedArtifactPath by remember(item.directory) { mutableStateOf<NioPath?>(null) }
+    val selectedSummary = artifacts.firstOrNull { it.path == selectedArtifactPath } ?: artifacts.firstOrNull()
+    LaunchedEffect(selectedSummary) { onLoadArtifacts(listOfNotNull(selectedSummary)) }
+    val artifact = selectedSummary?.let { state.loadedArtifacts[it.path] }
     val task = state.analysisTasks[item.directory]
     var expandedSections by remember(item.directory) {
         mutableStateOf(SessionDetailUiPolicy.defaultExpandedSections)
@@ -433,7 +449,14 @@ internal fun SavedSessionDetailScreen(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                val bpError = SessionDetailUiPolicy.bloodPressureTextError(systolicText, diastolicText)
+                val bpAction = state.action.takeIf { it.kind == SessionActionKind.UPDATE_BP }
+                bpError?.let { StatusMessage(it, isError = true) }
+                bpAction?.error?.let { StatusMessage("保存失败：$it", isError = true) }
+                bpAction?.message?.let { StatusMessage(it) }
+                if (bpAction?.isRunning == true) Text("正在保存参考血压…")
                 Button(
+                    enabled = bpError == null && !state.action.isRunning,
                     onClick = {
                         onUpdateBloodPressure(
                             systolicText.toIntOrNull(),
@@ -445,7 +468,7 @@ internal fun SavedSessionDetailScreen(
                 when {
                     detail.signal != null -> ReferenceBloodPressureComparisonPanel(
                         trace = detail.signal,
-                        artifact = artifacts.firstOrNull(),
+                        artifact = artifact,
                     )
                     detail.isLoadingSignal -> Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -526,10 +549,13 @@ internal fun SavedSessionDetailScreen(
                             Text("正在加载完整 accepted signal 与全程 zero-phase 波形…")
                         }
                     }
-                    detail.signalError != null -> StatusMessage("完整信号加载失败：${detail.signalError}", isError = true)
+                    detail.signalError != null -> {
+                        StatusMessage("完整信号加载失败：${detail.signalError}", isError = true)
+                        OutlinedButton(onClick = onRetrySignal) { Text("重试信号加载") }
+                    }
                     detail.signal != null -> CompleteSignalReplayPanel(
                         trace = detail.signal,
-                        artifact = artifacts.firstOrNull(),
+                        artifact = artifact,
                     )
                     else -> EmptyState("无可重放信号", "raw 中没有可接受的完整样本。")
                 }
@@ -539,6 +565,16 @@ internal fun SavedSessionDetailScreen(
             AnalysisWorkbenchCard(
                 item = item,
                 artifacts = artifacts,
+                artifact = artifact,
+                selectedSummary = selectedSummary,
+                artifactError = selectedSummary?.let { state.artifactErrors[it.path] }
+                    ?: state.artifactIndexErrors[item.directory],
+                artifactLoading = selectedSummary?.path in state.loadingArtifacts,
+                onSelectArtifact = { selectedArtifactPath = it },
+                onRetryArtifact = { onLoadArtifacts(listOfNotNull(selectedSummary)) },
+                isLoadingSignal = detail.isLoadingSignal,
+                signalError = detail.signalError,
+                onRetrySignal = onRetrySignal,
                 task = task,
                 onStart = { onStartAnalysis(item) },
                 onCancel = { onCancelAnalysis(item.directory) },
@@ -615,7 +651,16 @@ private enum class AnalysisSection { SUMMARY, SIGNAL, SPECTRUM, CYCLE, DIAGNOSTI
 @Composable
 private fun AnalysisWorkbenchCard(
     item: SessionListItemUi,
-    artifacts: List<CaptureSessionAnalysisArtifact>,
+    artifacts: List<CaptureArtifactSummary>,
+    artifact: CaptureSessionAnalysisArtifact?,
+    selectedSummary: CaptureArtifactSummary?,
+    artifactError: String?,
+    artifactLoading: Boolean,
+    onSelectArtifact: (NioPath) -> Unit,
+    onRetryArtifact: () -> Unit,
+    isLoadingSignal: Boolean,
+    signalError: String?,
+    onRetrySignal: () -> Unit,
     task: SessionAnalysisTaskUi?,
     onStart: () -> Unit,
     onCancel: () -> Unit,
@@ -626,16 +671,11 @@ private fun AnalysisWorkbenchCard(
     modifier: Modifier = Modifier,
 ) {
     var section by remember(item.directory) { mutableStateOf(AnalysisSection.SUMMARY) }
-    var selectedPath by remember(artifacts) { mutableStateOf(artifacts.firstOrNull()?.path) }
-    val artifact = artifacts.firstOrNull { it.path == selectedPath } ?: artifacts.firstOrNull()
     val summary = when (task?.status) {
         SessionAnalysisTaskStatus.RUNNING -> "分析运行中 · ${task.progress?.let { "${(it.fractionCompleted * 100).toInt()}%" } ?: "准备中"}"
         SessionAnalysisTaskStatus.FAILED -> "分析失败 · ${task.error ?: "未知原因"}"
-        else -> if (artifact == null) {
-            "尚无结果 · 可生成 0.5–12 Hz ZERO / FIXED"
-        } else {
-            "${artifacts.size} 个版本化结果 · ${artifact.report.preprocessProfile}"
-        }
+        else -> if (artifacts.isEmpty()) "尚无结果 · 可生成 0.5–12 Hz ZERO / FIXED"
+            else "${artifacts.size} 个版本化结果 · ${selectedSummary?.analysisProfile ?: "索引不可读"}"
     }
     CollapsibleSectionCard(
         title = "离线分析",
@@ -654,7 +694,16 @@ private fun AnalysisWorkbenchCard(
             enabled = artifact != null && signal != null,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (signal == null) "完整信号加载中…" else "全屏横屏工作台")
+            Text(when (SessionDetailUiPolicy.signalState(isLoadingSignal, signalError, signal != null)) {
+                SessionSignalUiState.LOADING -> "完整信号加载中…"
+                SessionSignalUiState.FAILED -> "完整信号加载失败"
+                SessionSignalUiState.EMPTY -> "无可重放信号"
+                SessionSignalUiState.READY -> "全屏横屏工作台"
+            })
+        }
+        if (signalError != null) {
+            StatusMessage("完整信号加载失败：$signalError", isError = true)
+            OutlinedButton(onClick = onRetrySignal) { Text("重试信号加载") }
         }
         if (task?.status == SessionAnalysisTaskStatus.RUNNING) {
             val progress = task.progress
@@ -684,10 +733,6 @@ private fun AnalysisWorkbenchCard(
             SessionAnalysisTaskStatus.FAILED -> StatusMessage("分析失败：${task.error}", isError = true)
             else -> Unit
         }
-        if (artifact == null) {
-            Text("尚无分析结果。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            return@CollapsibleSectionCard
-        }
         if (SessionDetailUiPolicy.showsArtifactSelector(artifacts.size)) {
             Text("分析结果", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
             Row(
@@ -696,16 +741,16 @@ private fun AnalysisWorkbenchCard(
             ) {
                 artifacts.forEachIndexed { index, historyArtifact ->
                     FilledTonalButton(
-                        onClick = { selectedPath = historyArtifact.path },
+                        onClick = { onSelectArtifact(historyArtifact.path) },
                         colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = if (historyArtifact.path == artifact.path) {
+                            containerColor = if (historyArtifact.path == selectedSummary?.path) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
                                 MaterialTheme.colorScheme.surfaceVariant
                             },
                         ),
                     ) {
-                        Text("结果 ${index + 1} · ${formatInstant(historyArtifact.report.endedUtc)}")
+                        Text("结果 ${index + 1} · ${formatInstant(historyArtifact.endedUtc)}")
                     }
                 }
             }
@@ -723,6 +768,16 @@ private fun AnalysisWorkbenchCard(
                     ),
                 ) { Text(analysisSectionLabel(value)) }
             }
+        }
+        val readError = artifactError ?: selectedSummary?.detail
+        if (readError != null) {
+            StatusMessage("报告读取失败：$readError", isError = true)
+            OutlinedButton(onClick = onRetryArtifact) { Text("重试读取报告") }
+        }
+        if (artifact == null) {
+            if (artifactLoading) CircularProgressIndicator(Modifier.size(22.dp))
+            Text(if (artifactLoading) "正在读取所选报告…" else if (artifacts.isEmpty()) "尚无分析结果。" else "所选报告不可用")
+            return@CollapsibleSectionCard
         }
         when (section) {
             AnalysisSection.SUMMARY -> AnalysisOverview(artifact)
@@ -841,6 +896,7 @@ private fun AnalysisCycle(artifact: CaptureSessionAnalysisArtifact) {
 internal fun SessionComparisonScreen(
     state: SessionsUiState,
     onBack: () -> Unit,
+    onLoadArtifacts: (List<CaptureArtifactSummary>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val candidates = state.sessions.mapNotNull { item ->
@@ -850,6 +906,11 @@ internal fun SessionComparisonScreen(
     var candidateName by remember(candidates) { mutableStateOf(candidates.getOrNull(1)?.first?.directory?.toString()) }
     val baseline = candidates.firstOrNull { it.first.directory.toString() == baselineName }
     val candidate = candidates.firstOrNull { it.first.directory.toString() == candidateName }
+    LaunchedEffect(baseline?.second, candidate?.second) {
+        onLoadArtifacts(listOfNotNull(baseline?.second, candidate?.second))
+    }
+    val baselineArtifact = baseline?.second?.path?.let(state.loadedArtifacts::get)
+    val candidateArtifact = candidate?.second?.path?.let(state.loadedArtifacts::get)
     LazyColumn(
         modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
@@ -867,7 +928,7 @@ internal fun SessionComparisonScreen(
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(item.baseName, fontWeight = FontWeight.SemiBold)
                             Text(
-                                "${artifact.report.analysisProfile} · ${bpmText(artifact.report.metrics.heartRateBpm)}",
+                                "${artifact.analysisProfile ?: "不可读"} · ${bpmText(artifact.heartRateBpm)}",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -883,29 +944,31 @@ internal fun SessionComparisonScreen(
                 }
             }
         }
-        if (baseline != null && candidate != null) {
+        if (state.loadingArtifacts.isNotEmpty()) item { Text("正在读取所选报告…") }
+        state.artifactErrors.forEach { (_, error) -> item { StatusMessage(error, isError = true) } }
+        if (baseline != null && candidate != null && baselineArtifact != null && candidateArtifact != null) {
             item {
                 SectionCard("全幅数值对照", Modifier.padding(horizontal = 16.dp)) {
                     ComparisonRow("会话", baseline.first.baseName, candidate.first.baseName)
-                    ComparisonRow("HR", bpmText(baseline.second.report.metrics.heartRateBpm), bpmText(candidate.second.report.metrics.heartRateBpm))
-                    ComparisonRow("稳定占比", percentText(baseline.second.report.metrics.stableSampleRatio), percentText(candidate.second.report.metrics.stableSampleRatio))
-                    ComparisonRow("接受窗口", baseline.second.report.metrics.acceptedWindowCount.toString(), candidate.second.report.metrics.acceptedWindowCount.toString())
-                    ComparisonRow("通道", baseline.second.report.metrics.selectedChannel ?: "—", candidate.second.report.metrics.selectedChannel ?: "—")
-                    ComparisonRow("raw SHA", baseline.second.report.sourceRawSha256.take(12), candidate.second.report.sourceRawSha256.take(12))
+                    ComparisonRow("HR", bpmText(baselineArtifact.report.metrics.heartRateBpm), bpmText(candidateArtifact.report.metrics.heartRateBpm))
+                    ComparisonRow("稳定占比", percentText(baselineArtifact.report.metrics.stableSampleRatio), percentText(candidateArtifact.report.metrics.stableSampleRatio))
+                    ComparisonRow("接受窗口", baselineArtifact.report.metrics.acceptedWindowCount.toString(), candidateArtifact.report.metrics.acceptedWindowCount.toString())
+                    ComparisonRow("通道", baselineArtifact.report.metrics.selectedChannel ?: "—", candidateArtifact.report.metrics.selectedChannel ?: "—")
+                    ComparisonRow("raw SHA", baselineArtifact.report.sourceRawSha256.take(12), candidateArtifact.report.sourceRawSha256.take(12))
                 }
             }
             item {
                 SectionCard("Stacked cycles", Modifier.padding(horizontal = 16.dp)) {
-                    SessionWaveformChart("A · ${baseline.first.baseName}", Color(0xFFD74747), normalized(baseline.second.report.averageCycle.mean))
-                    SessionWaveformChart("B · ${candidate.first.baseName}", Color(0xFF3478C8), normalized(candidate.second.report.averageCycle.mean))
+                    SessionWaveformChart("A · ${baseline.first.baseName}", Color(0xFFD74747), normalized(baselineArtifact.report.averageCycle.mean))
+                    SessionWaveformChart("B · ${candidate.first.baseName}", Color(0xFF3478C8), normalized(candidateArtifact.report.averageCycle.mean))
                     Text("每条曲线独立 z-score，仅比较周期形态。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             item {
                 SectionCard("Unified cycle overlay", Modifier.padding(horizontal = 16.dp)) {
                     MultiLineChart(
-                        first = normalized(baseline.second.report.averageCycle.mean),
-                        second = normalized(candidate.second.report.averageCycle.mean),
+                        first = normalized(baselineArtifact.report.averageCycle.mean),
+                        second = normalized(candidateArtifact.report.averageCycle.mean),
                         firstLabel = "A ${baseline.first.baseName}",
                         secondLabel = "B ${candidate.first.baseName}",
                     )
@@ -959,60 +1022,19 @@ private fun SessionWaveformChart(
     color: Color,
     values: DoubleArray,
     modifier: Modifier = Modifier,
-    peakIndices: IntArray = intArrayOf(),
+    peakIndices: IntArray = SessionRenderKey.EMPTY_INDICES,
 ) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = color, fontWeight = FontWeight.Bold)
         Text("${values.size} pts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    val grid = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(112.dp)
-            .semantics { contentDescription = "$label 波形，${values.size} 个点，可拖动缩放" },
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-    ) {
-        Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.fillMaxSize()) {
-                repeat(3) { row ->
-                    val y = size.height * (row + 1) / 4f
-                    drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
-                }
-                if (values.isEmpty()) return@Canvas
-                val plot = LiveWaveformPlotMath.plot(values, maxOf(2, (size.width * 2).toInt()))
-                if (plot.points.isEmpty()) return@Canvas
-                val rawSpan = plot.maximum - plot.minimum
-                val padding = if (rawSpan > 0.0) rawSpan * 0.08 else max(abs(plot.maximum) * 0.08, 1.0)
-                val lower = plot.minimum - padding
-                val upper = plot.maximum + padding
-                val span = (upper - lower).coerceAtLeast(1e-9)
-                fun offset(pointIndex: Int): Offset {
-                    val point = plot.points[pointIndex]
-                    val x = if (values.size <= 1) size.width / 2 else point.offset.toFloat() / values.lastIndex * size.width
-                    val y = ((upper - point.value) / span * size.height).toFloat().coerceIn(0f, size.height)
-                    return Offset(x, y)
-                }
-                if (plot.points.size == 1) {
-                    drawCircle(color, 2.5.dp.toPx(), offset(0))
-                } else {
-                    val path = Path().apply {
-                        offset(0).let { moveTo(it.x, it.y) }
-                        for (index in 1 until plot.points.size) offset(index).let { lineTo(it.x, it.y) }
-                    }
-                    drawPath(path, color, style = Stroke(1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                }
-                peakIndices.filter { it in values.indices }.forEach { peak ->
-                    val x = if (values.size <= 1) size.width / 2 else peak.toFloat() / values.lastIndex * size.width
-                    val y = ((upper - values[peak]) / span * size.height).toFloat().coerceIn(0f, size.height)
-                    drawCircle(color, 3.dp.toPx(), Offset(x, y))
-                }
-            }
-            if (values.isEmpty()) Text("暂无数据", style = MaterialTheme.typography.bodySmall)
-        }
-    }
+    CompleteSignalChart(
+        series = listOf(CompleteSignalSeries(label, color, values)),
+        sourceIdentity = values,
+        visibleRange = values.indices,
+        peaks = peakIndices,
+        modifier = modifier.height(112.dp),
+    )
 }
 
 @Composable

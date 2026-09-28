@@ -21,6 +21,66 @@ import org.junit.Test
 
 class CaptureSessionOfflineAnalysisTest {
     @Test
+    fun invalidBloodPressureIsReportedWithoutDiscardingLoadedSignal() {
+        withSession(bloodPressureEvent = bloodPressureEvent(2499, 24.99)) { session ->
+            val path = CaptureSessionRepository.expectedFiles(session.directory).bloodPressure!!
+            Files.writeString(path, CaptureBloodPressureSeries.header + "bogus\n")
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(3_000, trace.rawRed.size)
+            assertEquals(3_000, trace.filteredRed.size)
+            assertTrue(trace.bloodPressureEvents.isEmpty())
+            assertTrue(trace.bloodPressureReadError != null)
+        }
+    }
+
+    @Test
+    fun boundedPreviewKeepsSourceCursorsAndMetricUnavailabilityIsPerMetric() {
+        withSession { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session,
+                budget = CaptureSignalLoadBudget(32 * 1024 * 1024, 0, maximumPreviewBuckets = 8))
+            assertTrue(trace.budgetDegraded)
+            assertEquals(3_000L, trace.totalAcceptedSamples)
+            assertTrue(trace.rawRed.size <= 54)
+            assertEquals(2_999L, trace.sourceSampleIndices.last())
+            assertTrue(trace.metricAvailability.values.all { it.unavailableReason != null })
+            assertTrue(trace.stages.filterKeys { it != CaptureSignalStage.RAW }.values.all {
+                it.state == CaptureSignalStageState.UNAVAILABLE_BUDGET })
+        }
+        withSession(metricSidecar = metricSidecar(valid = true)) { session ->
+            val trace = CaptureSessionOfflineAnalysisService.loadSignalTrace(session)
+            assertEquals(100L, trace.metricAvailability.getValue(CaptureTimelineMetric.HEART_RATE).cadenceSamples)
+            assertEquals(CaptureMetricTimelineSource.RECORDED_1_HZ,
+                trace.metricAvailability.getValue(CaptureTimelineMetric.HEART_RATE).source)
+            assertArrayEquals(longArrayOf(999), trace.metricAvailability.getValue(CaptureTimelineMetric.SQI).unavailableSourceIndices)
+            assertEquals(CaptureMetricTimelineSource.UNAVAILABLE, trace.metricAvailability.getValue(CaptureTimelineMetric.SQI).source)
+        }
+    }
+
+    @Test
+    fun artifactIndexReportsInvalidFilesAndCancellationAndChecksSelectedVersion() {
+        withSession { session ->
+            val artifact = CaptureSessionOfflineAnalysisService.analyzeAndSave(session)
+            val summaries = CaptureSessionOfflineAnalysisService.listArtifactSummaries(session)
+            assertEquals(1, summaries.size)
+            assertEquals(artifact.report.metrics.windowCount.toLong(), summaries.single().windowCount)
+            assertEquals(artifact.report.analysisId, CaptureSessionOfflineAnalysisService.readArtifact(
+                artifact.path, expectedSourceVersion = summaries.single().sourceVersion).report.analysisId)
+            Files.writeString(artifact.path.parent.resolve("broken.json"), "{broken}")
+            val indexed = CaptureSessionOfflineAnalysisService.listArtifactSummaries(session)
+            assertEquals(2, indexed.size)
+            assertEquals(1, indexed.count { it.state == CaptureArtifactReadState.INVALID })
+            val cancelled = CancellationException("index")
+            org.junit.Assert.assertSame(cancelled, org.junit.Assert.assertThrows(CancellationException::class.java) {
+                CaptureSessionOfflineAnalysisService.listArtifactSummaries(session, cancellationCheck = { throw cancelled })
+            })
+            Files.writeString(artifact.path, CaptureSessionAnalysisCodec.encode(artifact.report.copy(analysisId = "replacement")))
+            org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+                CaptureSessionOfflineAnalysisService.readArtifact(artifact.path, expectedSourceVersion = summaries.single().sourceVersion)
+            }
+        }
+    }
+
+    @Test
     fun rawReplayCreatesImmutableVersionedArtifactsWithoutChangingSources() {
         withSession { session ->
             val files = CaptureSessionRepository.expectedFiles(session.directory)
@@ -118,9 +178,17 @@ class CaptureSessionOfflineAnalysisTest {
                 onPartial = partial::add,
             )
 
-            assertEquals(1, partial.size)
-            assertEquals(3_000, partial.single().rawRed.size)
-            assertTrue(partial.single().metricTimeline.isEmpty())
+            assertEquals(3, partial.size)
+            assertEquals(3_000, partial.first().rawRed.size)
+            assertTrue(partial.first().metricTimeline.isEmpty())
+            assertTrue(partial.first().filteredRed.isEmpty())
+            assertTrue(partial.first().fixedLagRed.isEmpty())
+            assertTrue(partial.all { it.sourceIdentity == trace.sourceIdentity })
+            assertEquals(CaptureSignalStageState.READY, partial[1].stages.getValue(CaptureSignalStage.ZERO).state)
+            assertTrue(partial.filter { it.filteredRed.isNotEmpty() || it.fixedLagRed.isNotEmpty() }.all {
+                it.stages.getValue(CaptureSignalStage.METRICS).state == CaptureSignalStageState.READY
+            })
+            assertEquals(CaptureSignalStageState.READY, partial[2].stages.getValue(CaptureSignalStage.FIXED).state)
             assertEquals(3_000, trace.timeSeconds.size)
             assertEquals(3_000, trace.rawRed.size)
             assertEquals(3_000, trace.rawIr.size)

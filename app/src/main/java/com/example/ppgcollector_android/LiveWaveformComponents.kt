@@ -39,7 +39,10 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.ppgcollector_android.core.ble.LiveStreamDiagnostics
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.LiveRawWaveformAxisRuntime
@@ -495,6 +498,15 @@ internal fun waveformContentDescription(label: String, sampleCount: Int, detail:
         if (!detail.isNullOrBlank()) append("，$detail")
     }
 
+/** Compact SQI captions omit the trailing score already shown as the tile value. */
+internal fun compactMetricCaption(text: String): String =
+    text.replace(TRAILING_SCORE_IN_PARENS, "").trim()
+
+internal fun compactMetricCaptionStyle(base: androidx.compose.ui.text.TextStyle): androidx.compose.ui.text.TextStyle =
+    base.copy(fontSize = 10.sp, lineHeight = 12.sp)
+
+private val TRAILING_SCORE_IN_PARENS = Regex("""\s*\(\d+\.\d{2}\)\s*$""")
+
 @Immutable
 private data class MetricTileModel(
     val compactLabel: String,
@@ -520,14 +532,9 @@ private fun LiveMetricsPanel(
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val fontScale = LocalDensity.current.fontScale
-            val fitsFiveColumns = maxWidth >= 300.dp && fontScale <= 1.3f
-            if (fitsFiveColumns) {
-                MetricTileRow(tiles)
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MetricTileRow(tiles.take(3))
-                    MetricTileRow(tiles.drop(3))
-                }
+            val columns = CaptureUiPolicy.compactMetricColumns(maxWidth.value, fontScale)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                tiles.chunked(columns).forEach { row -> MetricTileRow(row) }
             }
         }
         if (density == CaptureContentDensity.DETAILED) {
@@ -592,28 +599,40 @@ private fun MetricTile(model: MetricTileModel, compact: Boolean, modifier: Modif
         },
     ) {
         Column(
-            modifier = Modifier.padding(if (compact) 7.dp else 12.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier
+                .then(if (compact) Modifier.fillMaxSize() else Modifier)
+                .padding(if (compact) 6.dp else 12.dp),
+            verticalArrangement = if (compact) {
+                Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
+            } else {
+                Arrangement.spacedBy(3.dp)
+            },
             horizontalAlignment = if (compact) Alignment.CenterHorizontally else Alignment.Start,
         ) {
             Text(
                 if (compact) model.compactLabel else model.detailedLabel,
+                modifier = if (compact) Modifier.fillMaxWidth() else Modifier,
                 style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+                textAlign = if (compact) TextAlign.Center else TextAlign.Start,
                 maxLines = 1,
             )
             Text(
                 model.value,
+                modifier = if (compact) Modifier.fillMaxWidth() else Modifier,
                 style = if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = if (accent != null) statusColor else Color.Unspecified,
+                textAlign = if (compact) TextAlign.Center else TextAlign.Start,
                 maxLines = 1,
             )
             if (compact && accent != null) {
                 Text(
-                    model.state,
-                    style = MaterialTheme.typography.labelSmall,
+                    compactMetricCaption(model.state),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = compactMetricCaptionStyle(MaterialTheme.typography.labelSmall),
                     color = statusColor,
-                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    softWrap = true,
                 )
             }
             if (!compact) {

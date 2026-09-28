@@ -13,6 +13,24 @@ internal enum class CaptureUiEvent {
 
 /** Reducer keeps recording-density transitions event-driven and testable. */
 internal object CaptureUiPolicy {
+    fun needsNotificationPermission(gate: CaptureGateUiState): Boolean =
+        com.example.ppgcollector_android.data.session.CaptureStartFailure.NotificationPermissionDenied in gate.failures
+
+    fun recordingTransitionMessage(state: com.example.ppgcollector_android.data.session.CaptureRecordingState): String? =
+        when (state) {
+            com.example.ppgcollector_android.data.session.CaptureRecordingState.STARTING -> "正在准备录制…"
+            com.example.ppgcollector_android.data.session.CaptureRecordingState.STOPPING -> "上一会话仍在收尾"
+            else -> null
+        }
+
+    fun compactMetricColumns(widthDp: Float, fontScale: Float): Int {
+        // Text area >= 54 scaled dp plus the existing 12 dp tile padding.
+        val minimumTile = 54f * fontScale.coerceAtLeast(1f) + 12f
+        return listOf(5, 3, 2, 1).first { columns ->
+            (widthDp - (columns - 1) * 5f) / columns >= minimumTile || columns == 1
+        }
+    }
+
     fun reduce(current: CaptureContentDensity, event: CaptureUiEvent): CaptureContentDensity =
         when (event) {
             CaptureUiEvent.RECORDING_REQUESTED -> CaptureContentDensity.COMPACT

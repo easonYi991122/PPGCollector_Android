@@ -1,6 +1,6 @@
 # V3.0 Agent 工作约定
 
-本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；后来插入 **`V3.R4.1`**、**`V3.R5.1`**，并追加生命周期/录制稳定性 **`V3.R6`**、真机显示回归修正 **`V3.R7`**、纵轴/指标/链路诊断 **`V3.R8`**、RAW 纵轴保持 **`V3.R8.1`** 与即时 UI/诊断修正 **`V3.R8.2`**。后续双路 BP/表单闭环与详情修复信号限定在 **`V3.R9`–`V3.R10`** 两轮内。这不是 iOS 移植任务。
+本阶段任务是：在**现有 Android/Kotlin 采集 App** 上，按 rebase 后的 V3.0 需求做增量开发。原方案为五轮（`V3.R1` … `V3.R5`）；后来插入 **`V3.R4.1`**、**`V3.R5.1`**，并追加生命周期/录制稳定性 **`V3.R6`**、真机显示回归修正 **`V3.R7`**、纵轴/指标/链路诊断 **`V3.R8`**、RAW 纵轴保持 **`V3.R8.1`** 与即时 UI/诊断修正 **`V3.R8.2`**。R9–R10 收口双路 BP/表单与详情修复信号；R11–R12 收口启动/恢复可靠性、回放指标证据与分阶段加载。2026-09-27 文档审阅仅同步已落地源码、互读证据与门禁状态，不新增开发轮次或改医学/文件协议。这不是 iOS 移植任务。
 
 ## 每轮开工必读
 
@@ -37,9 +37,8 @@
 
 | 标识 | 含义 |
 |---|---|
-| V3.R1 … V3.R11 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R9/R9.1、R10 与 R11 自动门禁已通过，真机节点待测 |
-| V3.R12 | 回放呈现与分阶段加载，已实施并通过自动门禁；真机待测 |
-| 当前代码基线 | R1–R12 已落地，R3 综合 SQI 显示口径已按 combo_sqi.py V4.4.2 收口；BLE、录制、连续性、实时/离线显示、表单/gate 与文件契约以当前 `app/src` 代码和 `status/DEVELOPMENT_STATUS.md` 为准。 |
+| V3.R1 … V3.R12 | 已实施轮次，见 [`03_DEVELOPMENT_PLAN.md`](03_DEVELOPMENT_PLAN.md)；R11、R12 自动门禁曾通过，R9–R12 真机节点待测 |
+| 当前代码基线 | R1–R12 已落地，R3 综合 SQI 显示口径按 combo_sqi.py V4.4.2 收口；BLE、录制、连续性、实时/离线显示、表单/gate 与文件契约以当前 `app/src` 代码和 [`status/DEVELOPMENT_STATUS.md`](status/DEVELOPMENT_STATUS.md) 为准。2026-09-27 回归的 JVM 与 Debug/AndroidTest/Release privacy 通过；lint 的 `Path::of` API 错误已修复并重跑通过，见 [`status/REVIEW_ROUND_20260927.md`](status/REVIEW_ROUND_20260927.md)。 |
 
 ## 证据优先级（本阶段）
 

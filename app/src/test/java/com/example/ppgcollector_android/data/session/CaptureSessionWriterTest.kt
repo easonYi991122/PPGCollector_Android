@@ -145,6 +145,79 @@ class CaptureSessionWriterTest {
         }
     }
 
+    @Test
+    fun finalizationForcesRawSamplesAndEveryCreatedSidecarBeforeCompleteMetadata() {
+        val root = Files.createTempDirectory("capture-force-order")
+        val registry = CaptureSessionAccessRegistry()
+        val forced = mutableListOf<String>()
+        var finalizing = false
+        val config = configuration().copy(protocolProfile = com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol.profileIdentifier)
+        val writer = CaptureSessionWriter(config, root, CaptureStorageCapacityProvider { Long.MAX_VALUE }, registry) { path ->
+            if (finalizing) {
+                forced += path.fileName.toString()
+                assertFalse(CaptureSessionMetadataCodec.decode(Files.readString(root.resolve(config.baseName).resolve("${config.baseName}.session.json"))).complete)
+                assertNull(registry.tryAcquire(path.parent, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT))
+            }
+        }
+        try {
+            appendEverySidecar(writer)
+            writer.updateDecoderDiagnostics(3, 504)
+            finalizing = true
+            assertTrue(writer.finish(CaptureStopReason.USER).complete)
+            assertEquals(listOf("session_001.cupraw", "session_001.csv", "session_001.metrics.csv",
+                "session_001.blood-pressure.csv", "session_001_ecg.csv", "session_001.session.json"), forced)
+            val metadata = CaptureSessionMetadataCodec.decode(Files.readString(writer.metadataPath))
+            assertTrue(metadata.complete)
+            assertEquals(3L, metadata.invalidFrames)
+            assertEquals(504L, metadata.discardedBytes)
+            registry.tryAcquire(writer.directory, CaptureSessionAccessRegistry.Access.DESTRUCTIVE)!!.close()
+        } finally {
+            writer.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun eachFinalForceFailureKeepsIncompleteEvidenceAndCannotBecomeCompleteOnRetry() {
+        for (suffix in listOf(".cupraw", ".csv", ".metrics.csv", ".blood-pressure.csv", "_ecg.csv", ".session.json")) {
+            val root = Files.createTempDirectory("capture-force-failure")
+            val registry = CaptureSessionAccessRegistry()
+            var finalizing = false
+            val config = configuration().copy(protocolProfile = com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol.profileIdentifier)
+            val writer = CaptureSessionWriter(config, root, CaptureStorageCapacityProvider { Long.MAX_VALUE }, registry) { path ->
+                if (finalizing && path.fileName.toString() == "session_001$suffix") throw java.io.IOException("injected force: $suffix")
+            }
+            try {
+                appendEverySidecar(writer)
+                finalizing = true
+                repeat(2) {
+                    val failure = runCatching { writer.finish(CaptureStopReason.USER) }.exceptionOrNull()
+                    assertNotNull("$suffix must fail", failure)
+                    assertTrue(failure!!.message!!.contains("injected force"))
+                    val metadata = CaptureSessionMetadataCodec.decode(Files.readString(writer.metadataPath))
+                    assertFalse("$suffix must remain incomplete", metadata.complete)
+                    if (suffix != ".session.json") assertTrue(metadata.writer.error!!.contains("injected force"))
+                }
+                registry.tryAcquire(writer.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT)!!.close()
+            } finally {
+                writer.close()
+                root.toFile().deleteRecursively()
+            }
+        }
+    }
+
+    private fun appendEverySidecar(writer: CaptureSessionWriter) {
+        val packet = com.example.ppgcollector_android.core.protocol.Ads1292rPacket(
+            sequenceNumber = 1u, ecg = List(20) { it.toUInt() }, red = List(4) { 100u }, ir = List(4) { 200u })
+        writer.appendRawThenDerive(1u, com.example.ppgcollector_android.core.protocol.Ads1292rPacketProtocol.encode(packet)) { emptyList() }
+        writer.appendAds1292rPacket(1u, packet)
+        writer.appendMetricEpoch(CaptureMetricEpoch(writer.configuration.sessionId, 1, 1, 3, 0.03,
+            Instant.EPOCH, com.example.ppgcollector_android.core.signal.LiveMetricSnapshot.unavailable(true, StreamFreshness.FRESH)))
+        writer.appendBloodPressure(ManualBloodPressureEvent(
+            CaptureReferenceTimestamp(writer.configuration.sessionId, 1, 0, 3, 0.03, 1u, Instant.EPOCH),
+            Instant.EPOCH, 120, 80))
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "session-id",
         baseName = "session_001",

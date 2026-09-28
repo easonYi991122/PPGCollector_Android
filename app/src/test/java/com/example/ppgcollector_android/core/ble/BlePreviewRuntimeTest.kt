@@ -336,6 +336,106 @@ class BlePreviewRuntimeTest {
         }
     }
 
+    @Test
+    fun resetRejectsOldAnalysisEvenWhenLocalGenerationAndRequestSequenceCollide() {
+        for (newGeneration in listOf(10L, 20L)) {
+            val oldEntered = CountDownLatch(1)
+            val releaseOld = CountDownLatch(1)
+            val newEntered = CountDownLatch(1)
+            val releaseNew = CountDownLatch(1)
+            val requests = java.util.concurrent.CopyOnWriteArrayList<com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest>()
+            val runtime = BlePreviewRuntime(analyze = { request ->
+                requests += request
+                if (requests.size == 1) {
+                    oldEntered.countDown()
+                    check(releaseOld.await(5, TimeUnit.SECONDS))
+                } else {
+                    newEntered.countDown()
+                    check(releaseNew.await(5, TimeUnit.SECONDS))
+                }
+                com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult(request,
+                    com.example.ppgcollector_android.core.signal.LiveMetricSnapshot.unavailable(true,
+                        com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH), null)
+            })
+            fun feedWindow(generation: Long, level: UInt) {
+                val bytes = (0 until 40).map { index -> encodeCupBatchFrame(CupBatchFrame(index.toUByte(),
+                    List(20) { CupPpgSample(level, level + 1_000u) })) }
+                    .fold(byteArrayOf()) { all, part -> all + part }
+                assertTrue(runtime.offer(BleRawNotificationChunk(generation, 1, bytes)))
+            }
+            try {
+                runtime.reset(10)
+                feedWindow(10, 12_000u)
+                assertTrue(oldEntered.await(3, TimeUnit.SECONDS))
+                runtime.reset(newGeneration)
+                feedWindow(newGeneration, 22_000u)
+                awaitTrue { runtime.diagnostics().analysisQueueDepth == 1 }
+                releaseOld.countDown()
+                assertTrue(newEntered.await(3, TimeUnit.SECONDS))
+                assertEquals(requests[0].generation, requests[1].generation)
+                assertEquals(requests[0].requestSequence, requests[1].requestSequence)
+                assertEquals(null, runtime.snapshot.value.lastAnalysis)
+                releaseNew.countDown()
+                awaitTrue { runtime.snapshot.value.lastAnalysis != null }
+                assertEquals(newGeneration, runtime.snapshot.value.connectionGeneration)
+                assertEquals(22_000.0, runtime.snapshot.value.lastAnalysis!!.request.rawRed.first(), 0.0)
+            } finally {
+                releaseOld.countDown()
+                releaseNew.countDown()
+                runtime.close()
+            }
+        }
+    }
+
+    @Test fun suspensionClearsBothProtocolDecodersHalfFrames() = halfFrameDiscontinuity(overflow = false)
+    @Test fun overflowClearsBothProtocolDecodersHalfFrames() = halfFrameDiscontinuity(overflow = true)
+
+    private fun halfFrameDiscontinuity(overflow: Boolean) {
+        val wires = listOf(
+            CupStreamProtocolMode.BATCH_COMPATIBLE to encodeCupBatchFrame(frame(1u)),
+            CupStreamProtocolMode.BATCH_COMPATIBLE to javaClass.classLoader!!
+                .getResourceAsStream("protocol/legacy_golden_seq42.hex")!!.bufferedReader().use { it.readText() }
+                .filterNot(Char::isWhitespace).chunked(2).map { it.toInt(16).toByte() }.toByteArray(),
+            CupStreamProtocolMode.SENSOR_PACKET_168 to com.example.ppgcollector_android.core.protocol.encodeCupSensorPacketFrame(
+                frame(1u).copy(wireProfile = com.example.ppgcollector_android.core.protocol.CupWireFrameProfile.SENSOR_PACKET_168)),
+            CupStreamProtocolMode.ADS1292R_120 to Ads1292rPacketProtocol.encode(adsPacket(1u)),
+        )
+        for ((mode, wire) in wires) {
+            val prefixConsumed = CountDownLatch(1)
+            val resumeWorker = CountDownLatch(1)
+            val suffixConsumed = CountDownLatch(1)
+            val ticks = AtomicInteger()
+            val runtime = BlePreviewRuntime(queueCapacity = 2, clockTickIntervalNanos = 1, onClockTick = {
+                if (ticks.getAndIncrement() == 0) {
+                    prefixConsumed.countDown()
+                    check(resumeWorker.await(5, TimeUnit.SECONDS))
+                } else suffixConsumed.countDown()
+            })
+            try {
+                runtime.reset(1, mode)
+                assertTrue(runtime.offer(BleRawNotificationChunk(1, 1, wire.copyOfRange(0, wire.size / 2), mode)))
+                assertTrue(prefixConsumed.await(3, TimeUnit.SECONDS))
+                if (overflow) {
+                    assertTrue(runtime.offer(BleRawNotificationChunk(1, 2, byteArrayOf(1), mode)))
+                    assertTrue(runtime.offer(BleRawNotificationChunk(1, 3, byteArrayOf(2), mode)))
+                    assertFalse(runtime.offer(BleRawNotificationChunk(1, 4, byteArrayOf(3), mode)))
+                } else runtime.suspend()
+                assertTrue(runtime.offer(BleRawNotificationChunk(1, 5, wire.copyOfRange(wire.size / 2, wire.size), mode)))
+                resumeWorker.countDown()
+                assertTrue(suffixConsumed.await(3, TimeUnit.SECONDS))
+                assertEquals("$mode/${wire.size}/overflow=$overflow", 0L, runtime.diagnostics().processedSampleCount)
+                assertEquals(0, runtime.diagnostics().receivedFrameCount)
+                assertTrue(runtime.snapshot.value.waveform.red.isEmpty())
+                assertTrue(runtime.offer(BleRawNotificationChunk(1, 6, wire, mode)))
+                awaitTrue { runtime.diagnostics().receivedFrameCount == 1 }
+                assertEquals(when (wire.size) { 120 -> 4L; 408 -> 50L; else -> 20L }, runtime.diagnostics().processedSampleCount)
+            } finally {
+                resumeWorker.countDown()
+                runtime.close()
+            }
+        }
+    }
+
     private fun adsPacket(sequence: UInt) = Ads1292rPacket(
         sequenceNumber = sequence,
         ecg = List(20) { it.toUInt() },

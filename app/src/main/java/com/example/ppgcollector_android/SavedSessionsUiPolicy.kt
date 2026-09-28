@@ -15,14 +15,14 @@ internal object SavedSessionsUiPolicy {
     fun selectedSessionDirectories(
         archive: SubjectArchiveSnapshot,
         selectedDirectories: Set<Path>,
-        selectedSubjects: Set<String>,
+        busyDirectories: Set<Path> = emptySet(),
     ): Set<Path> = SubjectArchiveRepository.selectedSessions(
         archive,
         CaptureArchiveSelection(
             sessionDirectories = selectedDirectories,
-            subjectIds = selectedSubjects,
+            subjectIds = emptySet(),
         ),
-    ).mapTo(linkedSetOf()) { it.directory }
+    ).mapTo(linkedSetOf()) { it.directory } - busyDirectories
 
     fun switchLabel(mode: SavedSessionsViewMode): String = when (mode) {
         SavedSessionsViewMode.ARCHIVE -> "逐文件"

@@ -9,6 +9,22 @@ import org.junit.Test
 
 class CaptureSessionMetadataTest {
     @Test
+    fun recoveryParentAndOriginalPrefixAreOptionalAndRoundTrip() {
+        val metadata = sampleMetadata(recovery = sampleRecovery().copy(
+            parentSessionId = "direct-parent", originalCanonicalPrefix = "MB"))
+        val encoded = CaptureSessionMetadataCodec.encode(metadata)
+        assertEquals(metadata, CaptureSessionMetadataCodec.decode(encoded))
+        val legacy = encoded.lineSequence().filterNot {
+            it.contains("\"parent_session_id\"") || it.contains("\"original_canonical_prefix\"")
+        }.joinToString("\n")
+        val decoded = CaptureSessionMetadataCodec.decode(legacy)
+        assertEquals(null, decoded.recovery!!.parentSessionId)
+        assertEquals(null, decoded.recovery.originalCanonicalPrefix)
+        assertEquals(metadata.recovery!!.sourceSessionId, decoded.recovery.sourceSessionId)
+        assertDecodeFailure(encoded.replace("\"original_canonical_prefix\": \"MB\"", "\"original_canonical_prefix\": \"OTHER\""))
+    }
+
+    @Test
     fun encodeDecodeRoundTripsCompleteMetadataWithRecovery() {
         val metadata = sampleMetadata(
             endedUtc = Instant.parse("2023-11-14T22:13:21.123456Z"),

@@ -10,6 +10,7 @@ data class CaptureCsvScanReport(
     val completeDataRowCount: Long,
     val hasExpectedHeader: Boolean,
     val hasTruncatedFinalLine: Boolean,
+    val validationError: String? = null,
 ) {
     val trailingByteCount: Long
         get() = maxOf(0L, totalBytes - validByteCount)
@@ -36,7 +37,7 @@ data class CaptureSessionInspection(
         get() = findings.isEmpty() &&
             replay?.isStructurallyClean == true &&
             csv?.hasExpectedHeader == true &&
-            csv.hasTruncatedFinalLine == false &&
+            csv.hasTruncatedFinalLine == false && csv.validationError == null &&
             (metrics == null || (metrics.isStructurallyValid && !metrics.hasTruncatedFinalLine)) &&
             (bloodPressure == null ||
                 (bloodPressure.isStructurallyValid && !bloodPressure.hasTruncatedFinalLine)) &&
@@ -51,9 +52,18 @@ data class CaptureSessionInspection(
 }
 
 object CaptureSessionInspectionService {
-    fun inspect(directory: Path): CaptureSessionInspection {
+    fun inspect(
+        directory: Path,
+        cancellationCheck: () -> Unit = {},
+        accessRegistry: CaptureSessionAccessRegistry = CaptureSessionAccessRegistry.app,
+    ): CaptureSessionInspection = requireSessionLease(directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT, accessRegistry).use {
+        inspectUnderLease(directory, cancellationCheck)
+    }
+
+    internal fun inspectUnderLease(directory: Path, cancellationCheck: () -> Unit): CaptureSessionInspection {
+        cancellationCheck()
         val baseName = directory.fileName.toString()
-        val files = CaptureSessionRepository.expectedFiles(directory)
+        val files = CaptureSessionRepository.expectedFiles(directory, cancellationCheck)
         val rawPath = files.raw
         val csvPath = files.csv
         val metadataPath = files.metadata
@@ -63,8 +73,9 @@ object CaptureSessionInspectionService {
         // same-length but structurally different wire profiles.
         val metadata = if (Files.exists(metadataPath)) {
             try {
-                CaptureSessionMetadataCodec.decode(metadataPath)
+                CaptureSessionMetadataCodec.decode(metadataPath, cancellationCheck)
             } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
                 findings += finding("metadata-unreadable", CaptureInspectionSeverity.ERROR,
                     "metadata cannot be parsed: ${error.message ?: error::class.simpleName}")
                 null
@@ -80,10 +91,11 @@ object CaptureSessionInspectionService {
 
         val replay = if (Files.exists(rawPath)) {
             try {
-                CupRawReplayEngine.replay(rawPath, protocolMode).also {
+                CupRawReplayEngine.replay(rawPath, protocolMode, cancellationCheck) {}.also {
                     appendReplayFindings(it, findings)
                 }
             } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
                 findings += finding("raw-unreadable", CaptureInspectionSeverity.ERROR,
                     "raw cannot be parsed: ${error.message ?: error::class.simpleName}")
                 null
@@ -96,10 +108,14 @@ object CaptureSessionInspectionService {
 
         val csv = if (Files.exists(csvPath)) {
             try {
-                scanCsv(csvPath).also {
+                scanCsv(
+                    csvPath, metadata.allowedRowSessionIds(),
+                    rawPath.takeIf(Files::isRegularFile), protocolMode, cancellationCheck,
+                ).also {
                     appendCsvFindings(it, findings)
                 }
             } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
                 findings += finding("csv-unreadable", CaptureInspectionSeverity.ERROR,
                     "CSV cannot be read: ${error.message ?: error::class.simpleName}")
                 null
@@ -115,19 +131,24 @@ object CaptureSessionInspectionService {
             CaptureMetricSeries.header,
             findings,
             "metrics",
+            cancellationCheck = cancellationCheck,
+            acceptedSessionIds = metadata.allowedRowSessionIds(),
         )
         val bloodPressure = scanOptionalSidecar(
             files.bloodPressure,
             CaptureBloodPressureSeries.header,
             findings,
             "blood-pressure",
+            cancellationCheck = cancellationCheck,
+            acceptedSessionIds = metadata.allowedRowSessionIds(),
         )
         val ecg = scanOptionalSidecar(
             files.ecg,
             CaptureEcgCsv.header,
             findings,
             "ecg",
-            scanner = CaptureEcgCsv::scan,
+            cancellationCheck = cancellationCheck,
+            acceptedSessionIds = metadata.allowedRowSessionIds(),
         )
 
         if (metadata != null) {
@@ -204,46 +225,15 @@ object CaptureSessionInspectionService {
         return CaptureSessionInspection(replay, csv, metadata, findings, metrics, bloodPressure, ecg)
     }
 
-    fun scanCsv(path: Path): CaptureCsvScanReport {
-        val expectedHeader = CaptureCsvSchema.header.toByteArray(Charsets.UTF_8)
-        Files.newInputStream(path).use { input ->
-            val observedHeader = ByteArray(expectedHeader.size)
-            var observedHeaderBytes = 0
-            var totalBytes = 0L
-            var newlineCount = 0L
-            var lastNewlineEnd = 0L
-            var lastByte: Int? = null
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                val headerBytesToCopy = minOf(read, expectedHeader.size - observedHeaderBytes)
-                if (headerBytesToCopy > 0) {
-                    buffer.copyInto(observedHeader, observedHeaderBytes, 0, headerBytesToCopy)
-                    observedHeaderBytes += headerBytesToCopy
-                }
-                for (index in 0 until read) {
-                    if (buffer[index].toInt() == '\n'.code) {
-                        newlineCount += 1
-                        lastNewlineEnd = totalBytes + index + 1
-                    }
-                }
-                totalBytes += read
-                lastByte = buffer[read - 1].toInt() and 0xFF
-            }
-            val truncated = totalBytes > 0 && lastByte != '\n'.code
-            val validBytes = if (truncated) lastNewlineEnd else totalBytes
-            return CaptureCsvScanReport(
-                totalBytes = totalBytes,
-                validByteCount = validBytes,
-                completeDataRowCount = maxOf(0L, newlineCount - 1),
-                hasExpectedHeader = observedHeaderBytes == expectedHeader.size &&
-                    observedHeader.contentEquals(expectedHeader),
-                hasTruncatedFinalLine = truncated,
-            )
-        }
-    }
+    fun scanCsv(
+        path: Path,
+        acceptedSessionIds: Set<String> = emptySet(),
+        rawPath: Path? = null,
+        protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+        cancellationCheck: () -> Unit = {},
+    ): CaptureCsvScanReport = CaptureCsvRowValidator.scan(
+        path, acceptedSessionIds, rawPath, protocolMode, cancellationCheck,
+    )
 
     private fun appendReplayFindings(
         replay: CupRawReplayReport,
@@ -283,6 +273,9 @@ object CaptureSessionInspectionService {
         csv: CaptureCsvScanReport,
         findings: MutableList<CaptureInspectionFinding>,
     ) {
+        csv.validationError?.let {
+            findings += finding("csv-row", CaptureInspectionSeverity.ERROR, it)
+        }
         if (!csv.hasExpectedHeader) {
             findings += finding("csv-header", CaptureInspectionSeverity.ERROR,
                 "CSV header does not match the supported schema")
@@ -298,7 +291,8 @@ object CaptureSessionInspectionService {
         expectedHeader: String,
         findings: MutableList<CaptureInspectionFinding>,
         label: String,
-        scanner: ((Path) -> CaptureSidecarScanReport)? = null,
+        cancellationCheck: () -> Unit,
+        acceptedSessionIds: Set<String>,
     ): CaptureSidecarScanReport? {
         if (path == null) return null
         if (!Files.isRegularFile(path)) {
@@ -310,10 +304,10 @@ object CaptureSessionInspectionService {
             return null
         }
         return try {
-            val report = scanner?.invoke(path) ?: if (label == "metrics") {
-                CaptureMetricSeries.scan(path)
-            } else {
-                CaptureBloodPressureSeries.scan(path)
+            val report = when (label) {
+                "metrics" -> CaptureMetricSeries.scan(path, acceptedSessionIds, cancellationCheck)
+                "ecg" -> CaptureEcgCsv.scan(path, acceptedSessionIds, cancellationCheck)
+                else -> CaptureBloodPressureSeries.scan(path, acceptedSessionIds, cancellationCheck)
             }
             report.also {
                 if (!report.hasExpectedHeader) {
@@ -335,6 +329,7 @@ object CaptureSessionInspectionService {
                 }
             }
         } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
             findings += finding(
                 "$label-unreadable",
                 CaptureInspectionSeverity.ERROR,

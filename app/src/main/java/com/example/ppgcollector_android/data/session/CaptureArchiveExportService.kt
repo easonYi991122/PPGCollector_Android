@@ -5,7 +5,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
-import java.security.MessageDigest
 import java.time.Instant
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -20,7 +19,6 @@ data class CaptureArchiveExportReport(
 
 /** Subject-aware, read-only, streaming exporter. */
 object CaptureArchiveExportService {
-    private const val copyBufferBytes = 64 * 1024
     private const val schemaVersion = "ppgcollector_archive_export_v1"
 
     fun export(
@@ -56,6 +54,7 @@ object CaptureArchiveExportService {
         } catch (error: CaptureSessionExportException) {
             throw error
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException || error is CaptureSessionBusyException) throw error
             throw CaptureSessionExportException.CannotExport("cannot create archive export", error)
         } finally {
             if (!committed) Files.deleteIfExists(temporary)
@@ -71,130 +70,106 @@ object CaptureArchiveExportService {
         cancellation: CaptureExportCancellation = CaptureExportCancellation {},
         now: Instant = Instant.now(),
     ): CaptureArchiveExportReport {
-        val archive = SubjectArchiveRepository.rebuild(sessionsRoot, subjectsRoot, now)
-        val selected = SubjectArchiveRepository.selectedSessions(archive, selection)
+        cancellation.check()
+        var selected = CaptureSessionRepository.listSessions(sessionsRoot, cancellation::check).filter { session ->
+            session.directory in selection.sessionDirectories ||
+                SubjectArchiveRepository.identityFor(session)?.subject in selection.subjectIds
+        }
         if (selected.isEmpty()) throw CaptureSessionExportException.CannotExport("没有可导出的会话")
-        val subjectsByDirectory: Map<Path, Pair<String, String>> = archive.groups
-            .flatMap {
-                group -> group.sessions.map {
-                    it.session.directory to (group.summary.subject to it.identity.prefix.wireValue)
-                }
-            }
-            .toMap()
-        val usedNames = HashSet<String>()
-        val sources = ArrayList<SourceEntry>()
-        val missing = ArrayList<String>()
-        selected.forEach { session ->
-            val subject = subjectsByDirectory[session.directory]
-            val files = CaptureSessionRepository.expectedFiles(session.directory)
-            files.allNamedPaths.forEach { (path, fileName) ->
-                val prefix = if (subject == null) {
-                    "unclassified/${safeComponent(session.baseName)}"
-                } else {
-                    "subjects/${safeComponent(subject.first)}/${subject.second}/" +
-                        safeComponent(session.baseName)
-                }
-                val requested = "$prefix/$fileName"
-                if (!Files.isRegularFile(path)) {
-                    if (path in files.requiredPaths) missing += "$requested (required)"
-                    else missing += "$requested (optional)"
-                } else {
-                    sources += source(path, uniqueName(requested, usedNames), cancellation)
-                }
-            }
-        }
-        val selectedSubjects = selected.mapNotNull { subjectsByDirectory[it.directory]?.first }.toSet() +
-            selection.subjectIds
-        val profileStore = SubjectProfileStore(subjectsRoot)
-        selectedSubjects.sorted().forEach { subject ->
-            val profilePath = runCatching { profileStore.pathFor(subject) }.getOrNull()
-            if (profilePath == null || !Files.isRegularFile(profilePath)) {
-                missing += "subject_profiles/${safeComponent(subject)}.profile.json (optional)"
-            } else {
-                sources += source(
-                    profilePath,
-                    uniqueName("subject_profiles/${safeComponent(subject)}.profile.json", usedNames),
-                    cancellation,
-                )
-            }
-        }
-        val manifest = manifestJson(now, selection, selected, sources, missing)
-        var copied = 0L
-        val names = ArrayList<String>(sources.size + 1)
+        val leases = ArrayList<CaptureSessionAccessRegistry.Lease>()
         try {
-            ZipOutputStream(output).use { zip ->
-                cancellation.checkOrThrow()
-                zip.putNextEntry(ZipEntry("export_manifest.json"))
-                zip.write(manifest.toByteArray(Charsets.UTF_8))
-                zip.closeEntry()
-                sources.forEach { entry ->
-                    cancellation.checkOrThrow()
-                    names += entry.entryName
-                    zip.putNextEntry(ZipEntry(entry.entryName))
-                    Files.newInputStream(entry.path, StandardOpenOption.READ).use { input ->
-                        val buffer = ByteArray(copyBufferBytes)
-                        while (true) {
-                            cancellation.checkOrThrow()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            if (read == 0) continue
-                            zip.write(buffer, 0, read)
-                            copied += read
-                            onProgress(CaptureExportProgress(copied, sources.sumOf { it.size }, entry.entryName))
-                        }
-                    }
-                    zip.closeEntry()
+            selected.sortedBy { it.directory.toString() }.forEach {
+                leases += requireSessionLease(it.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT)
+            }
+            // Refresh metadata only after every selected directory is held.
+            val current = CaptureSessionRepository.listSessions(sessionsRoot, cancellation::check)
+                .associateBy { it.directory }
+            selected = selected.map { current.getValue(it.directory) }
+            val subjectsByDirectory = selected.mapNotNull { session ->
+                SubjectArchiveRepository.identityFor(session)?.let {
+                    session.directory to (it.subject to it.prefix.wireValue)
                 }
+            }.toMap()
+            val usedNames = HashSet<String>()
+            val sources = ArrayList<CaptureExportSource>()
+            val missing = ArrayList<String>()
+            selected.forEach { session ->
+                val subject = subjectsByDirectory[session.directory]
+                val files = CaptureSessionRepository.expectedFiles(session.directory, cancellation::check)
+                files.allNamedPaths.forEach { (path, fileName) ->
+                    val prefix = if (subject == null) {
+                        "unclassified/${safeComponent(session.baseName)}"
+                    } else {
+                        "subjects/${safeComponent(subject.first)}/${subject.second}/" +
+                            safeComponent(session.baseName)
+                    }
+                    val requested = "$prefix/$fileName"
+                    if (!Files.isRegularFile(path)) {
+                        if (path in files.requiredPaths) missing += "$requested (required)"
+                        else missing += "$requested (optional)"
+                    } else {
+                        sources += CaptureExportSource.freeze(path, uniqueName(requested, usedNames), cancellation::check)
+                    }
+                }
+            }
+            val selectedSubjects = selected.mapNotNull { subjectsByDirectory[it.directory]?.first }.toSet() +
+                selection.subjectIds
+            val profileStore = SubjectProfileStore(subjectsRoot)
+            selectedSubjects.sorted().forEach { subject ->
+                val profilePath = runCatching { profileStore.pathFor(subject) }.getOrNull()
+                if (profilePath == null || !Files.isRegularFile(profilePath)) {
+                    missing += "subject_profiles/${safeComponent(subject)}.profile.json (optional)"
+                } else {
+                    sources += CaptureExportSource.freeze(
+                        profilePath,
+                        uniqueName("subject_profiles/${safeComponent(subject)}.profile.json", usedNames),
+                        cancellation::check,
+                    )
+                }
+            }
+            var copied = 0L
+            val total = sources.sumOf { it.version.size }
+            ZipOutputStream(output).use { zip ->
+                sources.forEach { entry ->
+                    entry.copyTo(zip, cancellation::check) { count ->
+                        copied += count
+                        onProgress(CaptureExportProgress(copied, total, entry.entryName))
+                    }
+                }
+                sources.forEach { it.verify(cancellation::check) }
+                cancellation.check()
+                zip.putNextEntry(ZipEntry("export_manifest.json").apply { time = 0L })
+                zip.write(manifestJson(now, selection, selected, sources, missing).toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
                 zip.finish()
             }
-        } catch (error: CaptureSessionExportException) {
-            throw error
+            check(copied == total) { "archive size changed" }
+            return CaptureArchiveExportReport(copied, total, sources.map { it.entryName }, missing)
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException || error is CaptureSessionExportException ||
+                error is CaptureSessionBusyException) throw error
             throw CaptureSessionExportException.CannotExport("cannot stream archive export", error)
+        } finally {
+            leases.asReversed().forEach { it.close() }
         }
-        return CaptureArchiveExportReport(copied, sources.sumOf { it.size }, names, missing)
-    }
-
-    private data class SourceEntry(val path: Path, val entryName: String, val size: Long, val sha256: String)
-
-    private fun source(
-        path: Path,
-        entryName: String,
-        cancellation: CaptureExportCancellation,
-    ): SourceEntry {
-        cancellation.checkOrThrow()
-        val digest = MessageDigest.getInstance("SHA-256")
-        var size = 0L
-        Files.newInputStream(path, StandardOpenOption.READ).use { input ->
-            val buffer = ByteArray(copyBufferBytes)
-            while (true) {
-                cancellation.checkOrThrow()
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                digest.update(buffer, 0, read)
-                size += read
-            }
-        }
-        return SourceEntry(path, entryName, size, digest.digest().toHex())
     }
 
     private fun manifestJson(
         now: Instant,
         selection: CaptureArchiveSelection,
         selected: List<StoredCaptureSession>,
-        sources: List<SourceEntry>,
+        sources: List<CaptureExportSource>,
         missing: List<String>,
     ): String {
         fun q(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
         val entries = sources.joinToString(",", prefix = "[", postfix = "]") {
-            "{\"entry\":${q(it.entryName)},\"size\":${it.size},\"sha256\":${q(it.sha256)}}"
+            "{\"entry\":${q(it.entryName)},\"size\":${it.version.size},\"sha256\":${q(it.sha256)}}"
         }
         val missingJson = missing.joinToString(",", prefix = "[", postfix = "]", transform = ::q)
         val sessions = selected.joinToString(",", prefix = "[", postfix = "]") { session ->
             "{\"session_id\":${q(session.metadata?.sessionId.orEmpty())}," +
                 "\"base_name\":${q(session.baseName)}," +
-                "\"subject\":${q(SessionNamePolicy.parseCanonical(session.baseName)?.subject.orEmpty())}}"
+                "\"subject\":${q(SubjectArchiveRepository.identityFor(session)?.subject.orEmpty())}}"
         }
         val subjects = selection.subjectIds.sorted().joinToString(",", prefix = "[", postfix = "]", transform = ::q)
         return "{" +
@@ -225,15 +200,4 @@ object CaptureArchiveExportService {
     private fun safeComponent(value: String): String =
         value.replace(Regex("[^A-Za-z0-9_-]"), "_").ifEmpty { "unknown" }
 
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-
-    private fun CaptureExportCancellation.checkOrThrow() {
-        try {
-            check()
-        } catch (_: CaptureSessionExportException.Cancelled) {
-            throw CaptureSessionExportException.Cancelled
-        } catch (_: java.util.concurrent.CancellationException) {
-            throw CaptureSessionExportException.Cancelled
-        }
-    }
 }

@@ -12,7 +12,8 @@ object CaptureSessionMetadataEditor {
         systolic: Int?,
         diastolic: Int?,
         updatedAt: Instant = Instant.now(),
-    ): CaptureSessionMetadata {
+        accessRegistry: CaptureSessionAccessRegistry = CaptureSessionAccessRegistry.app,
+    ): CaptureSessionMetadata = requireSessionLease(directory, CaptureSessionAccessRegistry.Access.WRITE, accessRegistry).use {
         require((systolic == null) == (diastolic == null)) {
             "systolic and diastolic must be provided together"
         }
@@ -51,6 +52,6 @@ object CaptureSessionMetadataEditor {
         } finally {
             Files.deleteIfExists(temporary)
         }
-        return next
+        next
     }
 }

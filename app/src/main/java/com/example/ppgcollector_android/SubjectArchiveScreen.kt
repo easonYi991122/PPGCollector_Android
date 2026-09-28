@@ -157,10 +157,13 @@ internal fun SubjectArchiveContent(
                     session = entry.session,
                     sequenceLabel = entry.sequenceLabel,
                     selectionMode = state.sessionSelectionMode,
-                    selected = entry.session.directory in state.archiveSelectedDirectories ||
-                        entry.subject in state.archiveSelectedSubjects,
+                    selected = entry.session.directory in state.archiveSelectedDirectories,
+                    busy = entry.session.directory in state.busyDirectories,
+                    analysisCount = state.artifactsBySession[entry.session.directory]?.size ?: 0,
+                    analysisError = state.artifactIndexErrors[entry.session.directory] ?: state.artifactsBySession[entry.session.directory]
+                        ?.firstOrNull { it.state != com.example.ppgcollector_android.data.session.CaptureArtifactReadState.READY }?.detail,
                     onToggleSelected = { onToggleSession(entry.session.directory) },
-                    onSelect = { onSelect(SessionListItemMapper.map(entry.session)) },
+                    onSelect = { state.sessions.firstOrNull { it.directory == entry.session.directory }?.let(onSelect) },
                     modifier = if (entry.subject == null) Modifier else Modifier.padding(start = 18.dp),
                 )
 
@@ -240,6 +243,9 @@ private fun ArchiveSessionRow(
     sequenceLabel: String?,
     selectionMode: Boolean,
     selected: Boolean,
+    busy: Boolean,
+    analysisCount: Int,
+    analysisError: String?,
     onToggleSelected: () -> Unit,
     onSelect: () -> Unit,
     modifier: Modifier = Modifier,
@@ -261,9 +267,12 @@ private fun ArchiveSessionRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (selectionMode) {
-                Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
+                Checkbox(checked = selected, enabled = !busy, onCheckedChange = { onToggleSelected() })
             }
             Column(Modifier.weight(1f)) {
+                if (busy) Text("占用中 · 暂不可选择/删除/导出", color = MaterialTheme.colorScheme.error)
+                Text("分析历史 $analysisCount 项", style = MaterialTheme.typography.bodySmall)
+                analysisError?.let { Text("分析索引：$it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text(
                     sequenceLabel?.let { "$it · ${session.baseName}" } ?: session.baseName,
                     style = MaterialTheme.typography.titleSmall,

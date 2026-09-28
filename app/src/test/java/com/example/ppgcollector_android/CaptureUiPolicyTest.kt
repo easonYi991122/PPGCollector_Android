@@ -30,6 +30,16 @@ class CaptureUiPolicyTest {
     }
 
     @Test
+    fun compactSqiCaptionKeepsStatusWordsAndDropsTrailingScore() {
+        assertEquals("信号良好", compactMetricCaption("信号良好 (0.95)"))
+        assertEquals("信号不稳定", compactMetricCaption("信号不稳定 (0.81)"))
+        assertEquals("⚠ 信号平直", compactMetricCaption("⚠ 信号平直 (0.00)"))
+        assertEquals("⚠ 压力过大(严重)", compactMetricCaption("⚠ 压力过大(严重) (0.42)"))
+        assertEquals("综合SQI: --", compactMetricCaption("综合SQI: --"))
+        assertEquals("⚠ 信号幅度过低", compactMetricCaption("⚠ 信号幅度过低"))
+    }
+
+    @Test
     fun fixedSelectionRemainsSelectedWhileItsRightContextWarms() {
         val warming = resolveLiveWaveformMode(
             requested = LiveWaveformDisplayMode.FIXED_LAG,

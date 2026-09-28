@@ -159,7 +159,7 @@ class CupBleGattStateMachine(
             lastTimedOutOperation = null,
         )
         phase = BleConnectionPhase.Connecting(deviceId)
-        armDeadline(BleConnectionOperation.CONNECT, deviceId, 0.0)
+        armDeadline(BleConnectionOperation.CONNECT, deviceId, uptimeSeconds())
         transport.connect(deviceId)
         return true
     }
@@ -537,18 +537,13 @@ class CupBleGattStateMachine(
             applyProtocolProbeTimeout(now)
             if (cupIdentity && !acceptedBatchFrame) {
                 onRawChunk?.invoke(chunk.copy(streamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE))
-                if (probeResult.locked == CupStreamProtocolMode.ADS1292R_120) {
+                if (!acceptedBatchFrame && probeResult.locked == CupStreamProtocolMode.ADS1292R_120) {
                     lockStreamProtocol(CupStreamProtocolMode.ADS1292R_120, now)
                 }
                 phase = BleConnectionPhase.Receiving(event.deviceId)
-                // A CUP name is provisionally batch-compatible. Do not let a
-                // recording start race the asynchronous preview decode before
-                // the probe either accepts a batch frame or locks ADS 120.
-                if (activeStreamProtocolMode == CupStreamProtocolMode.BATCH_COMPATIBLE) {
-                    freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
-                } else {
-                    refreshFreshness(now)
-                }
+                // Only the independent protocol decoder can refresh health;
+                // unrecognized notifications must also age into STALE.
+                refreshFreshness(now)
                 return
             }
             if (nordicIdentity &&
@@ -556,7 +551,7 @@ class CupBleGattStateMachine(
             ) {
                 val locked = probeResult.locked
                 if (locked == null) {
-                    freshness = com.example.ppgcollector_android.core.signal.StreamFreshness.WAITING
+                    refreshFreshness(now)
                     phase = BleConnectionPhase.Receiving(event.deviceId)
                     return
                 }

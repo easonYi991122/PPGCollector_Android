@@ -13,6 +13,21 @@ import org.junit.Test
 
 class CupRawFileTest {
     @Test
+    fun rawCancellationStopsAtTheNextBoundedReadAndPropagatesIdentity() {
+        val path = java.nio.file.Files.createTempDirectory("raw-cancel").resolve("source.cupraw")
+        try {
+            CupRawWriter(path).use { writer -> repeat(10) { writer.append(it.toULong(), ByteArray(64 * 1024)) } }
+            var visits = 0
+            val cancellation = java.util.concurrent.CancellationException("raw")
+            val thrown = org.junit.Assert.assertThrows(java.util.concurrent.CancellationException::class.java) {
+                CupRawReader.scan(path, cancellationCheck = { if (visits == 2) throw cancellation }) { visits++ }
+            }
+            org.junit.Assert.assertSame(cancellation, thrown)
+            org.junit.Assert.assertEquals(2, visits)
+        } finally { path.parent.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun writerAndStreamingReaderRoundTripRecordsAndLittleEndianHeader() {
         withTemporaryRawPath { path ->
             CupRawWriter(path).use { writer ->

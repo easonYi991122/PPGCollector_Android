@@ -57,21 +57,7 @@ object SubjectArchiveRepository {
         val grouped = LinkedHashMap<String, MutableList<SubjectArchiveSession>>()
         val unclassified = ArrayList<StoredCaptureSession>()
         sessions.forEach { session ->
-            // The prefix is part of the directory/base-name identity. Metadata
-            // predates MB and stores only subject+sequence, so constructing a
-            // CanonicalSessionIdentity from metadata alone silently defaults
-            // every MB session to PPG.
-            val parsedName = SessionNamePolicy.parseCanonical(session.baseName)
-            val identity = session.metadata?.let { metadata ->
-                if (metadata.canonicalSubjectId != null && metadata.canonicalSequence != null) {
-                    val prefix = parsedName?.prefix ?: SessionNamePrefix.PPG
-                    CanonicalSessionIdentity(
-                        subject = metadata.canonicalSubjectId,
-                        sequence = metadata.canonicalSequence,
-                        prefix = prefix,
-                    )
-                } else null
-            } ?: parsedName
+            val identity = identityFor(session)
             if (identity == null || identity.subject.isBlank()) {
                 unclassified += session
             } else {
@@ -104,6 +90,19 @@ object SubjectArchiveRepository {
             ),
             generatedAt = now,
         )
+    }
+
+    fun identityFor(session: StoredCaptureSession): CanonicalSessionIdentity? {
+        val parsed = SessionNamePolicy.parseCanonical(session.baseName)
+        val metadata = session.metadata ?: return parsed
+        val prefix = parsed?.prefix ?: when (metadata.recovery?.originalCanonicalPrefix) {
+            "PPG" -> SessionNamePrefix.PPG
+            "MB" -> SessionNamePrefix.MB
+            else -> null
+        }
+        return if (metadata.canonicalSubjectId != null && metadata.canonicalSequence != null && prefix != null) {
+            CanonicalSessionIdentity(metadata.canonicalSubjectId, metadata.canonicalSequence, prefix)
+        } else parsed
     }
 
     fun selectedSessions(
@@ -139,45 +138,36 @@ object SubjectArchiveRepository {
     }
 
     private fun heartRateFromEvidence(session: StoredCaptureSession): Double? {
-        val metrics = CaptureSessionRepository.expectedFiles(session.directory).metrics
-        if (metrics != null && java.nio.file.Files.isRegularFile(metrics)) {
-            val average = runCatching {
-                java.nio.file.Files.newBufferedReader(metrics).use { reader ->
-                    val header = reader.readLine()?.let(::parseSessionCsvFields).orEmpty()
-                    val valueIndex = header.indexOf("heart_rate_bpm")
-                    val validIndex = header.indexOf("heart_rate_valid")
-                    if (valueIndex < 0 || validIndex < 0) return@use null
-                    var count = 0L
-                    var sum = 0.0
-                    while (true) {
-                        val line = reader.readLine() ?: break
-                        if (line.isBlank()) continue
-                        val fields = parseSessionCsvFields(line)
-                        if (fields.getOrNull(validIndex) == "true") {
-                            val value = fields.getOrNull(valueIndex)?.toDoubleOrNull()
-                                ?.takeIf(Double::isFinite)
-                            if (value != null) {
-                                sum += value
-                                count++
-                            }
-                        }
-                    }
-                    if (count == 0L) null else sum / count
+        val lease = CaptureSessionAccessRegistry.app.tryAcquire(session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT)
+            ?: return null
+        return lease.use {
+            val metrics = CaptureSessionRepository.expectedFiles(session.directory).metrics
+            if (metrics != null && java.nio.file.Files.isRegularFile(metrics)) {
+                try {
+                    val points = CaptureMetricSeries.readTimeline(metrics,
+                        acceptedSessionIds = session.metadata.allowedRowSessionIds())
+                    points.mapNotNull { it.heartRateBpm }.takeIf { it.isNotEmpty() }?.average()?.let { return it }
+                } catch (error: Exception) {
+                    if (error is java.util.concurrent.CancellationException) throw error
                 }
-            }.getOrNull()
-            if (average != null) return average
+            }
+            CaptureSessionOfflineAnalysisService.listSummariesUnderLease(session.directory, {})
+                .firstOrNull { it.state == CaptureArtifactReadState.READY &&
+                    it.sourceSessionId in session.metadata.allowedRowSessionIds() }?.heartRateBpm
         }
-        return runCatching {
-            CaptureSessionOfflineAnalysisService.listArtifacts(session)
-                .maxByOrNull { it.report.endedUtc }
-                ?.report?.metrics?.heartRateBpm
-        }.getOrNull()
     }
 
     private fun bloodPressureCount(session: StoredCaptureSession): Int {
         val path = CaptureSessionRepository.expectedFiles(session.directory).bloodPressure
             ?: return 0
-        return runCatching { CaptureBloodPressureSeries.scan(path).completeDataRowCount.toInt() }
-            .getOrDefault(0)
+        val lease = CaptureSessionAccessRegistry.app.tryAcquire(session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT)
+            ?: return 0
+        return lease.use {
+            try { CaptureBloodPressureSeries.scan(path, session.metadata.allowedRowSessionIds()).completeDataRowCount.toInt() }
+            catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
+                0
+            }
+        }
     }
 }

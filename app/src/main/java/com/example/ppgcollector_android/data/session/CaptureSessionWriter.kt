@@ -111,10 +111,19 @@ object CaptureSessionWriterPolicy {
 class CaptureSessionWriter(
     configuration: CaptureSessionConfiguration,
     sessionsRoot: Path,
-    capacityProvider: CaptureStorageCapacityProvider = CaptureStorageCapacityProvider {
-        runCatching { Files.getFileStore(it).usableSpace }.getOrNull()
-    },
+    capacityProvider: CaptureStorageCapacityProvider,
+    accessRegistry: CaptureSessionAccessRegistry,
+    private val monotonicNanos: () -> Long = System::nanoTime,
+    private val beforeForce: (Path) -> Unit,
 ) : AutoCloseable {
+    constructor(
+        configuration: CaptureSessionConfiguration,
+        sessionsRoot: Path,
+        capacityProvider: CaptureStorageCapacityProvider = CaptureStorageCapacityProvider {
+            kotlin.runCatching { Files.getFileStore(it).usableSpace }.getOrNull()
+        },
+    ) : this(configuration, sessionsRoot, capacityProvider, CaptureSessionAccessRegistry.app, beforeForce = {})
+
     /** Persist canonical sessions with one stable prefix, even for legacy callers. */
     val configuration: CaptureSessionConfiguration = configuration.copy(
         baseName = SessionNamePolicy.normalizeCanonical(configuration.baseName)
@@ -128,15 +137,19 @@ class CaptureSessionWriter(
     val bloodPressurePath: Path = directory.resolve("${this.configuration.baseName}.blood-pressure.csv")
     val ecgPath: Path = directory.resolve("${this.configuration.baseName}_ecg.csv")
 
-    private val rawWriter: CupRawWriter
+    private lateinit var rawWriter: CupRawWriter
+    private var writeLease: CaptureSessionAccessRegistry.Lease? = null
+    private var invalidFrames = 0L
+    private var discardedBytes = 0L
     private var closed = false
     private var finalSummary: CaptureSessionSummary? = null
+    private var terminalFailure: Throwable? = null
     private var snapshot = CaptureWriterSnapshot()
     private var nextSampleIndex = 0L
     private var firstStreamSampleIndex: Long? = null
     private var observedSamplesPerFrame: Int? = null
     private var observedProtocolProfile: String? = null
-    private var lastCheckpointNanos = System.nanoTime()
+    private var lastCheckpointNanos = monotonicNanos()
     private var metricsInitialized = false
     private var bloodPressureInitialized = false
     private var ecgInitialized = false
@@ -150,20 +163,22 @@ class CaptureSessionWriter(
         if (!CaptureSessionWriterPolicy.isValidBaseName(this.configuration.baseName)) {
             throw CaptureSessionWriterException.CannotCreate("invalid session name")
         }
-        Files.createDirectories(sessionsRoot)
-        capacityProvider.usableBytes(sessionsRoot)?.let {
-            if (it < CaptureSessionWriterPolicy.minimumAvailableCapacityBytes) {
-                throw CaptureSessionWriterException.InsufficientStorage
+        writeLease = accessRegistry.tryAcquire(directory, CaptureSessionAccessRegistry.Access.WRITE)
+            ?: throw CaptureSessionWriterException.CannotCreate("session directory is in use")
+        var createdDirectory = false
+        try {
+            Files.createDirectories(sessionsRoot)
+            capacityProvider.usableBytes(sessionsRoot)?.let {
+                if (it < CaptureSessionWriterPolicy.minimumAvailableCapacityBytes) {
+                    throw CaptureSessionWriterException.InsufficientStorage
+                }
             }
-        }
-        try {
-            Files.createDirectory(directory)
-        } catch (error: java.nio.file.FileAlreadyExistsException) {
-            throw CaptureSessionWriterException.SessionAlreadyExists(this.configuration.baseName)
-        } catch (error: Exception) {
-            throw CaptureSessionWriterException.CannotCreate("cannot create session directory", error)
-        }
-        try {
+            try {
+                Files.createDirectory(directory)
+                createdDirectory = true
+            } catch (error: java.nio.file.FileAlreadyExistsException) {
+                throw CaptureSessionWriterException.SessionAlreadyExists(this.configuration.baseName)
+            }
             rawWriter = CupRawWriter(rawPath)
             Files.newOutputStream(
                 csvPath,
@@ -174,10 +189,19 @@ class CaptureSessionWriter(
             }
             writeMetadata(endedUtc = null, reason = null, complete = false, error = null)
         } catch (error: Throwable) {
-            runCatching { if (Files.exists(directory)) directory.toFile().deleteRecursively() }
+            if (::rawWriter.isInitialized) runCatching { rawWriter.close() }
+            if (createdDirectory) runCatching { directory.toFile().deleteRecursively() }
+            releaseLease()
             if (error is CaptureSessionWriterException) throw error
             throw CaptureSessionWriterException.CannotCreate("cannot create session files", error)
         }
+    }
+
+    /** The recording decoder supplies only this session's cumulative evidence. */
+    fun updateDecoderDiagnostics(invalidFrames: Long, discardedBytes: Long) {
+        checkOpen()
+        this.invalidFrames = invalidFrames
+        this.discardedBytes = discardedBytes
     }
 
     fun append(event: CaptureStreamChunkEvent): CaptureWriterSnapshot {
@@ -406,31 +430,57 @@ class CaptureSessionWriter(
 
     fun finish(reason: CaptureStopReason, error: String? = null): CaptureSessionSummary {
         finalSummary?.let { return it }
+        terminalFailure?.let { throw it }
         val ended = Instant.now()
-        closeFiles()
-        snapshot = snapshot.copy(lastFlushUtc = ended)
-        val complete = error == null && reason in setOf(
-            CaptureStopReason.USER, CaptureStopReason.VIEW_EXIT,
-            CaptureStopReason.SCENE_BACKGROUND, CaptureStopReason.DEVICE_DISCONNECT,
-            CaptureStopReason.DATA_TIMEOUT,
-            CaptureStopReason.DURATION_ELAPSED,
-        )
-        writeMetadata(ended, reason, complete, error)
-        return CaptureSessionSummary(
-            this.configuration.sessionId, this.configuration.baseName, directory,
-            this.configuration.startedUtc, ended, reason, complete, snapshot,
-        ).also { finalSummary = it }
+        try {
+            try {
+                closeFiles()
+            } catch (failure: Throwable) {
+                // Never publish complete after even one failed force. Preserve
+                // the original error if writing the incomplete marker also fails.
+                runCatching {
+                    writeMetadata(ended, CaptureStopReason.WRITE_ERROR, false,
+                        failure.message ?: failure::class.simpleName)
+                }.exceptionOrNull()?.let(failure::addSuppressed)
+                throw failure
+            }
+            snapshot = snapshot.copy(lastFlushUtc = ended)
+            val complete = error == null && reason in setOf(
+                CaptureStopReason.USER, CaptureStopReason.VIEW_EXIT,
+                CaptureStopReason.SCENE_BACKGROUND, CaptureStopReason.DEVICE_DISCONNECT,
+                CaptureStopReason.DATA_TIMEOUT, CaptureStopReason.DURATION_ELAPSED,
+            )
+            writeMetadata(ended, reason, complete, error)
+            return CaptureSessionSummary(
+                configuration.sessionId, configuration.baseName, directory,
+                configuration.startedUtc, ended, reason, complete, snapshot,
+            ).also { finalSummary = it }
+        } catch (failure: Throwable) {
+            terminalFailure = failure
+            throw failure
+        } finally {
+            releaseLease()
+        }
     }
 
     fun discardIfEmptyBeforeRecording(): Boolean {
         if (finalSummary != null || snapshot.rawChunkCount != 0L || closed) return false
-        closeFiles()
-        directory.toFile().deleteRecursively()
-        return true
+        try {
+            closeFiles()
+            directory.toFile().deleteRecursively()
+            return true
+        } finally {
+            releaseLease()
+        }
     }
 
     override fun close() {
         if (!closed) finish(CaptureStopReason.UNKNOWN, "writer closed without finalization")
+    }
+
+    private fun releaseLease() {
+        writeLease?.close()
+        writeLease = null
     }
 
     private fun checkOpen() {
@@ -439,34 +489,41 @@ class CaptureSessionWriter(
 
     private fun closeFiles() {
         if (closed) return
-        rawWriter.close()
-        forceCsv()
+        var failure: Throwable? = null
+        fun attempt(action: () -> Unit) {
+            try { action() } catch (error: Throwable) {
+                if (failure == null) failure = error else failure!!.addSuppressed(error)
+            }
+        }
+        // CupRawWriter closes its channel even when its force fails. The
+        // injected hook must likewise never skip the actual close.
+        attempt { beforeForce(rawPath) }
+        attempt { rawWriter.close() }
+        attempt { forceFile(csvPath) }
+        if (metricsInitialized) attempt { forceFile(metricsPath) }
+        if (bloodPressureInitialized) attempt { forceFile(bloodPressurePath) }
+        if (ecgInitialized) attempt { forceFile(ecgPath) }
         closed = true
+        failure?.let { throw it }
     }
 
     private fun checkpointIfDue() {
-        val now = System.nanoTime()
+        val now = monotonicNanos()
         if (now - lastCheckpointNanos < checkpointIntervalNanos) return
+        beforeForce(rawPath)
         rawWriter.flush()
-        forceCsv()
-        forceOptional(metricsPath, metricsInitialized)
-        forceOptional(bloodPressurePath, bloodPressureInitialized)
-        forceOptional(ecgPath, ecgInitialized)
+        forceFile(csvPath)
+        if (metricsInitialized) forceFile(metricsPath)
+        if (bloodPressureInitialized) forceFile(bloodPressurePath)
+        if (ecgInitialized) forceFile(ecgPath)
         snapshot = snapshot.copy(lastFlushUtc = Instant.now())
         writeMetadata(null, null, false, null)
         lastCheckpointNanos = now
     }
 
-    private fun forceCsv() {
-        if (!Files.isRegularFile(csvPath)) return
-        FileChannel.open(csvPath, StandardOpenOption.WRITE).use { channel ->
-            channel.force(true)
-        }
-    }
-
-    private fun forceOptional(path: Path, initialized: Boolean) {
-        if (!initialized || !Files.isRegularFile(path)) return
-        FileChannel.open(path, StandardOpenOption.WRITE).use { channel -> channel.force(true) }
+    private fun forceFile(path: Path) {
+        beforeForce(path)
+        FileChannel.open(path, StandardOpenOption.WRITE).use { it.force(true) }
     }
 
     private fun ensureMetricsFile() {
@@ -534,8 +591,8 @@ class CaptureSessionWriter(
             missingFrames = snapshot.missingFrames,
             duplicateFrames = snapshot.duplicateFrames,
             outOfOrderFrames = snapshot.outOfOrderFrames,
-            invalidFrames = 0,
-            discardedBytes = 0,
+            invalidFrames = invalidFrames,
+            discardedBytes = discardedBytes,
             writer = CaptureSessionWriterMetadata(
                 lastFlushUtc = snapshot.lastFlushUtc,
                 rawBytes = snapshot.rawFileBytes,
@@ -576,6 +633,7 @@ class CaptureSessionWriter(
                 while (offset < bytes.size) {
                     offset += channel.write(java.nio.ByteBuffer.wrap(bytes, offset, bytes.size - offset))
                 }
+                beforeForce(metadataPath)
                 channel.force(true)
             }
             try {

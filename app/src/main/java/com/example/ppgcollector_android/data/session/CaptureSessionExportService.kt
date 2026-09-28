@@ -71,6 +71,7 @@ object CaptureSessionExportService {
         } catch (error: CaptureSessionExportException) {
             throw error
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException || error is CaptureSessionBusyException) throw error
             throw CaptureSessionExportException.CannotExport("cannot create export zip", error)
         } finally {
             if (!committed) Files.deleteIfExists(temporary)
@@ -84,54 +85,36 @@ object CaptureSessionExportService {
         onProgress: (CaptureExportProgress) -> Unit = {},
         cancellation: CaptureExportCancellation = CaptureExportCancellation {},
     ): CaptureExportReport {
-        val files = CaptureSessionRepository.expectedFiles(session.directory)
-        val sources = files.allNamedPaths
-        val sizes = sources.map { (path, name) ->
-            if (!Files.isRegularFile(path)) throw CaptureSessionExportException.SourceFileMissing(name)
-            path to Files.size(path)
-        }
-        val total = sizes.sumOf { it.second }
-        var copied = 0L
-        val entryNames = ArrayList<String>(sources.size)
-        try {
-            ZipOutputStream(output).use { zip ->
-                sizes.forEach { (path, size) ->
-                    cancellation.checkOrThrow()
-                    val name = sources.first { it.first == path }.second
-                    entryNames += name
-                    zip.putNextEntry(ZipEntry(name))
-                    Files.newInputStream(path, StandardOpenOption.READ).use { input ->
-                        val buffer = ByteArray(copyBufferBytes)
-                        while (true) {
-                            cancellation.checkOrThrow()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            if (read == 0) continue
-                            zip.write(buffer, 0, read)
-                            copied += read
-                            onProgress(CaptureExportProgress(copied, total, name))
+        return requireSessionLease(session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT).use {
+            cancellation.check()
+            val files = CaptureSessionRepository.expectedFiles(session.directory, cancellation::check)
+            val sources = files.allNamedPaths.map { (path, name) ->
+                if (!Files.isRegularFile(path)) throw CaptureSessionExportException.SourceFileMissing(name)
+                CaptureExportSource.freeze(path, name, cancellation::check)
+            }
+            val total = sources.sumOf { it.version.size }
+            var copied = 0L
+            try {
+                ZipOutputStream(output).use { zip ->
+                    sources.forEach { source ->
+                        source.copyTo(zip, cancellation::check) { count ->
+                            copied += count
+                            onProgress(CaptureExportProgress(copied, total, source.entryName))
                         }
                     }
+                    sources.forEach { it.verify(cancellation::check) }
+                    cancellation.check()
+                    zip.putNextEntry(ZipEntry("export_manifest.json"))
+                    zip.write(CaptureExportSource.manifest(sources).toByteArray(Charsets.UTF_8))
                     zip.closeEntry()
-                    check(copied >= 0 && size >= 0) { "invalid source size" }
+                    zip.finish()
                 }
-                zip.finish()
+                check(copied == total) { "export size changed" }
+                CaptureExportReport(copied, total, sources.map { it.entryName })
+            } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException || error is CaptureSessionExportException) throw error
+                throw CaptureSessionExportException.CannotExport("cannot stream export zip", error)
             }
-            return CaptureExportReport(copied, total, entryNames.toList())
-        } catch (error: CaptureSessionExportException) {
-            throw error
-        } catch (error: Exception) {
-            throw CaptureSessionExportException.CannotExport("cannot stream export zip", error)
-        }
-    }
-
-    private fun CaptureExportCancellation.checkOrThrow() {
-        try {
-            check()
-        } catch (_: CaptureSessionExportException.Cancelled) {
-            throw CaptureSessionExportException.Cancelled
-        } catch (error: CancellationException) {
-            throw CaptureSessionExportException.Cancelled
         }
     }
 
@@ -146,4 +129,100 @@ object CaptureSessionExportService {
     }
 }
 
-private typealias CancellationException = java.util.concurrent.CancellationException
+/** File identity and EOF fixed before copy; hashes cover the exact bytes written to ZIP. */
+internal data class CaptureFileVersion(
+    val size: Long,
+    val key: String?,
+    val modified: String,
+    val created: String,
+) {
+    companion object {
+        fun read(path: Path): CaptureFileVersion {
+            val attributes = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            require(attributes.isRegularFile) { "source is not a regular file" }
+            return CaptureFileVersion(attributes.size(), attributes.fileKey()?.toString(),
+                attributes.lastModifiedTime().toString(), attributes.creationTime().toString())
+        }
+    }
+}
+
+internal data class CaptureExportSource(
+    val path: Path,
+    val entryName: String,
+    val version: CaptureFileVersion,
+    val sha256: String,
+) {
+    fun verify(cancellationCheck: () -> Unit) {
+        check(CaptureFileVersion.read(path) == version && hash(path, cancellationCheck, version.size) == sha256 &&
+            CaptureFileVersion.read(path) == version) { "export source changed: $entryName" }
+    }
+
+    fun copyTo(zip: ZipOutputStream, cancellationCheck: () -> Unit, copied: (Long) -> Unit) {
+        check(CaptureFileVersion.read(path) == version) { "export source changed: $entryName" }
+        zip.putNextEntry(ZipEntry(entryName).apply { time = 0L })
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var remaining = version.size
+            while (remaining > 0) {
+                cancellationCheck()
+                val count = input.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                check(count > 0) { "export source shortened: $entryName" }
+                zip.write(buffer, 0, count)
+                digest.update(buffer, 0, count)
+                remaining -= count
+                copied(count.toLong())
+            }
+            cancellationCheck()
+            check(input.read() == -1) { "export source appended: $entryName" }
+        }
+        zip.closeEntry()
+        check(digest.digest().toHex() == sha256 && CaptureFileVersion.read(path) == version) {
+            "export source changed during copy: $entryName"
+        }
+    }
+
+    companion object {
+        fun freeze(path: Path, name: String, cancellationCheck: () -> Unit): CaptureExportSource {
+            cancellationCheck()
+            val version = CaptureFileVersion.read(path)
+            val digest = hash(path, cancellationCheck, version.size)
+            check(CaptureFileVersion.read(path) == version) { "export source changed during snapshot: $name" }
+            return CaptureExportSource(path, name, version, digest)
+        }
+
+        fun hash(
+            path: Path,
+            cancellationCheck: () -> Unit = {},
+            expectedBytes: Long = Files.size(path),
+        ): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            Files.newInputStream(path).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var remaining = expectedBytes
+                while (remaining > 0) {
+                    cancellationCheck()
+                    val count = input.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                    check(count > 0) { "source shortened while hashing" }
+                    digest.update(buffer, 0, count)
+                    remaining -= count
+                }
+                cancellationCheck()
+                check(input.read() == -1) { "source appended while hashing" }
+            }
+            return digest.digest().toHex()
+        }
+
+        fun manifest(sources: List<CaptureExportSource>): String = JsonWriter.write(JsonValue.ObjectValue(mapOf(
+            "schema_version" to JsonValue.StringValue("ppgcollector_session_export_v1"),
+            "entries" to JsonValue.ArrayValue(sources.map { source -> JsonValue.ObjectValue(mapOf(
+                "entry" to JsonValue.StringValue(source.entryName),
+                "size" to JsonValue.NumberValue(source.version.size.toString()),
+                "sha256" to JsonValue.StringValue(source.sha256),
+            )) }),
+        )))
+
+        private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    }
+}

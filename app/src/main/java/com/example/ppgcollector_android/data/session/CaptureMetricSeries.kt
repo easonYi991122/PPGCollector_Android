@@ -3,11 +3,9 @@ package com.example.ppgcollector_android.data.session
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricSnapshot
 import com.example.ppgcollector_android.core.signal.MetricResult
-import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.util.Locale
 import kotlin.math.abs
@@ -32,6 +30,7 @@ data class CaptureMetricTimelinePoint(
     val signalQuality: Double?,
     val ratioOfRatios: Double?,
     val perfusionIndexPercent: Double?,
+    val connectionGeneration: Long = 0,
 )
 
 object CaptureMetricEpochFactory {
@@ -90,66 +89,43 @@ object CaptureMetricSeries {
         return fields.joinToString(",", transform = ::escape) + "\n"
     }
 
-    fun scan(path: Path): CaptureSidecarScanReport =
-        scanSessionSidecar(path, header, ::validateRow)
+    fun scan(
+        path: Path,
+        acceptedSessionIds: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = {},
+    ): CaptureSidecarScanReport = scanSessionSidecar(
+        path, header, acceptedSessionIds, cancellationCheck, rowValidator = ::validateRow,
+    )
 
     fun readTimeline(
         path: Path,
         expectedSessionId: String? = null,
         acceptedSessionIds: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = {},
     ): List<CaptureMetricTimelinePoint> {
         if (!Files.isRegularFile(path)) return emptyList()
-        Files.newBufferedReader(path).use { reader ->
-            require(reader.readLine()?.removeSuffix("\r") == header.trimEnd('\n')) {
-                "unexpected metrics header"
-            }
-            val allowedSessionIds = buildSet {
-                expectedSessionId?.let(::add)
-                addAll(acceptedSessionIds)
-            }
-            val result = ArrayList<CaptureMetricTimelinePoint>()
-            var previousEpoch = -1L
-            var previousSource = -1L
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isBlank()) continue
+        val result = ArrayList<CaptureMetricTimelinePoint>()
+        val report = scanSessionSidecar(
+            path, header, acceptedSessionIds + setOfNotNull(expectedSessionId), cancellationCheck,
+            onValidRow = { fields ->
                 require(result.size < maximumTimelineRows) {
                     "metrics timeline exceeds $maximumTimelineRows rows"
                 }
-                val fields = parseSessionCsvFields(line.removeSuffix("\r"))
-                require(fields.size == columns.size) { "expected ${columns.size} metrics fields" }
-                require(fields[0] == schemaVersion) { "unsupported metrics schema" }
-                if (allowedSessionIds.isNotEmpty()) {
-                    require(fields[1] in allowedSessionIds) {
-                        "metrics session_id does not match expected session"
-                    }
-                }
-                val epoch = fields[3].toLong()
-                val source = fields[4].toLong()
-                val sourceTime = fields[5].toDouble()
-                require(epoch >= 0L && source >= 0L && sourceTime.isFinite() && sourceTime >= 0.0) {
-                    "metrics timeline contains negative or non-finite cursor"
-                }
-                require(abs(sourceTime - source.toDouble() / 100.0) <= 0.000001) {
-                    "source_time_s does not match source_sample_index"
-                }
-                require(epoch > previousEpoch && source > previousSource) {
-                    "metrics timeline is not monotonic"
-                }
                 result += CaptureMetricTimelinePoint(
-                    metricEpoch = epoch,
-                    sourceSampleIndex = source,
-                    sourceTimeSeconds = sourceTime,
+                    metricEpoch = fields[3].toLong(),
+                    sourceSampleIndex = fields[4].toLong(),
+                    sourceTimeSeconds = fields[5].toDouble(),
                     heartRateBpm = validMetric(fields, 7, 8),
                     signalQuality = validMetric(fields, 12, 13),
                     ratioOfRatios = validMetric(fields, 17, 18),
                     perfusionIndexPercent = validMetric(fields, 22, 23),
+                    connectionGeneration = fields[2].toLong(),
                 )
-                previousEpoch = epoch
-                previousSource = source
-            }
-            return result
-        }
+            },
+            rowValidator = ::validateRow,
+        )
+        require(report.isStructurallyValid) { report.monotonicityError ?: "unexpected metrics header" }
+        return result
     }
 
     private fun appendMetric(fields: MutableList<String>, metric: MetricResult<Double>) {
@@ -170,6 +146,8 @@ object CaptureMetricSeries {
         if (fields.size != columns.size) return "expected ${columns.size} fields, got ${fields.size}"
         if (fields[0] != schemaVersion) return "unsupported schema_version: ${fields[0]}"
         if (fields[1].isBlank()) return "session_id is blank"
+        val generation = fields[2].toLongOrNull() ?: return "invalid connection_generation"
+        if (generation < 0L) return "negative connection_generation"
         val epoch = fields[3].toLongOrNull() ?: return "invalid metric_epoch"
         val source = fields[4].toLongOrNull() ?: return "invalid source_sample_index"
         val time = fields[5].toDoubleOrNull() ?: return "invalid source_time_s"
@@ -178,94 +156,120 @@ object CaptureMetricSeries {
         if (time < 0.0 || abs(time - source.toDouble() / 100.0) > 0.000001) {
             return "source_time_s does not match source_sample_index"
         }
+        try {
+            Instant.parse(fields[6])
+            for (offset in listOf(7, 12, 17, 22)) {
+                val valid = fields[offset + 1].toBooleanStrict()
+                fields[offset + 2].toBooleanStrict()
+                if (fields[offset].isNotEmpty() && fields[offset].toDoubleOrNull()?.isFinite() != true) {
+                    return "non-finite metric value"
+                }
+                if (valid && fields[offset].isEmpty()) return "valid metric has no value"
+            }
+        } catch (_: IllegalArgumentException) {
+            return "invalid metric value or flag"
+        } catch (_: java.time.format.DateTimeParseException) {
+            return "invalid measured_utc"
+        }
         if (previous != null) {
             if (fields[1] != previous[1]) return "session_id changed within sidecar"
             val previousEpoch = previous[3].toLongOrNull()
             val previousSource = previous[4].toLongOrNull()
-            if (previousEpoch != null && epoch <= previousEpoch) return "metric_epoch is not increasing"
+            val previousGeneration = previous[2].toLong()
+            if (generation < previousGeneration) return "connection_generation decreased"
+            if (generation == previousGeneration && previousEpoch != null && epoch <= previousEpoch) {
+                return "metric_epoch is not increasing within generation"
+            }
             if (previousSource != null && source <= previousSource) return "source_sample_index is not increasing"
         }
         return null
     }
 }
 
+/** Bounded physical lines. Only newline-terminated rows enter a recoverable prefix. */
+internal class SessionCsvLineReader(
+    path: Path,
+    private val cancellationCheck: () -> Unit = {},
+) : java.io.Closeable {
+    private val input = Files.newInputStream(path)
+    private val buffer = ByteArray(64 * 1024)
+    private var position = 0
+    private var limit = 0
+    private var eof = false
+    var consumedBytes = 0L
+        private set
+    var truncated = false
+        private set
+
+    fun next(): String? {
+        cancellationCheck()
+        if (eof) return null
+        val line = ByteArrayOutputStream()
+        while (true) {
+            if (position == limit) {
+                cancellationCheck()
+                limit = input.read(buffer)
+                position = 0
+                if (limit < 0) {
+                    eof = true
+                    truncated = line.size() > 0
+                    return null
+                }
+            }
+            val value = buffer[position++].toInt() and 0xff
+            consumedBytes++
+            if (value == 10) return line.toString(Charsets.UTF_8.name()).removeSuffix("\r")
+            require(line.size() < 64 * 1024) { "CSV line exceeds 64 KiB" }
+            line.write(value)
+        }
+    }
+
+    override fun close() = input.close()
+}
+
 internal fun scanSessionSidecar(
     path: Path,
     expectedHeader: String,
+    acceptedSessionIds: Set<String> = emptySet(),
+    cancellationCheck: () -> Unit = {},
+    onValidRow: (List<String>) -> Unit = {},
     rowValidator: (fields: List<String>, previous: List<String>?) -> String?,
 ): CaptureSidecarScanReport {
     val totalBytes = Files.size(path)
-    val expectedHeaderLine = expectedHeader.trimEnd('\n')
     var error: String? = null
     var rows = 0L
     var previous: List<String>? = null
     var sessionId: String? = null
-    var headerLine = ""
     var hasExpectedHeader = false
     var validByteCount = 0L
-    var consumedBytes = 0L
-    var lineIndex = 0
-    var hasTrailingNewline = false
-    val lineBuffer = ByteArrayOutputStream()
-
-    fun consumeLine(terminated: Boolean) {
-        val line = lineBuffer.toByteArray().toString(Charsets.UTF_8).removeSuffix("\r")
-        val lineEnd = consumedBytes
-        if (lineIndex == 0) {
-            headerLine = line
-            hasExpectedHeader = line == expectedHeaderLine
-            if (!hasExpectedHeader || !terminated) error = "unexpected sidecar header"
-            if (error == null && terminated) validByteCount = lineEnd
-        } else if (line.isNotEmpty() && error == null) {
-            val fields = runCatching { parseSessionCsvFields(line) }.getOrElse {
-                error = it.message ?: "invalid CSV row"
-                emptyList()
-            }
-            if (error == null) error = rowValidator(fields, previous)
-            if (error == null) {
-                rows++
-                if (sessionId == null) sessionId = fields.getOrNull(1)
-                previous = fields
-                if (terminated) validByteCount = lineEnd
-            }
-        } else if (error == null && terminated) {
-            validByteCount = lineEnd
-        }
-        lineIndex++
-        lineBuffer.reset()
-    }
-
-    BufferedInputStream(Files.newInputStream(path, StandardOpenOption.READ)).use { input ->
-        while (true) {
-            val value = input.read()
-            if (value < 0) break
-            consumedBytes++
-            if (value == '\n'.code) {
-                hasTrailingNewline = true
-                consumeLine(terminated = true)
-            } else {
-                if (lineBuffer.size() >= MAX_SIDECAR_LINE_BYTES) {
-                    if (error == null) error = "sidecar line exceeds limit"
-                } else {
-                    lineBuffer.write(value)
+    var truncated = false
+    SessionCsvLineReader(path, cancellationCheck).use { reader ->
+        try {
+            hasExpectedHeader = reader.next() == expectedHeader.trimEnd('\n')
+            if (!hasExpectedHeader) error = "unexpected sidecar header"
+            else validByteCount = reader.consumedBytes
+            while (error == null) {
+                val line = reader.next() ?: break
+                val fields = parseSessionCsvFields(line)
+                error = rowValidator(fields, previous)
+                if (error == null && acceptedSessionIds.isNotEmpty() && fields.getOrNull(1) !in acceptedSessionIds) {
+                    error = "session_id does not match metadata"
                 }
-                hasTrailingNewline = false
+                if (error != null) break
+                onValidRow(fields)
+                // Commit count, identity, cursor and byte prefix together.
+                rows++
+                sessionId = fields.getOrNull(1)
+                previous = fields
+                validByteCount = reader.consumedBytes
             }
+        } catch (invalid: IllegalArgumentException) {
+            error = invalid.message ?: "invalid CSV row"
         }
-        if (lineBuffer.size() > 0) consumeLine(terminated = false)
+        truncated = reader.truncated
     }
-    return CaptureSidecarScanReport(
-        totalBytes = totalBytes,
-        validByteCount = validByteCount,
-        completeDataRowCount = rows,
-        hasExpectedHeader = hasExpectedHeader,
-        hasTruncatedFinalLine = totalBytes > 0L && !hasTrailingNewline,
-        monotonicityError = error,
-        sessionId = sessionId,
-    )
+    return CaptureSidecarScanReport(totalBytes, validByteCount, rows, hasExpectedHeader, truncated, error, sessionId)
 }
-
-private const val MAX_SIDECAR_LINE_BYTES = 1_048_576
 
 internal fun parseSessionCsvFields(line: String): List<String> {
     val fields = ArrayList<String>()

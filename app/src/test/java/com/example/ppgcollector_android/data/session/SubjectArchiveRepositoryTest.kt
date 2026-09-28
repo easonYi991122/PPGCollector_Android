@@ -8,6 +8,33 @@ import org.junit.Test
 
 class SubjectArchiveRepositoryTest {
     @Test
+    fun missingMetadataDoesNotTurnArchiveMetricIdentityIntoAWildcard() {
+        val root = java.nio.file.Files.createTempDirectory("archive-unknown-identity")
+        try {
+            val source = ReviewSessionFixtures.writeProtocols(root).single { it.baseName == "PPG-KOTLIN-1" }
+            java.nio.file.Files.writeString(CaptureSessionRepository.expectedFiles(source.directory).metadata, "unreadable")
+            val entry = SubjectArchiveRepository.rebuild(root, root.resolve("profiles"))
+                .groups.flatMap { it.sessions }.single { it.session.directory == source.directory }
+            org.junit.Assert.assertNull(entry.heartRateBpm)
+            org.junit.Assert.assertEquals(0, entry.bloodPressureGroupCount)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun unknownRecoveredPrefixIsUnclassifiedInsteadOfDefaultPpg() {
+        val root = java.nio.file.Files.createTempDirectory("unknown-prefix")
+        try {
+            val source = ReviewSessionFixtures.writeProtocols(root).first()
+            val recovered = CaptureSessionRecoveryService.recover(source, "custom_without_prefix")
+            val metadata = CaptureSessionMetadataCodec.decode(recovered.metadataPath)
+            java.nio.file.Files.write(recovered.metadataPath, CaptureSessionMetadataCodec.encodeBytes(
+                metadata.copy(recovery = metadata.recovery!!.copy(originalCanonicalPrefix = null))))
+            val archive = SubjectArchiveRepository.rebuild(root, root.resolve("profiles"))
+            org.junit.Assert.assertTrue(archive.unclassified.any { it.directory == recovered.directory })
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun canonicalSessionsGroupBySubjectAndSortSequencesNumerically() {
         val root = Files.createTempDirectory("subject-archive")
         val sessions = root.resolve("sessions")

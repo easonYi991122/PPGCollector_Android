@@ -179,3 +179,9 @@ sbp/dbp、吸烟、饮酒**不拦截**。
 | V2.0 双维度唯一性已存在 | 只有文件名唯一，没有 (prefix,subject,seq) |
 | 被试必填已拦截录制 | 未拦截 |
 | `{stem}.json` | `{stem}.session.json` |
+
+## 5. 2026-09-27 跨端契约复核补充
+
+- 新增 recovery 字段只描述复制来源，不改旧 session schema：`source_session_id` 保留原始会话身份，`parent_session_id` 是直接父项，`original_canonical_prefix` 保留源命名空间；各自 source SHA-256/字节数对应来源证据。新 recovery 元数据缺 optional 键时按 `null`/默认值读取；既有 v1 session、408 legacy raw/CSV 与旧 analysis artifact 仍可读取。
+- CSV 样本仍须与 accepted raw cursor/值匹配，sidecar 身份、cursor/time、行数和有限值继续校验。CSV `sqi` 维持模板匹配口径；Combo SQI 仅为暂定显示反馈，不改变导出含义或医学声明。
+- Android 自动文件门禁通过不代表真机背景行为已验收；后台合法帧连续性、通知权限交互、真实长流和紧凑显示仍列为设备检查项。跨平台文件行为按真实 Swift writer zip 互读，不要求 UI 像素 parity 或 Android/iOS 平台 API 对译。

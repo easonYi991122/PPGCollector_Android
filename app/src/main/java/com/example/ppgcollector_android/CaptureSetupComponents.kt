@@ -313,6 +313,8 @@ internal fun CaptureReferenceCard(
 internal fun CaptureStartCard(
     captureGate: CaptureGateUiState,
     onStartCapture: () -> Unit,
+    onRequestNotificationPermission: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -325,6 +327,14 @@ internal fun CaptureStartCard(
                 enabled = captureGate.canStart,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             ) { Text("开始录制") }
+            if (CaptureUiPolicy.needsNotificationPermission(captureGate)) {
+                OutlinedButton(onClick = onRequestNotificationPermission, modifier = Modifier.fillMaxWidth()) {
+                    Text("授予通知权限")
+                }
+                OutlinedButton(onClick = onOpenNotificationSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("打开通知设置")
+                }
+            }
             if (captureGate.canStart) {
                 Text("✓ 可以开始录制", color = MaterialTheme.colorScheme.tertiary)
             } else {
@@ -371,7 +381,7 @@ private fun FrequencyMenu(
 }
 
 private fun CaptureRecordingState.isRecordingState(): Boolean =
-    this == CaptureRecordingState.RECORDING || this == CaptureRecordingState.STOPPING
+    this == CaptureRecordingState.STARTING || this == CaptureRecordingState.RECORDING || this == CaptureRecordingState.STOPPING
 
 @Composable
 private fun BringIntoViewTextField(

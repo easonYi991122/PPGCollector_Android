@@ -22,8 +22,12 @@ object CaptureEcgCsv {
         ecg.toString(),
     ).joinToString(",") + "\n"
 
-    fun scan(path: Path): CaptureSidecarScanReport =
-        scanSessionSidecar(path, header) { fields, previous ->
+    fun scan(
+        path: Path,
+        acceptedSessionIds: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = {},
+    ): CaptureSidecarScanReport =
+        scanSessionSidecar(path, header, acceptedSessionIds, cancellationCheck) { fields, previous ->
             if (fields.size != 6) return@scanSessionSidecar "expected 6 ECG fields"
             if (fields[0] != schemaVersion) return@scanSessionSidecar "unsupported ECG schema_version"
             if (fields[1].isBlank()) return@scanSessionSidecar "session_id is blank"

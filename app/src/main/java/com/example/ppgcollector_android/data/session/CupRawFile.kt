@@ -140,22 +140,23 @@ object CupRawReader {
     }
 
     /** Stream the file without loading it into memory; visitor runs per complete record. */
-    fun scan(path: Path, visit: (CupRawRecord) -> Unit = {}): CupRawScanSummary {
+    fun scan(path: Path, cancellationCheck: () -> Unit = {}, visit: (CupRawRecord) -> Unit = {}): CupRawScanSummary {
         Files.newInputStream(path, StandardOpenOption.READ).use { input ->
-            return scan(input, Files.size(path), visit)
+            return scan(input, Files.size(path), cancellationCheck, visit)
         }
     }
 
     /** Test/helper variant with identical parsing and safe-prefix semantics. */
     fun scan(bytes: ByteArray, visit: (CupRawRecord) -> Unit = {}): CupRawScanSummary =
-        bytes.inputStream().use { scan(it, bytes.size.toLong(), visit) }
+        bytes.inputStream().use { scan(it, bytes.size.toLong(), {}, visit) }
 
     private fun scan(
         input: InputStream,
         totalByteCount: Long,
+        cancellationCheck: () -> Unit,
         visit: (CupRawRecord) -> Unit,
     ): CupRawScanSummary {
-        val header = readUpTo(input, CupRawFormat.magic.size)
+        val header = readUpTo(input, CupRawFormat.magic.size, cancellationCheck)
         if (!header.contentEquals(CupRawFormat.magic)) {
             throw CupRawFileException.InvalidMagic
         }
@@ -165,7 +166,7 @@ object CupRawReader {
         var peakRecordBufferBytes = 0
         while (offset < totalByteCount) {
             val recordOffset = offset
-            val recordHeader = readUpTo(input, CupRawFormat.recordHeaderBytes)
+            val recordHeader = readUpTo(input, CupRawFormat.recordHeaderBytes, cancellationCheck)
             if (recordHeader.size != CupRawFormat.recordHeaderBytes) {
                 return CupRawScanSummary(
                     recordCount = recordCount,
@@ -196,7 +197,7 @@ object CupRawReader {
             }
 
             val chunkLength = declaredLength.toInt()
-            val chunk = readUpTo(input, chunkLength)
+            val chunk = readUpTo(input, chunkLength, cancellationCheck)
             if (chunk.size != chunkLength) {
                 return CupRawScanSummary(
                     recordCount = recordCount,
@@ -229,11 +230,12 @@ object CupRawReader {
         )
     }
 
-    private fun readUpTo(input: InputStream, requestedCount: Int): ByteArray {
+    private fun readUpTo(input: InputStream, requestedCount: Int, cancellationCheck: () -> Unit): ByteArray {
         if (requestedCount == 0) return ByteArray(0)
         val result = ByteArray(requestedCount)
         var offset = 0
         while (offset < requestedCount) {
+            cancellationCheck()
             val read = input.read(result, offset, requestedCount - offset)
             if (read < 0) break
             if (read == 0) continue

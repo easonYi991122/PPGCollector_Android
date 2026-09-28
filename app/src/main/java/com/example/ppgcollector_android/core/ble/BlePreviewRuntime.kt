@@ -58,6 +58,7 @@ class BlePreviewRuntime(
     private val onAcceptedFrame: (Long) -> Unit = {},
     private val onClockTick: (Long) -> Unit = {},
     private val clockTickIntervalNanos: Long = 250_000_000L,
+    private val analyze: (LiveMetricAnalysisRequest) -> LiveMetricAnalysisResult = { LiveMetricAnalyzer.analyze(it) },
 ) : AutoCloseable {
     init {
         require(queueCapacity > 0)
@@ -65,12 +66,16 @@ class BlePreviewRuntime(
     }
 
     private data class Input(
+        val epoch: Any,
         val generation: Long,
         val hostMonotonicNanos: Long,
         val bytes: ByteArray,
         val streamProtocolMode: CupStreamProtocolMode,
     )
 
+    private data class PendingAnalysis(val epoch: Any, val generation: Long, val request: LiveMetricAnalysisRequest)
+
+    private var resetEpoch = Any()
     private val queue = ArrayBlockingQueue<Input>(queueCapacity)
     private val lock = Any()
     private val _snapshot = MutableStateFlow(BlePreviewSnapshot())
@@ -90,7 +95,7 @@ class BlePreviewRuntime(
     private var sequenceTracker = CupFrameSequenceTracker()
     private var signalRuntime = LivePpgSignalRuntime()
     private var comboSqiDebounce = ComboSqiDebounce()
-    private val analysisQueue = ArrayBlockingQueue<LiveMetricAnalysisRequest>(1)
+    private val analysisQueue = ArrayBlockingQueue<PendingAnalysis>(1)
     private var worker: Thread? = null
     private var analysisWorker: Thread? = null
     private var closed = false
@@ -125,6 +130,7 @@ class BlePreviewRuntime(
             ensureWorkersLocked()
             queue.offer(
                 Input(
+                    resetEpoch,
                     copied.connectionGeneration,
                     copied.hostMonotonicNanos,
                     copied.bytes,
@@ -140,10 +146,8 @@ class BlePreviewRuntime(
                 // later metric can never span bytes the App failed to consume.
                 val staleQueuedChunkCount = queue.size
                 queue.clear()
-                analysisQueue.clear()
+                invalidateInputLocked()
                 droppedChunkCount += staleQueuedChunkCount + 1L
-                signalRuntime.invalidateLocalInput(acceptedSampleIndex)
-                comboSqiDebounce.reset()
                 _snapshot.value = _snapshot.value.copy(
                     waveform = LiveWaveformSnapshot(generation = signalRuntime.generation),
                     lastAnalysis = null,
@@ -165,7 +169,10 @@ class BlePreviewRuntime(
             if (closed) return
             activeGeneration = generation
             activeStreamProtocolMode = streamProtocolMode
-            if (clearQueuedChunks) queue.clear()
+            // Every reset invalidates even inputs already polled by a worker.
+            resetEpoch = Any()
+            queue.clear()
+            analysisQueue.clear()
             decoder = CupBatchStreamDecoder(protocolMode = streamProtocolMode)
             adsDecoder = Ads1292rStreamDecoder()
             sequenceTracker = CupFrameSequenceTracker()
@@ -183,15 +190,33 @@ class BlePreviewRuntime(
     /** Stop idle preview work without blocking the BLE owner or UI thread. */
     fun suspend() {
         synchronized(lock) {
+            if (stopRequested || closed) return
             stopRequested = true
             queue.clear()
-            analysisQueue.clear()
+            invalidateInputLocked()
+            _snapshot.value = _snapshot.value.copy(
+                waveform = LiveWaveformSnapshot(generation = signalRuntime.generation),
+                lastAnalysis = null,
+            )
         }
+    }
+
+    private fun invalidateInputLocked() {
+        resetEpoch = Any()
+        analysisQueue.clear()
+        decoder = CupBatchStreamDecoder(protocolMode = activeStreamProtocolMode)
+        adsDecoder = Ads1292rStreamDecoder()
+        sequenceTracker = CupFrameSequenceTracker()
+        lastSequenceNumber = null
+        lastSequenceStep = null
+        signalRuntime.invalidateLocalInput(acceptedSampleIndex)
+        comboSqiDebounce.reset()
     }
 
     override fun close() {
         val workers = synchronized(lock) {
             closed = true
+            resetEpoch = Any()
             stopRequested = true
             queue.clear()
             analysisQueue.clear()
@@ -227,15 +252,16 @@ class BlePreviewRuntime(
         } finally {
             synchronized(lock) {
                 if (worker === Thread.currentThread()) worker = null
+                if (!closed && !stopRequested && queue.isNotEmpty()) ensureWorkersLocked()
             }
         }
     }
 
     private fun process(input: Input) {
         var acceptedFrame = false
-        var metricRequest: LiveMetricAnalysisRequest? = null
+        var metricRequest: PendingAnalysis? = null
         synchronized(lock) {
-            if (input.generation != activeGeneration) return
+            if (closed || input.epoch !== resetEpoch || input.generation != activeGeneration) return
             if (input.streamProtocolMode != activeStreamProtocolMode) {
                 _snapshot.value = _snapshot.value.copy(
                     lastError = "preview protocol mode does not match the active connection",
@@ -292,7 +318,7 @@ class BlePreviewRuntime(
                 acceptedSampleIndex += events.filter { it.isAccepted }
                     .sumOf { it.frame.samples.size.toLong() }
                 signal.waveform?.let { publishWaveform(it) }
-                metricRequest = signal.metricRequest
+                metricRequest = signal.metricRequest?.let { PendingAnalysis(resetEpoch, activeGeneration, it) }
             } catch (error: Throwable) {
                 _snapshot.value = _snapshot.value.copy(
                     lastError = error.message ?: error::class.simpleName,
@@ -309,9 +335,10 @@ class BlePreviewRuntime(
                 val request = analysisQueue.poll(100, TimeUnit.MILLISECONDS)
                 val shouldStop = synchronized(lock) { stopRequested && analysisQueue.isEmpty() }
                 if (request != null) {
-                    val result = runCatching { LiveMetricAnalyzer.analyze(request) }.getOrNull() ?: continue
+                    val result = runCatching { analyze(request.request) }.getOrNull() ?: continue
                     synchronized(lock) {
-                        if (!stopRequested && signalRuntime.isCurrent(request)) {
+                        if (!closed && !stopRequested && request.epoch === resetEpoch &&
+                            request.generation == activeGeneration && signalRuntime.isCurrent(request.request)) {
                             val combo = comboSqiDebounce.update(result.comboSqiCandidate)
                             _snapshot.value = _snapshot.value.copy(
                                 lastAnalysis = result.copy(
@@ -327,6 +354,7 @@ class BlePreviewRuntime(
         } finally {
             synchronized(lock) {
                 if (analysisWorker === Thread.currentThread()) analysisWorker = null
+                if (!closed && !stopRequested && analysisQueue.isNotEmpty()) ensureWorkersLocked()
             }
         }
     }
@@ -344,11 +372,14 @@ class BlePreviewRuntime(
         }
     }
 
-    private fun enqueueAnalysis(request: LiveMetricAnalysisRequest) {
-        synchronized(lock) { metricEmissionCount++ }
-        if (!analysisQueue.offer(request)) {
-            analysisQueue.poll()
-            analysisQueue.offer(request)
+    private fun enqueueAnalysis(request: PendingAnalysis) {
+        synchronized(lock) {
+            if (closed || stopRequested || request.epoch !== resetEpoch || request.generation != activeGeneration) return
+            metricEmissionCount++
+            if (!analysisQueue.offer(request)) {
+                analysisQueue.poll()
+                analysisQueue.offer(request)
+            }
         }
     }
 

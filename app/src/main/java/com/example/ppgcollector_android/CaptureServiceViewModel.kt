@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ppgcollector_android.core.ble.BleCoordinator
 import com.example.ppgcollector_android.core.ble.BleConnectionPhase
 import com.example.ppgcollector_android.core.ble.BlePreviewSnapshot
 import com.example.ppgcollector_android.data.session.CaptureAnalysisSnapshot
@@ -28,11 +29,14 @@ import com.example.ppgcollector_android.data.session.CaptureReferenceTimestamp
 import com.example.ppgcollector_android.data.session.ManualBloodPressureEvent
 import com.example.ppgcollector_android.data.session.SessionNamePolicy
 import com.example.ppgcollector_android.data.session.CanonicalSessionIdentity
+import com.example.ppgcollector_android.data.session.SubjectProfile
 import com.example.ppgcollector_android.data.session.SubjectProfileStore
 import com.example.ppgcollector_android.data.session.referenceBloodPressure
 import com.example.ppgcollector_android.core.signal.LiveWaveformSnapshot
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -106,6 +110,18 @@ private fun CaptureStartFailure.message(): String = when (this) {
     is CaptureStartFailure.RecordingStartFailed -> "录制初始化失败：$detail"
 }
 
+/** Injectable Activity binding used by the real client and ViewModel JVM tests. */
+interface CaptureServiceBinding {
+    val state: StateFlow<CaptureServiceObservation>
+    fun bind(createIfNeeded: Boolean = false): Boolean
+    fun unbind()
+    fun stopRecording()
+    fun captureReferenceTimestamp(): CaptureReferenceTimestamp?
+    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean
+    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean
+    fun clearRuntimeFailure()
+}
+
 /**
  * Owns only the Activity-side binding. The foreground service remains the
  * recording owner; this object is safe to bind again after Activity recreation.
@@ -113,7 +129,7 @@ private fun CaptureStartFailure.message(): String = when (this) {
 class CaptureServiceClient(
     context: Context,
     private val scope: CoroutineScope,
-) {
+) : CaptureServiceBinding {
     private val appContext = context.applicationContext
     private val _state = MutableStateFlow(CaptureServiceObservation())
     private var requested = false
@@ -124,7 +140,7 @@ class CaptureServiceClient(
     private var waveformJob: Job? = null
     private var runtimeFailureJob: Job? = null
 
-    val state: StateFlow<CaptureServiceObservation> = _state.asStateFlow()
+    override val state: StateFlow<CaptureServiceObservation> = _state.asStateFlow()
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
@@ -190,7 +206,7 @@ class CaptureServiceClient(
         }
     }
 
-    fun bind(createIfNeeded: Boolean = false): Boolean {
+    override fun bind(createIfNeeded: Boolean): Boolean {
         if (requested) return true
         requested = true
         val accepted = runCatching {
@@ -218,7 +234,7 @@ class CaptureServiceClient(
         return accepted
     }
 
-    fun unbind() {
+    override fun unbind() {
         requested = false
         clearObservers()
         if (bound) {
@@ -229,19 +245,21 @@ class CaptureServiceClient(
         publishUnbound()
     }
 
-    fun stopRecording() {
+    override fun stopRecording() {
         binder?.stop()
     }
 
-    fun captureReferenceTimestamp(): CaptureReferenceTimestamp? = binder?.captureReferenceTimestamp()
+    override fun captureReferenceTimestamp(): CaptureReferenceTimestamp? = binder?.captureReferenceTimestamp()
 
-    fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
+    override fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
         binder?.commitManualBloodPressure(event) == true
 
-    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
-        binder?.updateParticipantProfile(participant) == true
+    override fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
+        state.value.recording.sessionId?.let { sessionId ->
+            binder?.updateParticipantProfile(sessionId, participant) == true
+        } == true
 
-    fun clearRuntimeFailure() {
+    override fun clearRuntimeFailure() {
         binder?.clearRuntimeFailure()
         _state.update { it.copy(runtimeFailure = null) }
     }
@@ -300,12 +318,22 @@ class CaptureServiceClient(
     }
 }
 
-class CaptureViewModel(application: android.app.Application) : AndroidViewModel(application) {
+class CaptureViewModel @JvmOverloads constructor(
+    application: android.app.Application,
+    private val formLifecycle: CaptureFormLifecycle = CaptureFormLifecycle { subject ->
+        SubjectProfileStore((application as PpgCollectorApplication).subjectsRoot).read(subject)
+    },
+    serviceClientFactory: (Context, CoroutineScope) -> CaptureServiceBinding = ::CaptureServiceClient,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val bleCoordinator: BleCoordinator =
+        (application as PpgCollectorApplication).bleCoordinator,
+) : AndroidViewModel(application) {
     private data class CaptureFormBootstrap(
         val initialName: String,
         val suggestedName: String,
         val disk: CaptureGateDiskSnapshot,
         val participant: CaptureParticipantDraft,
+        val profileError: CaptureProfileReadError? = null,
     )
 
     private data class CaptureGateForm(
@@ -315,7 +343,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     )
 
     private val collectorApplication = application as PpgCollectorApplication
-    private val serviceClient = CaptureServiceClient(application, viewModelScope)
+    private val serviceClient = serviceClientFactory(application, viewModelScope)
     private val _sessionName = MutableStateFlow("")
     private val _sessionPrefix = MutableStateFlow(
         com.example.ppgcollector_android.data.session.SessionNamePrefix.fromWireValue(
@@ -333,24 +361,28 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     private val _captureGate = MutableStateFlow(CaptureGateUiState())
     private val _gateDiskSnapshot = MutableStateFlow(CaptureGateDiskSnapshot(false, false, null))
     private val _notificationPermissionFailure = MutableStateFlow<CaptureStartFailure?>(null)
-    private val _bloodPressureReference = MutableStateFlow<CaptureReferenceTimestamp?>(null)
+    private val _bloodPressureReference = formLifecycle.bloodPressureReference
+    private val _profileReadError = MutableStateFlow<CaptureProfileReadError?>(null)
+    private val _startPending = MutableStateFlow(false)
     private val diskCache = CaptureGateDiskCache(
         sessionsRoot = { collectorApplication.sessionsRoot },
     )
     private var gateDiskJob: Job? = null
     private var participantPrefillJob: Job? = null
     private var firstActivityStart = true
-    private var pendingSessionScopedClearName: String? = null
-    private var recordingAcceptedForPendingSession = false
 
     val serviceState: StateFlow<CaptureServiceObservation> = serviceClient.state
-    val serviceStatus: StateFlow<CaptureServiceStatusObservation> = serviceClient.state
-        .map { state ->
+    val serviceStatus: StateFlow<CaptureServiceStatusObservation> = combine(
+        serviceClient.state, _profileReadError, _startPending,
+    ) { state, profileError, startPending ->
             CaptureServiceStatusObservation(
                 binding = state.binding,
-                recording = state.recording,
+                recording = if (startPending && state.recording.state in setOf(
+                        CaptureRecordingState.IDLE, CaptureRecordingState.FINALIZED, CaptureRecordingState.FAILED)) {
+                    state.recording.copy(state = CaptureRecordingState.STARTING)
+                } else state.recording,
                 runtimeFailure = state.runtimeFailure,
-                error = state.error,
+                error = state.error ?: state.recording.lastError ?: profileError?.message,
             )
         }
         .distinctUntilChanged()
@@ -363,6 +395,8 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         .map { state -> state.analysis }
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, CaptureAnalysisSnapshot())
+    val profileReadError: StateFlow<CaptureProfileReadError?> = _profileReadError.asStateFlow()
+    val startPending: StateFlow<Boolean> = _startPending.asStateFlow()
     val sessionName: StateFlow<String> = _sessionName.asStateFlow()
     val sessionPrefix: StateFlow<com.example.ppgcollector_android.data.session.SessionNamePrefix> =
         _sessionPrefix.asStateFlow()
@@ -370,7 +404,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     val recordMode: StateFlow<CaptureRecordMode> = _recordMode.asStateFlow()
     val plannedDurationText: StateFlow<String> = _plannedDurationText.asStateFlow()
     val captureGate: StateFlow<CaptureGateUiState> = _captureGate.asStateFlow()
-    val previewState: StateFlow<BlePreviewSnapshot> = collectorApplication.bleCoordinator.previewFlow
+    val previewState: StateFlow<BlePreviewSnapshot> = bleCoordinator.previewFlow
     val bloodPressureReference: StateFlow<CaptureReferenceTimestamp?> = _bloodPressureReference.asStateFlow()
 
     init {
@@ -386,7 +420,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             }
             combine(
                 combine(_sessionName, _gateDiskSnapshot) { name, disk -> name to disk },
-                collectorApplication.bleCoordinator.snapshotFlow
+                bleCoordinator.snapshotFlow
                     .map { ble -> ble.phase to ble.freshness }
                     .distinctUntilChanged(),
                 serviceStatus,
@@ -418,16 +452,21 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
             }.collect { _captureGate.value = it }
         }
         viewModelScope.launch {
-            serviceStatus
-                .map { it.recording.state to it.runtimeFailure }
+            collectorApplication.captureTerminal.collect { terminal ->
+                if (terminal != null && formLifecycle.observe(terminal)) clearSessionScopedFormAfterRecording()
+            }
+        }
+        viewModelScope.launch {
+            serviceClient.state
+                .map { Triple(it.recording, it.runtimeFailure, it.binding) }
                 .distinctUntilChanged()
-                .collect { (state, runtimeFailure) ->
-                    if (state == CaptureRecordingState.RECORDING || state == CaptureRecordingState.STOPPING) {
-                        recordingAcceptedForPendingSession = pendingSessionScopedClearName != null
+                .collect { (recording, runtimeFailure, binding) ->
+                    if (recording.state in setOf(CaptureRecordingState.STARTING, CaptureRecordingState.RECORDING,
+                            CaptureRecordingState.STOPPING) || runtimeFailure != null || binding == CaptureServiceBindingState.FAILED) {
+                        _startPending.value = false
                     }
-                    if ((state == CaptureRecordingState.FINALIZED || state == CaptureRecordingState.FAILED) &&
-                        recordingAcceptedForPendingSession
-                    ) {
+                    if (formLifecycle.observe(recording)) {
+                        _startPending.value = false
                         clearSessionScopedFormAfterRecording()
                     }
                     if (runtimeFailure == CaptureStartFailure.SessionAlreadyExists ||
@@ -474,7 +513,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val identity = SessionNamePolicy.parseCanonical(_sessionName.value)
         if (identity != null) {
             viewModelScope.launch {
-                val nextName = withContext(Dispatchers.IO) {
+                val nextName = withContext(ioDispatcher) {
                     "${prefix.wireValue}-${identity.subject}-${SessionNamePolicy.nextSequenceForSubject(
                         collectorApplication.sessionsRoot, prefix, identity.subject,
                     )}"
@@ -486,7 +525,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
 
     fun useSuggestedSessionName() {
         viewModelScope.launch {
-            val suggested = withContext(Dispatchers.IO) {
+            val suggested = withContext(ioDispatcher) {
                 SessionNamePolicy.suggestedBaseNameOrExample(
                     collectorApplication.sessionsRoot,
                     _sessionPrefix.value,
@@ -547,7 +586,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     }
 
     fun updateParticipantProfile(): Boolean {
-        val participant = participantForSession(_sessionName.value, persistCanonical = false)
+        val participant = participantForSession(_sessionName.value)
         return serviceClient.updateParticipantProfile(participant)
     }
 
@@ -559,19 +598,22 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
     }
 
     fun startRecording(notificationPermissionGranted: Boolean = false) {
+        if (_startPending.value) return
         val gate = _captureGate.value
         if (!gate.canStart &&
             !(notificationPermissionGranted &&
                 gate.failure == CaptureStartFailure.NotificationPermissionDenied)
         ) return
-        val ble = collectorApplication.bleCoordinator.snapshot
+        val ble = bleCoordinator.snapshot
         val deviceName = ble.phase.deviceId?.let { id ->
             ble.discoveredDevices.firstOrNull { it.id == id }?.name
         }
         // The foreground service is the transaction owner.  Do not create a
         // profile revision before it has accepted the recording start.
-        val participant = participantForSession(gate.sessionName, persistCanonical = false)
+        val participant = participantForSession(gate.sessionName)
         val bp = _participantDraft.value.referenceBloodPressure()
+        _startPending.value = true
+        formLifecycle.startRequested(gate.sessionName)
         runCatching {
             androidx.core.content.ContextCompat.startForegroundService(
                 getApplication(),
@@ -590,10 +632,9 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 ),
             )
         }.onSuccess {
-            pendingSessionScopedClearName = gate.sessionName
-            recordingAcceptedForPendingSession = false
             serviceClient.bind(createIfNeeded = true)
         }.onFailure { error ->
+            _startPending.value = false
             _captureGate.value = gate.copy(failure = mapCaptureServiceStartFailure(error))
         }
     }
@@ -605,44 +646,20 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val identity = SessionNamePolicy.parseCanonical(name)
         participantPrefillJob?.cancel()
         participantPrefillJob = viewModelScope.launch {
-            val latest = withContext(Dispatchers.IO) {
-                identity?.let { subjectProfileStore().read(it.subject)?.latest }
-            }
+            val result = withContext(ioDispatcher) { formLifecycle.readParticipant(identity) }
+            if (_sessionName.value == name) _profileReadError.value = result.error
             if (participantDraftDirtySubject != identity?.subject && _sessionName.value == name) {
-                _participantDraft.value = CaptureParticipantDraft.fromSnapshot(
-                    latest?.asParticipantSnapshot(identity?.subject.orEmpty()),
-                )
+                _participantDraft.value = result.participant
                 participantDraftSubject = identity?.subject
             }
         }
     }
 
-    private fun participantForSession(
-        name: String,
-        persistCanonical: Boolean,
-    ): CaptureParticipantSnapshot? {
+    private fun participantForSession(name: String): CaptureParticipantSnapshot? {
         val identity = SessionNamePolicy.parseCanonical(name)
         if (identity == null && _participantDraft.value == CaptureParticipantDraft()) return null
-        if (identity != null && persistCanonical) {
-            val store = subjectProfileStore()
-            val existing = store.read(identity.subject)?.latest
-            val draftSnapshot = _participantDraft.value.toSnapshot(identity, existing?.revisionId)
-            val saved = store.saveRevision(
-                subject = identity.subject,
-                sex = draftSnapshot.sex,
-                ageYears = draftSnapshot.ageYears,
-                heightCm = draftSnapshot.heightCm,
-                weightKg = draftSnapshot.weightKg,
-                smokingFreq = draftSnapshot.smokingFreq,
-                drinkingFreq = draftSnapshot.drinkingFreq,
-                additionalFields = draftSnapshot.additionalFields,
-            )
-            return saved.latest?.asParticipantSnapshot(identity.subject)?.copy(sequence = identity.sequence)
-        }
         return _participantDraft.value.toSnapshot(identity)
     }
-
-    private fun subjectProfileStore() = SubjectProfileStore(collectorApplication.subjectsRoot)
 
     private fun evaluateGate(
         name: String,
@@ -682,7 +699,7 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val initialName = _sessionName.value
         val prefix = _sessionPrefix.value
         viewModelScope.launch {
-            val bootstrap = withContext(Dispatchers.IO) {
+            val bootstrap = withContext(ioDispatcher) {
                 val suggested = SessionNamePolicy.suggestedBaseNameOrExample(
                     collectorApplication.sessionsRoot,
                     prefix,
@@ -690,19 +707,19 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
                 diskCache.invalidate()
                 val disk = diskCache.snapshot(suggested)
                 val identity = SessionNamePolicy.parseCanonical(suggested)
-                val latest = identity?.let { subjectProfileStore().read(it.subject)?.latest }
+                val profile = formLifecycle.readParticipant(identity)
                 CaptureFormBootstrap(
                     initialName = initialName,
                     suggestedName = suggested,
                     disk = disk,
-                    participant = CaptureParticipantDraft.fromSnapshot(
-                        latest?.asParticipantSnapshot(identity?.subject.orEmpty()),
-                    ),
+                    participant = profile.participant,
+                    profileError = profile.error,
                 )
             }
             if (_sessionName.value == bootstrap.initialName) {
                 _sessionName.value = bootstrap.suggestedName
                 _gateDiskSnapshot.value = bootstrap.disk
+                _profileReadError.value = bootstrap.profileError
                 val subject = SessionNamePolicy.parseCanonical(bootstrap.suggestedName)?.subject
                 if (participantDraftDirtySubject != subject) {
                     _participantDraft.value = bootstrap.participant
@@ -717,24 +734,17 @@ class CaptureViewModel(application: android.app.Application) : AndroidViewModel(
         val name = _sessionName.value
         gateDiskJob = viewModelScope.launch {
             if (!immediate) delay(120L)
-            val next = withContext(Dispatchers.IO) {
+            val next = withContext(ioDispatcher) {
                 diskCache.snapshot(name)
             }
             _gateDiskSnapshot.value = next
-            if (recordingAcceptedForPendingSession &&
-                pendingSessionScopedClearName == name &&
-                next.sessionName == name && next.duplicate
-            ) {
-                clearSessionScopedFormAfterRecording()
-            }
+
         }
     }
 
     private fun clearSessionScopedFormAfterRecording() {
         _participantDraft.value = _participantDraft.value.clearSessionScopedFields()
         _bloodPressureReference.value = null
-        pendingSessionScopedClearName = null
-        recordingAcceptedForPendingSession = false
         serviceClient.clearRuntimeFailure()
         diskCache.invalidate()
         refreshGateDiskSnapshot(immediate = true)
@@ -776,3 +786,60 @@ internal fun shouldPrefillParticipantDraft(
     dirtySubject: String?,
     nextSubject: String?,
 ): Boolean = nextSubject != currentDraftSubject || dirtySubject != nextSubject
+
+
+/** Typed, retryable profile error; it does not prevent manual participant entry. */
+data class CaptureProfileReadError(val subjectId: String, val detail: String) {
+    val message: String get() = "被试 $subjectId 档案读取失败：$detail。可手动填写，或重新载入档案重试。"
+}
+
+data class CaptureProfileReadResult(
+    val participant: CaptureParticipantDraft,
+    val error: CaptureProfileReadError? = null,
+)
+
+/** Production form ownership used by bootstrap, prefill, and service observations. */
+class CaptureFormLifecycle(
+    private val readProfile: (String) -> SubjectProfile?,
+) {
+    val bloodPressureReference = MutableStateFlow<CaptureReferenceTimestamp?>(null)
+    private var pendingName: String? = null
+    private var acceptedSessionId: String? = null
+    private var acceptedToken: Long? = null
+
+    fun startRequested(baseName: String) {
+        pendingName = baseName
+        acceptedSessionId = null
+        acceptedToken = null
+    }
+
+    /** Unbind/IDLE and disk duplicate facts never clear a recording's form. */
+    fun observe(recording: CaptureRecordingSnapshot): Boolean {
+        if (recording.state in setOf(CaptureRecordingState.RECORDING, CaptureRecordingState.STOPPING) &&
+            (pendingName == null || pendingName == recording.baseName)) {
+            acceptedSessionId = recording.sessionId
+            acceptedToken = recording.sessionToken
+        }
+        val terminal = recording.state == CaptureRecordingState.FINALIZED || recording.state == CaptureRecordingState.FAILED
+        if (!terminal || acceptedSessionId == null || recording.sessionId != acceptedSessionId ||
+            recording.sessionToken != acceptedToken) return false
+        acceptedSessionId = null
+        acceptedToken = null
+        pendingName = null
+        bloodPressureReference.value = null
+        return true
+    }
+
+    fun readParticipant(identity: CanonicalSessionIdentity?): CaptureProfileReadResult {
+        if (identity == null) return CaptureProfileReadResult(CaptureParticipantDraft())
+        return try {
+            val latest = readProfile(identity.subject)?.latest
+            CaptureProfileReadResult(CaptureParticipantDraft.fromSnapshot(latest?.asParticipantSnapshot(identity.subject)))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            CaptureProfileReadResult(CaptureParticipantDraft(),
+                CaptureProfileReadError(identity.subject, error.message ?: error::class.java.simpleName))
+        }
+    }
+}

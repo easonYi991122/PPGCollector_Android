@@ -12,6 +12,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveWaveformRuntimeTest {
+    @org.junit.Test
+    fun millionPointPlotUsesLongBucketsAndKeepsAbsoluteExtrema() {
+        val values = DoubleArray(1_500_000) { it.toDouble() }
+        values[555_555] = -9_000_000.0
+        values[1_234_567] = 9_000_000.0
+        for (range in listOf(values.indices, 123_457..1_499_998)) {
+            val plot = LiveWaveformPlotMath.plotRange(values, range, 4096)
+            org.junit.Assert.assertTrue(plot.points.size <= 4096)
+            org.junit.Assert.assertTrue(plot.points.all { it.offset in range && it.value == values[it.offset] })
+            org.junit.Assert.assertEquals(-9_000_000.0, plot.minimum, 0.0)
+            org.junit.Assert.assertEquals(9_000_000.0, plot.maximum, 0.0)
+            org.junit.Assert.assertTrue(plot.points.zipWithNext().all { (a, b) -> a.offset < b.offset })
+        }
+    }
+
+    @org.junit.Test
+    fun rampCreatesPointsOnlyAtBucketOutputAndSupportsCancellation() {
+        val values = DoubleArray(1_000_000) { it.toDouble() }
+        var pointsCreated = 0
+        val plot = LiveWaveformPlotMath.plotRange(values, values.indices, 800,
+            pointFactory = { offset, value -> pointsCreated++; WaveformPlotPoint(offset, value) })
+        org.junit.Assert.assertEquals(800, pointsCreated)
+        org.junit.Assert.assertEquals(pointsCreated, plot.points.size)
+        var checks = 0
+        try {
+            LiveWaveformPlotMath.plotRange(values, values.indices, 4096,
+                cancellationCheck = { if (++checks == 4) throw java.util.concurrent.CancellationException() })
+            org.junit.Assert.fail("expected cooperative cancellation")
+        } catch (_: java.util.concurrent.CancellationException) {
+            org.junit.Assert.assertEquals(4, checks)
+        }
+    }
+
     @Test
     fun publishesImmediatelyThenAtFiveHertzWithoutBurstingDelayedTicks() {
         val scheduler = LiveWaveformSnapshotScheduler()

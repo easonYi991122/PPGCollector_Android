@@ -246,10 +246,14 @@ private fun SavedSessionsTopBar(
 private fun SavedSessionsActionStatus(state: SessionsUiState, modifier: Modifier = Modifier) {
     val text = when {
         state.action.isRunning && state.action.kind == SessionActionKind.DELETE -> "正在删除所选会话…"
+        state.action.isRunning && state.action.kind == SessionActionKind.RECOVER -> "正在创建恢复副本…"
+        state.action.isRunning && state.action.kind == SessionActionKind.UPDATE_BP -> "正在保存参考血压…"
         state.action.isRunning -> "正在生成导出文件…"
         state.action.error != null -> "操作失败：${state.action.error}"
         state.action.message != null -> state.action.message
         state.error != null -> state.error
+        state.busyDirectories.isNotEmpty() -> "${state.busyDirectories.size} 个会话占用中，已排除选择"
+        state.artifactIndexErrors.isNotEmpty() -> "${state.artifactIndexErrors.size} 个会话的分析索引暂不可读"
         else -> null
     } ?: return
     Surface(

@@ -1,5 +1,6 @@
 package com.example.ppgcollector_android
 
+import kotlinx.coroutines.ensureActive
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -34,6 +35,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.sizeIn
+import com.example.ppgcollector_android.data.session.CaptureArtifactSummary
+import com.example.ppgcollector_android.data.session.CaptureTimelineMetric
+import com.example.ppgcollector_android.data.session.CaptureSignalStageState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,9 +56,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.ppgcollector_android.core.signal.LiveWaveformPlotMath
-import com.example.ppgcollector_android.core.signal.PpgDisplayTransform
-import com.example.ppgcollector_android.core.signal.OfflineDisplaySpectrum
 import com.example.ppgcollector_android.core.signal.OfflinePulseWindow
 import com.example.ppgcollector_android.core.signal.OfflineSignalSegment
 import com.example.ppgcollector_android.data.session.CaptureSessionAnalysisArtifact
@@ -69,10 +74,11 @@ private enum class WorkbenchPane { SIGNAL, WINDOWS, SPECTRUM, CYCLE, DIAGNOSTICS
 private enum class WorkbenchChannel { SELECTED, RED, IR }
 private enum class WorkbenchSignalStage { RAW, ZERO_PHASE, FIXED, PEAKS }
 
-private data class CompleteSignalSeries(
+internal data class CompleteSignalSeries(
     val label: String,
     val color: Color,
     val values: DoubleArray,
+    val negate: Boolean = false,
 )
 
 @Composable
@@ -80,18 +86,12 @@ internal fun CompleteSignalReplayPanel(
     trace: CaptureSessionSignalTrace,
     artifact: CaptureSessionAnalysisArtifact?,
 ) {
-    val total = trace.timeSeconds.size
-    var stage by remember(trace) { mutableStateOf(ReplaySignalStage.RAW) }
-    var showGapMarkers by remember(trace) {
-        mutableStateOf(SessionGapMarkerPolicy.defaultVisible(trace.breakIndices.size, total))
-    }
-    var viewport by remember(trace) {
-        mutableStateOf(
-            ReplayWaveformViewport().apply {
-                showWindow(0, 800, total)
-            },
-        )
-    }
+    TraceAvailabilityNotice(trace)
+    val total = trace.reviewSampleCount()
+    val controls = rememberSessionReviewControls(trace, ReplaySignalStage.RAW)
+    var stage by controls.stage
+    var showGapMarkers by controls.showGapMarkers
+    var viewport by controls.viewport
     val range = viewport.visibleRange(total)
     val gesture = Modifier.pointerInput(total) {
         detectTransformGestures { centroid, pan, zoom, _ ->
@@ -107,7 +107,8 @@ internal fun CompleteSignalReplayPanel(
         }
     }
     Text(
-        "完整 accepted signal · 默认 8 s · 双指缩放 · 单指横向拖动",
+        if (trace.budgetDegraded) "RAW 预览按原始 accepted 时钟缩放与拖动"
+        else "完整 accepted signal · 默认 8 s · 双指缩放 · 单指横向拖动",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -143,14 +144,14 @@ internal fun CompleteSignalReplayPanel(
     )
     val red = remember(trace, stage) {
         when (stage) {
-            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawRed)
+            ReplaySignalStage.RAW -> trace.rawRed
             ReplaySignalStage.ZERO_PHASE -> trace.filteredRed
             ReplaySignalStage.FIXED -> trace.fixedLagRed
         }
     }
     val ir = remember(trace, stage) {
         when (stage) {
-            ReplaySignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
+            ReplaySignalStage.RAW -> trace.rawIr
             ReplaySignalStage.ZERO_PHASE -> trace.filteredIr
             ReplaySignalStage.FIXED -> trace.fixedLagIr
         }
@@ -161,27 +162,31 @@ internal fun CompleteSignalReplayPanel(
         ReplaySignalStage.FIXED -> "FIXED 0.5–12"
     }
     CompleteSignalChart(
-        series = listOf(CompleteSignalSeries("$prefix RED", Color(0xFFD74747), red)),
-        timeSeconds = trace.timeSeconds,
+        series = listOf(CompleteSignalSeries("$prefix RED", Color(0xFFD74747), red, stage == ReplaySignalStage.RAW)),
+        sourceIdentity = trace.reviewSourceKey(),
+        sourceSampleIndices = trace.sourceSampleIndices,
         visibleRange = range,
         pathBreakIndices = SessionGapMarkerPolicy.pathBreaksForRawStage(
             stage == ReplaySignalStage.RAW,
             trace.breakIndices,
         ),
-        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else intArrayOf(),
+        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else SessionRenderKey.EMPTY_INDICES,
+        gapSourceIndices = if (showGapMarkers) trace.gapSourceIndices else null,
         stableSegments = artifact?.report?.segments.orEmpty(),
         showStableSegments = true,
         modifier = gesture.height(136.dp),
     )
     CompleteSignalChart(
-        series = listOf(CompleteSignalSeries("$prefix IR", Color(0xFF3478C8), ir)),
-        timeSeconds = trace.timeSeconds,
+        series = listOf(CompleteSignalSeries("$prefix IR", Color(0xFF3478C8), ir, stage == ReplaySignalStage.RAW)),
+        sourceIdentity = trace.reviewSourceKey(),
+        sourceSampleIndices = trace.sourceSampleIndices,
         visibleRange = range,
         pathBreakIndices = SessionGapMarkerPolicy.pathBreaksForRawStage(
             stage == ReplaySignalStage.RAW,
             trace.breakIndices,
         ),
-        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else intArrayOf(),
+        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else SessionRenderKey.EMPTY_INDICES,
+        gapSourceIndices = if (showGapMarkers) trace.gapSourceIndices else null,
         stableSegments = artifact?.report?.segments.orEmpty(),
         showStableSegments = true,
         modifier = gesture.height(136.dp),
@@ -206,26 +211,19 @@ internal fun CompletePpgAnalysisPanel(
 ) {
     if (trace == null) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-            Text("正在重放完整 raw 并生成全程 zero-phase 波形…")
+            Text("完整信号不可用，请查看加载状态并重试。")
         }
         return
     }
+    TraceAvailabilityNotice(trace)
     var channel by remember(artifact.path) { mutableStateOf(WorkbenchChannel.SELECTED) }
-    var stage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.ZERO_PHASE) }
-    val total = trace.timeSeconds.size
-    var showGapMarkers by remember(trace, artifact.path) {
-        mutableStateOf(SessionGapMarkerPolicy.defaultVisible(trace.breakIndices.size, total))
-    }
-    val defaultStart = artifact.report.windows
-        .filter(OfflinePulseWindow::accepted)
-        .maxByOrNull(OfflinePulseWindow::confidence)
-        ?.startIndex ?: 0
-    var viewport by remember(trace, artifact.path) {
-        mutableStateOf(
-            ReplayWaveformViewport().apply { showWindow(defaultStart, 800, total) },
-        )
-    }
+    val total = trace.reviewSampleCount()
+    val defaultStart = artifact.report.windows.filter(OfflinePulseWindow::accepted)
+        .maxByOrNull(OfflinePulseWindow::confidence)?.startIndex ?: 0
+    val controls = rememberSessionReviewControls(trace, WorkbenchSignalStage.ZERO_PHASE, defaultStart, artifact.path)
+    var stage by controls.stage
+    var showGapMarkers by controls.showGapMarkers
+    var viewport by controls.viewport
     val range = viewport.visibleRange(total)
     ChoiceRow(WorkbenchChannel.entries, channel, ::channelLabel) { channel = it }
     ChoiceRow(WorkbenchSignalStage.entries, stage, ::signalStageLabel) { stage = it }
@@ -236,6 +234,7 @@ internal fun CompletePpgAnalysisPanel(
             viewport = viewport.copyViewport().apply { showWindow(defaultStart, 800, total) }
         },
     )
+    val artifactPeaks = remember(artifact.path) { artifact.report.peaks.map { it.sampleIndex }.toIntArray() }
     val resolved = resolveChannel(channel, artifact)
     val values = remember(trace, resolved, stage) { signalValues(trace, resolved, stage) }
     val gesture = Modifier.pointerInput(total) {
@@ -254,20 +253,23 @@ internal fun CompletePpgAnalysisPanel(
                 "${signalStageLabel(stage)} $resolved",
                 if (resolved == "RED") Color(0xFFD74747) else Color(0xFF3478C8),
                 values,
+                negate = stage == WorkbenchSignalStage.RAW,
             ),
         ),
-        timeSeconds = trace.timeSeconds,
+        sourceIdentity = trace.reviewSourceKey(),
+        sourceSampleIndices = trace.sourceSampleIndices,
         visibleRange = range,
         pathBreakIndices = SessionGapMarkerPolicy.pathBreaksForRawStage(
             stage == WorkbenchSignalStage.RAW,
             trace.breakIndices,
         ),
-        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else intArrayOf(),
+        gapMarkerIndices = if (showGapMarkers) trace.breakIndices else SessionRenderKey.EMPTY_INDICES,
+        gapSourceIndices = if (showGapMarkers) trace.gapSourceIndices else null,
         stableSegments = artifact.report.segments,
         peaks = if (stage == WorkbenchSignalStage.PEAKS && resolved == artifact.report.metrics.selectedChannel) {
-            artifact.report.peaks.map { it.sampleIndex }.toIntArray()
+            artifactPeaks
         } else {
-            intArrayOf()
+            SessionRenderKey.EMPTY_INDICES
         },
         showStableSegments = true,
         modifier = gesture.height(180.dp),
@@ -284,11 +286,16 @@ internal fun CompletePpgAnalysisPanel(
     )
 }
 
-private data class AlignedMetricSeries(
+internal data class AlignedMetricSeries(
     val label: String,
     val color: Color,
     val points: List<Pair<Int, Double>>,
     val unavailableSourceIndices: IntArray = intArrayOf(),
+    val cadenceSamples: Int = 100,
+    val unavailableReason: String? = null,
+    val segments: List<List<Pair<Int, Double>>> = emptyList(),
+    val minimum: Double = 0.0,
+    val maximum: Double = 1.0,
 )
 
 @Composable
@@ -298,27 +305,26 @@ private fun AlignedMetricTimelineChart(
     modifier: Modifier = Modifier,
 ) {
     val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
-    val series = remember(
-        trace.metricTimeline,
-        trace.timeSeconds,
-        trace.metricUnavailableSourceIndices,
-    ) {
-        buildPersistedMetricSeries(
-            trace.metricTimeline,
-            trace.timeSeconds,
-            trace.metricUnavailableSourceIndices,
-        )
-    }
-    val visibleSeries = remember(series, visibleRange) {
-        series.map { item ->
-            item.copy(
-                points = item.points.pointsIn(visibleRange),
-                unavailableSourceIndices = item.unavailableSourceIndices
-                    .filter { it in visibleRange }
-                    .toIntArray(),
-            )
+    var pixelWidth by remember { mutableStateOf(0) }
+    val key = Triple(trace, visibleRange, pixelWidth)
+    val computed by produceState<Pair<Triple<CaptureSessionSignalTrace, IntRange, Int>, List<AlignedMetricSeries>>?>(null, key) {
+        if (pixelWidth > 0) {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val context = kotlinx.coroutines.currentCoroutineContext()
+                val check = { context.ensureActive() }
+                buildPersistedMetricSeries(trace, check).map { item ->
+                    val points = item.points.pointsIn(visibleRange)
+                    val segments = boundedMetricSegments(points, item.unavailableSourceIndices,
+                        item.cadenceSamples, visibleRange, pixelWidth, check)
+                    item.copy(points = segments.flatten(), segments = segments,
+                        minimum = segments.minOfOrNull { it.minOf { point -> point.second } } ?: 0.0,
+                        maximum = segments.maxOfOrNull { it.maxOf { point -> point.second } } ?: 1.0)
+                }
+            }
+            value = key to result
         }
     }
+    val visibleSeries = computed?.takeIf { it.first == key }?.second.orEmpty()
     Column(modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Text(
             when (trace.metricTimelineEvidence.source) {
@@ -334,25 +340,19 @@ private fun AlignedMetricTimelineChart(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (series.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("当前会话没有可对齐的有效指标", style = MaterialTheme.typography.bodySmall)
-            }
-            return@Column
-        }
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .semantics {
-                    contentDescription = "${series.joinToString { it.label }} 指标时间轴，与 PPG 共享缩放范围"
+                    contentDescription = "${visibleSeries.joinToString { it.label }} 指标时间轴，与 PPG 共享缩放范围"
                 },
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
         ) {
             Box(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 5.dp)) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val laneHeight = size.height / series.size.toFloat()
+                Canvas(Modifier.fillMaxSize().onSizeChanged { pixelWidth = it.width }) {
+                    val laneHeight = size.height / visibleSeries.size.coerceAtLeast(1).toFloat()
                     val first = visibleRange.first
                     val last = visibleRange.last
                     val denominator = max(1, last - first).toFloat()
@@ -370,47 +370,33 @@ private fun AlignedMetricTimelineChart(
                         }
                         val visible = item.points
                         if (visible.isEmpty()) return@forEachIndexed
-                        val minimum = visible.minOf { it.second }
-                        val maximum = visible.maxOf { it.second }
+                        val minimum = item.minimum
+                        val maximum = item.maximum
                         val padding = max(abs(maximum - minimum) * 0.12, max(abs(maximum), 1.0) * 0.04)
                         val lower = minimum - padding
                         val upper = maximum + padding
                         val span = (upper - lower).coerceAtLeast(1e-9)
-                        val path = Path()
-                        var previousSourceIndex = -1
-                        visible.forEach { point ->
-                            val x = xFor(point.first)
-                            val y = bottom - 4.dp.toPx() -
-                                ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat()
-                            if (metricPathBreakBefore(
-                                    previousSourceIndex,
-                                    point.first,
-                                    item.unavailableSourceIndices,
-                                )
-                            ) {
-                                path.moveTo(x, y)
+                        val segments = item.segments
+                        segments.forEach { segment ->
+                            fun position(point: Pair<Int, Double>): Offset = Offset(xFor(point.first),
+                                bottom - 4.dp.toPx() - ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat())
+                            if (segment.size == 1) {
+                                drawCircle(item.color, 3.dp.toPx(), position(segment.single()))
                             } else {
-                                path.lineTo(x, y)
+                                val path = Path()
+                                segment.forEachIndexed { index, point ->
+                                    val position = position(point)
+                                    if (index == 0) path.moveTo(position.x, position.y) else path.lineTo(position.x, position.y)
+                                }
+                                drawPath(path, item.color, style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
                             }
-                            previousSourceIndex = point.first
-                        }
-                        drawPath(
-                            path,
-                            item.color,
-                            style = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
-                        )
-                        if (visible.size == 1) {
-                            val point = visible.single()
-                            val x = xFor(point.first)
-                            val y = bottom - 4.dp.toPx() -
-                                ((point.second - lower) / span * (laneHeight - 8.dp.toPx())).toFloat()
-                            drawCircle(item.color, 3.dp.toPx(), Offset(x, y))
                         }
                     }
                 }
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly) {
-                    series.forEach { item ->
-                        Text(item.label, color = item.color, style = MaterialTheme.typography.labelSmall)
+                    visibleSeries.forEach { item ->
+                        Text(if (item.points.isEmpty()) "${item.label}：${item.unavailableReason ?: "当前视区无有效值"}" else item.label,
+                            color = item.color, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -418,60 +404,53 @@ private fun AlignedMetricTimelineChart(
     }
 }
 
-private fun buildPersistedMetricSeries(
-    points: List<CaptureMetricTimelinePoint>,
-    timeSeconds: DoubleArray,
-    globalUnavailableSourceIndices: IntArray = intArrayOf(),
-): List<AlignedMetricSeries> {
-    fun sourceIndex(point: CaptureMetricTimelinePoint): Int? =
-        point.sourceSampleIndex.takeIf { it in 0 until timeSeconds.size.toLong() }?.toInt()
-
-    fun values(selector: (CaptureMetricTimelinePoint) -> Double?): List<Pair<Int, Double>> =
-        points.mapNotNull { point ->
+internal fun buildPersistedMetricSeries(trace: CaptureSessionSignalTrace, check: () -> Unit = {}): List<AlignedMetricSeries> {
+    val points = trace.metricTimeline
+    fun make(metric: CaptureTimelineMetric, label: String, color: Color,
+        selector: (CaptureMetricTimelinePoint) -> Double?): AlignedMetricSeries {
+        val availability = trace.metricAvailability[metric]
+        fun sourceIndex(point: CaptureMetricTimelinePoint): Int? = point.sourceSampleIndex
+            .takeIf { it >= 0 && it < trace.totalAcceptedSamples && it <= Int.MAX_VALUE }?.toInt()
+        val values = points.mapNotNull { point ->
+            check()
             val value = selector(point)?.takeIf(Double::isFinite) ?: return@mapNotNull null
             sourceIndex(point)?.let { it to value }
         }
-    fun unavailable(selector: (CaptureMetricTimelinePoint) -> Double?): IntArray =
-        (globalUnavailableSourceIndices.asSequence().asIterable() + points.mapNotNull { point ->
-            if (selector(point)?.takeIf(Double::isFinite) != null) null else sourceIndex(point)
-        }).distinct().sorted().toIntArray()
+        val unavailable = (trace.metricUnavailableSourceIndices.asIterable() +
+            (availability?.unavailableSourceIndices ?: longArrayOf()).asIterable().mapNotNull { it.takeIf { it <= Int.MAX_VALUE }?.toInt() } +
+            points.mapNotNull { point -> if (selector(point)?.isFinite() == true) null else sourceIndex(point) })
+            .distinct().sorted().toIntArray()
+        val cadence = availability?.cadenceSamples?.toInt() ?: when (trace.metricTimelineEvidence.source) {
+            CaptureMetricTimelineSource.OFFLINE_RECOMPUTED -> 200
+            else -> 100
+        }
+        return AlignedMetricSeries(label, color, values, unavailable, cadence, availability?.unavailableReason)
+    }
     return listOf(
-        AlignedMetricSeries(
-            "HR bpm",
-            Color(0xFFD74747),
-            values(CaptureMetricTimelinePoint::heartRateBpm),
-            unavailable(CaptureMetricTimelinePoint::heartRateBpm),
-        ),
-        AlignedMetricSeries(
-            "PI %",
-            Color(0xFF7B61C9),
-            values(CaptureMetricTimelinePoint::perfusionIndexPercent),
-            unavailable(CaptureMetricTimelinePoint::perfusionIndexPercent),
-        ),
-        AlignedMetricSeries(
-            "录制 SQI",
-            Color(0xFF2E8B57),
-            values(CaptureMetricTimelinePoint::signalQuality),
-            unavailable(CaptureMetricTimelinePoint::signalQuality),
-        ),
-        AlignedMetricSeries(
-            "RR",
-            Color(0xFFB26A00),
-            values(CaptureMetricTimelinePoint::ratioOfRatios),
-            unavailable(CaptureMetricTimelinePoint::ratioOfRatios),
-        ),
-    ).filter { it.points.isNotEmpty() }
+        make(CaptureTimelineMetric.HEART_RATE, "HR bpm", Color(0xFFD74747), CaptureMetricTimelinePoint::heartRateBpm),
+        make(CaptureTimelineMetric.PERFUSION_INDEX, "PI %", Color(0xFF7B61C9), CaptureMetricTimelinePoint::perfusionIndexPercent),
+        make(CaptureTimelineMetric.SQI, "录制 SQI", Color(0xFF2E8B57), CaptureMetricTimelinePoint::signalQuality),
+        make(CaptureTimelineMetric.RATIO, "RR", Color(0xFFB26A00), CaptureMetricTimelinePoint::ratioOfRatios),
+    )
 }
 
-/** Keeps metric lines from implying continuity across rejected or missing epochs. */
-internal fun metricPathBreakBefore(
-    previousSourceIndex: Int,
-    currentSourceIndex: Int,
-    unavailableSourceIndices: IntArray,
-): Boolean {
+/** Cadence belongs to metric provenance; wire gaps are not metric rejection boundaries. */
+internal fun metricPathBreakBefore(previousSourceIndex: Int, currentSourceIndex: Int,
+    unavailableSourceIndices: IntArray, cadenceSamples: Int = 100): Boolean {
     if (previousSourceIndex < 0 || currentSourceIndex <= previousSourceIndex) return true
-    if (currentSourceIndex - previousSourceIndex > 150) return true
-    return unavailableSourceIndices.any { it > previousSourceIndex && it <= currentSourceIndex }
+    if (currentSourceIndex.toLong() - previousSourceIndex > cadenceSamples.toLong() * 3 / 2) return true
+    return unavailableSourceIndices.hasValueIn(previousSourceIndex + 1, currentSourceIndex)
+}
+
+internal fun metricSegments(points: List<Pair<Int, Double>>, unavailable: IntArray, cadenceSamples: Int): List<List<Pair<Int, Double>>> {
+    val segments = mutableListOf<MutableList<Pair<Int, Double>>>()
+    var previous = -1
+    points.forEach { point ->
+        if (metricPathBreakBefore(previous, point.first, unavailable, cadenceSamples)) segments += mutableListOf<Pair<Int, Double>>()
+        segments.last().add(point)
+        previous = point.first
+    }
+    return segments
 }
 
 @Composable
@@ -480,6 +459,7 @@ internal fun ReferenceBloodPressureComparisonPanel(
     artifact: CaptureSessionAnalysisArtifact?,
     modifier: Modifier = Modifier,
 ) {
+    TraceAvailabilityNotice(trace)
     val preview = remember(trace.timeSeconds, trace.metricTimeline) {
         OfflineBloodPressurePreviewFactory.create(
             timeSeconds = trace.timeSeconds,
@@ -487,11 +467,11 @@ internal fun ReferenceBloodPressureComparisonPanel(
             metricTimeline = trace.metricTimeline,
         )
     }
-    val total = trace.timeSeconds.size
+    val total = trace.reviewSampleCount()
     val anchorTime = trace.bloodPressureEvents.firstOrNull()?.reference?.sourceTimeSeconds
         ?: preview.points.firstOrNull()?.sourceTimeSeconds
-    val anchorIndex = anchorTime?.let { nearestTimeIndex(trace.timeSeconds, it) } ?: 0
-    var viewport by remember(trace) {
+    val anchorIndex = anchorTime?.let { (it * 100).toInt() } ?: 0
+    var viewport by remember(trace.reviewSourceKey()) {
         mutableStateOf(
             ReplayWaveformViewport().apply {
                 showWindow((anchorIndex - 400).coerceAtLeast(0), 800, total)
@@ -519,9 +499,10 @@ internal fun ReferenceBloodPressureComparisonPanel(
         )
         CompleteSignalChart(
             series = listOf(CompleteSignalSeries("ZERO RED 0.5–12", Color(0xFFD74747), trace.filteredRed)),
-            timeSeconds = trace.timeSeconds,
+            sourceIdentity = trace.reviewSourceKey(),
+            sourceSampleIndices = trace.sourceSampleIndices,
             visibleRange = range,
-            pathBreakIndices = intArrayOf(),
+            pathBreakIndices = SessionRenderKey.EMPTY_INDICES,
             stableSegments = artifact?.report?.segments.orEmpty(),
             showStableSegments = true,
             modifier = Modifier.height(92.dp),
@@ -560,12 +541,12 @@ private fun BloodPressureTimelineChart(
 ) {
     val reference = remember(referenceEvents, timeSeconds) {
         referenceEvents.mapNotNull { event ->
-            nearestTimeIndex(timeSeconds, event.reference.sourceTimeSeconds)?.let { index -> index to event }
+            event.reference.sourceSampleIndex.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.let { it.toInt() to event }
         }.sortedBy { it.first }
     }
     val placeholder = remember(placeholderPoints, timeSeconds) {
         placeholderPoints.mapNotNull { point ->
-            nearestTimeIndex(timeSeconds, point.sourceTimeSeconds)?.let { index -> index to point }
+            (point.sourceTimeSeconds * 100).toLong().takeIf { it in 0..Int.MAX_VALUE.toLong() }?.let { it.toInt() to point }
         }.sortedBy { it.first }
     }
     val visibleReference = remember(reference, visibleRange) { reference.pointsIn(visibleRange) }
@@ -644,24 +625,6 @@ private fun BloodPressureTimelineChart(
     }
 }
 
-private fun nearestTimeIndex(timeSeconds: DoubleArray, target: Double): Int? {
-    if (timeSeconds.isEmpty() || !target.isFinite()) return null
-    var low = 0
-    var high = timeSeconds.lastIndex
-    while (low <= high) {
-        val middle = (low + high) ushr 1
-        when {
-            timeSeconds[middle] < target -> low = middle + 1
-            timeSeconds[middle] > target -> high = middle - 1
-            else -> return middle
-        }
-    }
-    val right = low.coerceIn(0, timeSeconds.lastIndex)
-    val left = (right - 1).coerceAtLeast(0)
-    return if (abs(timeSeconds[left] - target) <= abs(timeSeconds[right] - target)) left else right
-}
-
-/** Returns a bounded, allocation-free view over already source-sorted points. */
 private fun <T> List<Pair<Int, T>>.pointsIn(range: IntRange): List<Pair<Int, T>> {
     if (isEmpty() || range.isEmpty()) return emptyList()
     fun lowerBound(target: Int): Int {
@@ -682,6 +645,8 @@ private fun <T> List<Pair<Int, T>>.pointsIn(range: IntRange): List<Pair<Int, T>>
 internal fun FullscreenSessionWorkbenchScreen(
     state: SessionsUiState,
     onBack: () -> Unit,
+    onRetrySignal: () -> Unit,
+    onLoadArtifacts: (List<CaptureArtifactSummary>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val detail = state.selected
@@ -690,8 +655,10 @@ internal fun FullscreenSessionWorkbenchScreen(
         return
     }
     val artifacts = state.artifactsBySession[detail.item.directory].orEmpty()
-    var selectedPath by remember(artifacts) { mutableStateOf(artifacts.firstOrNull()?.path) }
-    val artifact = artifacts.firstOrNull { it.path == selectedPath } ?: artifacts.firstOrNull()
+    var selectedPath by remember(detail.item.directory) { mutableStateOf<java.nio.file.Path?>(null) }
+    val summary = artifacts.firstOrNull { it.path == selectedPath } ?: artifacts.firstOrNull()
+    LaunchedEffect(summary) { onLoadArtifacts(listOfNotNull(summary)) }
+    val artifact = summary?.let { state.loadedArtifacts[it.path] }
     val trace = detail.signal
     if (artifact == null || trace == null) {
         Column(modifier.fillMaxSize()) {
@@ -699,35 +666,31 @@ internal fun FullscreenSessionWorkbenchScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (detail.isLoadingSignal) CircularProgressIndicator()
-                    Text(detail.signalError ?: "请先生成一次离线分析并等待完整信号重放。")
+                    Text(detail.signalError ?: summary?.let { state.artifactErrors[it.path] }
+                        ?: if (summary?.path in state.loadingArtifacts) "正在读取所选分析报告…" else "请先生成一次离线分析并等待信号重放。")
+                    if (detail.signalError != null) OutlinedButton(onClick = onRetrySignal) { Text("重试信号加载") }
                 }
             }
         }
         return
     }
 
-    val total = trace.timeSeconds.size
+    val artifactPeaks = remember(artifact.path) { artifact.report.peaks.map { it.sampleIndex }.toIntArray() }
+    val total = trace.reviewSampleCount()
     val defaultWindow = artifact.report.windows.filter(OfflinePulseWindow::accepted)
         .maxByOrNull(OfflinePulseWindow::confidence)
     var pane by remember(artifact.path) { mutableStateOf(WorkbenchPane.SIGNAL) }
     var channel by remember(artifact.path) { mutableStateOf(WorkbenchChannel.SELECTED) }
-    var signalStage by remember(artifact.path) { mutableStateOf(WorkbenchSignalStage.ZERO_PHASE) }
+    val controls = rememberSessionReviewControls(trace, WorkbenchSignalStage.ZERO_PHASE, defaultWindow?.startIndex ?: 0, artifact.path)
+    var signalStage by controls.stage
     var showPeaks by remember(artifact.path) { mutableStateOf(true) }
     var showSegments by remember(artifact.path) { mutableStateOf(true) }
-    var showGapMarkers by remember(trace, artifact.path) {
-        mutableStateOf(SessionGapMarkerPolicy.defaultVisible(trace.breakIndices.size, total))
-    }
+    var showGapMarkers by controls.showGapMarkers
     var invert by remember(artifact.path) { mutableStateOf(false) }
     var selectedWindowIndex by remember(artifact.path) {
         mutableStateOf(artifact.report.windows.indexOf(defaultWindow).takeIf { it >= 0 })
     }
-    var viewport by remember(trace, artifact.path) {
-        mutableStateOf(
-            ReplayWaveformViewport().apply {
-                showWindow(defaultWindow?.startIndex ?: 0, 800, total)
-            },
-        )
-    }
+    var viewport by controls.viewport
     val range = viewport.visibleRange(total)
 
     Column(modifier.fillMaxSize()) {
@@ -737,7 +700,7 @@ internal fun FullscreenSessionWorkbenchScreen(
             onBack = onBack,
         )
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val sidebarWidth = (maxWidth * 0.31f).coerceIn(220.dp, 340.dp)
+            val sidebarWidth = ReviewAdaptiveLayoutPolicy.sidebarWidthDp(maxWidth.value).dp
             Row(Modifier.fillMaxSize()) {
                 LazyColumn(
                     Modifier.width(sidebarWidth).fillMaxHeight().padding(10.dp),
@@ -745,6 +708,7 @@ internal fun FullscreenSessionWorkbenchScreen(
                 ) {
                     item {
                         WorkbenchControlCard("信号工作台") {
+                            TraceAvailabilityNotice(trace)
                             ChoiceRow(WorkbenchChannel.entries, channel, ::channelLabel) { channel = it }
                             ChoiceRow(WorkbenchSignalStage.entries, signalStage, ::signalStageLabel) {
                                 signalStage = it
@@ -842,19 +806,22 @@ internal fun FullscreenSessionWorkbenchScreen(
                                         "${signalStageLabel(signalStage)} $resolved",
                                         if (resolved == "RED") Color(0xFFFF5C70) else Color(0xFF45CAFF),
                                         values,
+                                        negate = signalStage == WorkbenchSignalStage.RAW,
                                     ),
                                 ),
-                                timeSeconds = trace.timeSeconds,
+                                sourceIdentity = trace.reviewSourceKey(),
+                                sourceSampleIndices = trace.sourceSampleIndices,
                                 visibleRange = range,
                                 pathBreakIndices = SessionGapMarkerPolicy.pathBreaksForRawStage(
                                     signalStage == WorkbenchSignalStage.RAW,
                                     trace.breakIndices,
                                 ),
-                                gapMarkerIndices = if (showGapMarkers) trace.breakIndices else intArrayOf(),
+                                gapMarkerIndices = if (showGapMarkers) trace.breakIndices else SessionRenderKey.EMPTY_INDICES,
+        gapSourceIndices = if (showGapMarkers) trace.gapSourceIndices else null,
                                 stableSegments = artifact.report.segments,
                                 peaks = if (showPeaks && signalStage != WorkbenchSignalStage.RAW &&
                                     resolved == artifact.report.metrics.selectedChannel
-                                ) artifact.report.peaks.map { it.sampleIndex }.toIntArray() else intArrayOf(),
+                                ) artifactPeaks else SessionRenderKey.EMPTY_INDICES,
                                 showStableSegments = showSegments,
                                 highlightedWindow = selectedWindowIndex?.let(artifact.report.windows::getOrNull),
                                 invert = invert && signalStage != WorkbenchSignalStage.RAW,
@@ -884,10 +851,18 @@ internal fun FullscreenSessionWorkbenchScreen(
                             val spectrumSignal = remember(trace, resolved, signalStage) {
                                 signalValues(trace, resolved, signalStage)
                             }
-                            val spectrum = remember(spectrumSignal, range) {
-                                OfflineDisplaySpectrum.estimate(spectrumSignal, range)
+                            if (trace.budgetDegraded) {
+                                Text("RAW 极值预览不是等间隔采样，频谱不可用。")
+                            } else {
+                                val model = remember { SessionRenderModel() }
+                                val key = SessionSpectrumKey(trace.reviewSourceKey(), "$resolved/$signalStage", spectrumSignal, range)
+                                val result by produceState<Pair<SessionSpectrumKey, com.example.ppgcollector_android.core.signal.OfflineSpectrum>?>(null, key) {
+                                    model.spectrum(key)?.let { value = key to it }
+                                }
+                                val spectrum = result?.takeIf { it.first == key }?.second
+                                if (spectrum == null) CircularProgressIndicator()
+                                else SpectrumPane(spectrum.frequenciesHz, spectrum.power, range, modifier = Modifier.weight(1f))
                             }
-                            SpectrumPane(spectrum.frequenciesHz, spectrum.power, range, modifier = Modifier.weight(1f))
                         }
                         WorkbenchPane.CYCLE -> CyclePane(artifact, Modifier.weight(1f))
                         WorkbenchPane.DIAGNOSTICS -> DiagnosticsPane(artifact, trace, Modifier.weight(1f))
@@ -1062,19 +1037,33 @@ private fun DiagnosticGroup(title: String, values: List<Pair<String, String>>) {
 }
 
 @Composable
-private fun CompleteSignalChart(
+internal fun CompleteSignalChart(
     series: List<CompleteSignalSeries>,
-    timeSeconds: DoubleArray,
     visibleRange: IntRange,
     modifier: Modifier = Modifier,
-    pathBreakIndices: IntArray = intArrayOf(),
-    gapMarkerIndices: IntArray = intArrayOf(),
+    sourceIdentity: Any,
+    sourceSampleIndices: LongArray? = null,
+    pathBreakIndices: IntArray = SessionRenderKey.EMPTY_INDICES,
+    gapMarkerIndices: IntArray = SessionRenderKey.EMPTY_INDICES,
+    gapSourceIndices: LongArray? = null,
     stableSegments: List<OfflineSignalSegment> = emptyList(),
-    peaks: IntArray = intArrayOf(),
+    peaks: IntArray = SessionRenderKey.EMPTY_INDICES,
     showStableSegments: Boolean = false,
     highlightedWindow: OfflinePulseWindow? = null,
     invert: Boolean = false,
+    renderModel: SessionRenderModel? = null,
 ) {
+    var pixelWidth by remember { mutableStateOf(0) }
+    val defaultModel = remember { SessionRenderModel() }
+    val model = renderModel ?: defaultModel
+    val key = SessionRenderKey(sourceIdentity,
+        series.map { SessionRenderSeries(it.label, it.values, it.negate xor invert) },
+        sourceSampleIndices, visibleRange, pixelWidth, pathBreakIndices, gapMarkerIndices,
+        gapSources = gapSourceIndices, peaks = peaks)
+    val computed by produceState<SessionRenderSnapshot?>(null, key) {
+        if (pixelWidth > 0) value = model.render(key)
+    }
+    val rendered = computed?.takeIf { it.key == key }
     val label = series.joinToString { it.label }
     val background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
     val grid = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
@@ -1087,7 +1076,8 @@ private fun CompleteSignalChart(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
     ) {
         Box(Modifier.fillMaxSize().padding(8.dp)) {
-            Canvas(Modifier.fillMaxSize()) {
+            Canvas(Modifier.fillMaxSize().onSizeChanged { pixelWidth = it.width }) {
+                val snapshot = rendered ?: return@Canvas
                 if (visibleRange.isEmpty() || series.isEmpty()) return@Canvas
                 val first = visibleRange.first
                 val last = visibleRange.last
@@ -1128,59 +1118,29 @@ private fun CompleteSignalChart(
                     val y = size.height * (row + 1) / 4f
                     drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
                 }
-                if (gapMarkerIndices.isNotEmpty()) {
-                    var markerIndex = gapMarkerIndices.lowerBound(first)
-                    var previousX = Float.NEGATIVE_INFINITY
-                    while (markerIndex < gapMarkerIndices.size) {
-                        val gap = gapMarkerIndices[markerIndex]
-                        if (gap > last) break
-                        val x = xFor(gap)
-                        if (x - previousX >= 1.5f) {
-                            drawLine(
-                                Color(0xFFFF8A65).copy(alpha = 0.22f),
-                                Offset(x, 0f), Offset(x, size.height), 1.dp.toPx(),
-                            )
-                            previousX = x
-                        }
-                        markerIndex += 1
-                    }
+                snapshot.gapSources.forEach { gap ->
+                    val x = xFor(gap.toInt())
+                    drawLine(Color(0xFFFF8A65).copy(alpha = 0.22f),
+                        Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
                 }
-                val plots = series.map { item ->
-                    item to LiveWaveformPlotMath.plotRange(
-                        values = item.values,
-                        visibleRange = visibleRange,
-                        maximumPointCount = maxOf(2, (size.width * 2).toInt()),
-                    )
-                }
-                val allMin = plots.minOfOrNull { (_, plot) -> if (invert) -plot.maximum else plot.minimum } ?: -1.0
-                val allMax = plots.maxOfOrNull { (_, plot) -> if (invert) -plot.minimum else plot.maximum } ?: 1.0
+                val plots = series.zip(snapshot.plots)
+                val allMin = snapshot.plots.minOfOrNull { it.minimum } ?: -1.0
+                val allMax = snapshot.plots.maxOfOrNull { it.maximum } ?: 1.0
                 val rawSpan = allMax - allMin
                 val padding = if (rawSpan > 0.0) rawSpan * 0.08 else max(abs(allMax) * 0.08, 1.0)
                 val lower = allMin - padding
                 val upper = allMax + padding
                 val span = (upper - lower).coerceAtLeast(1e-9)
                 fun yFor(value: Double): Float {
-                    val shown = if (invert) -value else value
-                    return ((upper - shown) / span * size.height).toFloat().coerceIn(0f, size.height)
+                    return ((upper - value) / span * size.height).toFloat().coerceIn(0f, size.height)
                 }
                 plots.forEach { (item, plot) ->
                     if (plot.points.isEmpty()) return@forEach
                     val path = Path()
-                    var previousAbsolute = -1
-                    var started = false
                     plot.points.forEach { point ->
-                        val absolute = point.offset
-                        val crossesBreak = previousAbsolute >= 0 &&
-                            pathBreakIndices.hasValueIn(previousAbsolute + 1, absolute)
-                        val x = xFor(absolute)
+                        val x = xFor(point.sourceIndex.toInt())
                         val y = yFor(point.value)
-                        if (!started || crossesBreak) {
-                            path.moveTo(x, y)
-                            started = true
-                        } else {
-                            path.lineTo(x, y)
-                        }
-                        previousAbsolute = absolute
+                        if (point.startsSegment) path.moveTo(x, y) else path.lineTo(x, y)
                     }
                     drawPath(
                         path,
@@ -1188,9 +1148,8 @@ private fun CompleteSignalChart(
                         style = Stroke(1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
                     )
                 }
-                val markerValues = series.first().values
-                peaks.filter { it in visibleRange && markerValues[it].isFinite() }.forEach { peak ->
-                    drawCircle(series.first().color, 3.dp.toPx(), Offset(xFor(peak), yFor(markerValues[peak])))
+                snapshot.peaks.forEach { peak ->
+                    drawCircle(series.first().color, 3.dp.toPx(), Offset(xFor(peak.sourceIndex.toInt()), yFor(peak.value)))
                 }
             }
             Column(Modifier.padding(4.dp)) {
@@ -1257,15 +1216,21 @@ private fun ViewportControls(
     onChange: (ReplayWaveformViewport) -> Unit,
     onDefaultWindow: () -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        FilledTonalButton(onClick = {
-            onChange(viewport.copyViewport().apply { setZoom(zoomScale * 2.0, total) })
-        }) { Text("＋") }
-        FilledTonalButton(onClick = {
-            onChange(viewport.copyViewport().apply { setZoom(zoomScale / 2.0, total) })
-        }) { Text("－") }
-        OutlinedButton(onClick = onDefaultWindow) { Text("8 s") }
-        OutlinedButton(onClick = { onChange(viewport.copyViewport().apply { reset() }) }) { Text("全幅") }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val actions = listOf<Pair<String, () -> Unit>>(
+            "＋" to { onChange(viewport.copyViewport().apply { setZoom(zoomScale * 2.0, total) }) },
+            "－" to { onChange(viewport.copyViewport().apply { setZoom(zoomScale / 2.0, total) }) },
+            "8 s" to onDefaultWindow,
+            "全幅" to { onChange(viewport.copyViewport().apply { reset() }) },
+        )
+        actions.chunked(ReviewAdaptiveLayoutPolicy.rangeColumns).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { (label, action) ->
+                    OutlinedButton(onClick = action, modifier = Modifier.weight(1f)
+                        .sizeIn(minHeight = ReviewAdaptiveLayoutPolicy.rangeButtonMinimumHeightDp.dp)) { Text(label) }
+                }
+            }
+        }
     }
     Text(
         "×${"%.1f".format(Locale.ROOT, viewport.zoomScale)} · ${formatVisibleRange(timeSeconds, visibleRange)}",
@@ -1348,8 +1313,8 @@ private fun signalValues(
     stage: WorkbenchSignalStage,
 ): DoubleArray = when {
     stage == WorkbenchSignalStage.RAW && channel == "RED" ->
-        PpgDisplayTransform.rawPeakUp(trace.rawRed)
-    stage == WorkbenchSignalStage.RAW -> PpgDisplayTransform.rawPeakUp(trace.rawIr)
+        trace.rawRed
+    stage == WorkbenchSignalStage.RAW -> trace.rawIr
     stage == WorkbenchSignalStage.FIXED && channel == "RED" -> trace.fixedLagRed
     stage == WorkbenchSignalStage.FIXED -> trace.fixedLagIr
     channel == "RED" -> trace.filteredRed
@@ -1379,7 +1344,7 @@ private fun paneLabel(value: WorkbenchPane): String = when (value) {
 
 private fun formatVisibleRange(time: DoubleArray, range: IntRange): String {
     if (range.isEmpty() || time.isEmpty()) return "—"
-    return formatRange(time[range.first], time[range.last])
+    return formatRange(range.first / 100.0, range.last / 100.0)
 }
 
 private fun formatRange(start: Double, stop: Double): String =
@@ -1387,3 +1352,14 @@ private fun formatRange(start: Double, stop: Double): String =
 
 private fun formatBpm(value: Double?): String =
     value?.let { "%.1f bpm".format(Locale.ROOT, it) } ?: "—"
+
+@Composable
+private fun TraceAvailabilityNotice(trace: CaptureSessionSignalTrace) {
+    if (trace.budgetDegraded) Text("RAW 极值预览 · ${trace.rawRed.size} 个显示点 / ${trace.totalAcceptedSamples} 个原始 accepted 样本",
+        style = MaterialTheme.typography.bodySmall)
+    trace.stages.filterValues { it.state != CaptureSignalStageState.READY }.forEach { (stage, status) ->
+        Text("$stage：${status.detail ?: if (status.state == CaptureSignalStageState.LOADING) "加载中" else "不可用"}",
+            style = MaterialTheme.typography.bodySmall)
+    }
+    trace.bloodPressureReadError?.let { Text("参考血压读取失败：$it", color = MaterialTheme.colorScheme.error) }
+}

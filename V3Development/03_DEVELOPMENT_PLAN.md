@@ -1,9 +1,9 @@
 # V3.0 开发方案
 
-原计划约束是编码工作不超过五轮（`V3.R1` … `V3.R5`）；后续已因复验插入 R4.1/R5.1，并按稳定性审计追加 R6。R6 真机复验暴露实时显示回归与残留空闲卡顿，因此继续追加 R7，不把自动化门禁通过等同于真机体验完成。
+原计划约束是编码工作不超过五轮（`V3.R1` … `V3.R5`）；后续已因复验插入 R4.1/R5.1，并按稳定性审计追加 R6–R12，不把自动化门禁通过等同于真机体验完成。当前源码实现到 R12；2026-09-27 本轮仅更新文档和验收事实，没有新开发轮次。
 **V3.R4.1** 插在 R4 与 R5 之间。**V3.R5.1** 是 R4.1/R5 代码提交后，针对真机/CUP 名模拟腕带复验发现的直播缺口（采集页仍卡顿、ECG 在 CUP 身份上不可用）追加的修正轮。**V3.R6** 是对 M7.6 之后增量的稳定性审计轮，收口生命周期卡死、录制/波形连续性、主线程 I/O 与 R1–R5 文件/业务契约缺口。每轮交付可 JVM 验收的增量。需求依据 [`02_REQUIREMENTS_REBASED.md`](02_REQUIREMENTS_REBASED.md)，代码基线见 [`01_CODEBASE_AS_IS.md`](01_CODEBASE_AS_IS.md)。
 
-轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`、`V3.R8`、`V3.R8.1`、`V3.R8.2`、`V3.R9`、`V3.R10`；新增审计修正规划 `V3.R11`、`V3.R12`（尚未实施）。
+轮次 ID：`V3.R1` … `V3.R4`、`V3.R4.1`、`V3.R5`、`V3.R5.1`、`V3.R6`、`V3.R7`、`V3.R8`、`V3.R8.1`、`V3.R8.2`、`V3.R9`、`V3.R10`、`V3.R11`、`V3.R12`。R11/R12 已实施；本轮不创建 R13。
 
 ---
 
@@ -24,8 +24,8 @@ R8.1 RAW 纵轴中心锁定 + 分级对称扩展
 R8.2 恢复录中 BP 入口 + 实时 gap 渲染/诊断比例
 R9/R9.1 双路 BP + 表单/gate + 详情元数据 + ATT MTU 协商
 R10 gap-aware repaired signal + 指标来源 + 详情重放
-R11 录制启动失败清理 + ADS 离线诊断 + 恢复副本契约（待开发）
-R12 RAW 回放口径 + 指标证据与呈现 + 分阶段加载（待开发）
+R11 录制启动失败清理 + ADS 离线诊断 + 恢复副本契约（已实施）
+R12 RAW 回放口径 + 指标证据与呈现 + 分阶段加载（已实施）
 ```
 
 | 轮 | 主题 | 主风险 | 可独立演示 |
@@ -47,7 +47,7 @@ R12 RAW 回放口径 + 指标证据与呈现 + 分阶段加载（待开发）
 
 依赖：R2 依赖 R1 的 metadata 扩展习惯（同一 codec）。R3 不依赖 R2。R4 不依赖 R3。**R4.1 依赖 R4 已落地的协议/writer 骨架，必须在 R5 之前完成**（R5 导出/恢复要用完整的 `SessionFileSet.ecg`）。R5 依赖 R1 字段 + R4/R4.1 文件清单。**R5.1 依赖 R4.1 的 120 decoder / ECG 显示环 / uiSnapshotFlow 骨架。R6 依赖先保全 R5.1 当前工作区并形成可回退基线；不得在未区分用户已有修改时覆盖或回滚。**
 
-**当前轮次：R3 综合 SQI 口径收口已完成编码；R9/R10 真机节点均待测。未扫描时残留卡顿仍暂不处理。**
+**当前事实（2026-09-27）：R1–R12 已实施；R9–R12 真机节点仍待测。当前复验 JVM、Debug、AndroidTest、Release privacy 通过；lintDebug 发现的 `Path::of`（API 34 > minSdk 26）已改为 `Paths.get`，完整门禁重跑通过。未扫描时残留卡顿仍按用户决定暂缓。**
 
 ---
 
@@ -1158,6 +1158,12 @@ R5 已交付的血压写回 / ZIP 树 / `SessionFileSet.ecg` 不要回滚。档�
 - 已完成 RAW 逐点口径统一、metrics session/provenance/cursor/finite 校验、无效 epoch/rejected window 断线和单点绘制、录制 SQI 标签区分，以及 partial signal 回调与离线指标局部失败降级。
 - 未添加未经测量的性能承诺或无界缓存；同 raw hash artifact 复用留待有性能基线后再做，避免在当前真机问题未量化前引入缓存一致性风险。
 - 定向与完整 JVM 已通过；完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 门禁通过：242 tests，0 failure/error/skip。未执行真机。
+
+## 2026-09-27 跨端审阅回归事实
+
+- 本轮没有新增开发编号。A-CORE、A-FILES、A-UI 为 controller 已接受的当前工作区实现；controller 报告此前完整 JVM 336/336、`assembleDebug` 与 `assembleRelease` 通过。I-EVID 提供当前 Swift writer 导出，具体互读结果见 [`status/REVIEW_ROUND_20260927.md`](status/REVIEW_ROUND_20260927.md)。
+- 本轮重跑 Swift fixture JVM gate：336 tests，0 failure/error/skip；standalone Debug assemble 通过。`assembleDebugAndroidTest` 与 `verifyReleasePrivacy` 通过，后者的 release assembly 为 up-to-date；同次命令的 `lintDebug` 失败，唯一 error 是 `SessionsViewModel.kt:451` 调用 `Path::of` 被识别为 API 34、项目 minSdk 为 26。docs-only 本轮不改该生产代码。
+- 自动化结果和待办设备检查分开：后台持续合法帧/断流、通知权限交互、R9 BP/MTU、R10 修复前后高 gap 会话、R11 重录与恢复副本、R12 RAW/指标分阶段显示仍需真机确认。没有新增 UI 像素 parity 或平台 API 对译门槛。
 
 ### 边界与文档同步
 

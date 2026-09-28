@@ -6,6 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionDetailUiPolicyTest {
+    @org.junit.Test fun failedSignalIsNotLoadingAndBpValidationLivesBesideTheEditor() {
+        org.junit.Assert.assertEquals(SessionSignalUiState.FAILED, SessionDetailUiPolicy.signalState(false, "raw missing", false))
+        org.junit.Assert.assertEquals(SessionSignalUiState.EMPTY, SessionDetailUiPolicy.signalState(false, null, false))
+        org.junit.Assert.assertEquals(SessionSignalUiState.READY, SessionDetailUiPolicy.signalState(true, null, true))
+        org.junit.Assert.assertNotNull(SessionDetailUiPolicy.bloodPressureTextError("80", "120"))
+        org.junit.Assert.assertNotNull(SessionDetailUiPolicy.bloodPressureTextError("120", ""))
+        org.junit.Assert.assertNotNull(SessionDetailUiPolicy.bloodPressureTextError("9999999999999", "80"))
+        org.junit.Assert.assertNull(SessionDetailUiPolicy.bloodPressureTextError("120", "80"))
+        org.junit.Assert.assertNull(SessionDetailUiPolicy.bloodPressureTextError("", ""))
+    }
+
     @Test
     fun everyDetailSectionStartsCollapsedAndTogglesIndependently() {
         var expanded = SessionDetailUiPolicy.defaultExpandedSections

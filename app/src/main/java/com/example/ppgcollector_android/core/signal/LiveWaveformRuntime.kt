@@ -317,8 +317,8 @@ object LiveWaveformBucketMath {
         if (values.isEmpty() || pixelWidth <= 0) return emptyList()
         val count = min(values.size, pixelWidth)
         return List(count) { bucketIndex ->
-            val start = bucketIndex * values.size / count
-            val end = ((bucketIndex + 1) * values.size / count).coerceAtLeast(start + 1)
+            val start = (bucketIndex.toLong() * values.size / count).toInt()
+            val end = (((bucketIndex + 1L) * values.size / count).toInt()).coerceAtLeast(start + 1)
             var minimum = values[start]
             var maximum = values[start]
             for (index in (start + 1) until end) {
@@ -349,6 +349,8 @@ object LiveWaveformPlotMath {
         values: DoubleArray,
         visibleRange: IntRange,
         maximumPointCount: Int,
+        cancellationCheck: () -> Unit = {},
+        pointFactory: (Int, Double) -> WaveformPlotPoint = ::WaveformPlotPoint,
     ): WaveformPlot {
         require(maximumPointCount >= 2)
         if (values.isEmpty() || visibleRange.isEmpty()) return WaveformPlot(emptyList(), 0.0, 1.0)
@@ -364,39 +366,47 @@ object LiveWaveformPlotMath {
             if (!value.isFinite()) return
             overallMinimum = minOf(overallMinimum, value)
             overallMaximum = maxOf(overallMaximum, value)
-            points += WaveformPlotPoint(offset, value)
+            points += pointFactory(offset, value)
         }
 
         if (valueCount <= maximumPointCount) {
-            for (offset in start until stop) observe(offset, values[offset])
+            for (offset in start until stop) {
+                if ((offset - start) % 4096 == 0) cancellationCheck()
+                observe(offset, values[offset])
+            }
         } else {
             val binCount = maxOf(1, maximumPointCount / 2)
             repeat(binCount) { bin ->
-                val lowerOffset = start + bin * valueCount / binCount
-                val upperOffset = (start + (bin + 1) * valueCount / binCount).coerceAtMost(stop)
-                var minimumPoint: WaveformPlotPoint? = null
-                var maximumPoint: WaveformPlotPoint? = null
+                cancellationCheck()
+                val lower = start.toLong() + bin.toLong() * valueCount / binCount
+                val upper = start.toLong() + (bin + 1L) * valueCount / binCount
+                check(lower >= start && upper <= stop && lower < upper)
+                val lowerOffset = lower.toInt()
+                val upperOffset = upper.toInt()
+                var minimumOffset = -1
+                var maximumOffset = -1
+                var minimumValue = Double.POSITIVE_INFINITY
+                var maximumValue = Double.NEGATIVE_INFINITY
                 for (offset in lowerOffset until upperOffset) {
+                    if ((offset - lowerOffset) % 4096 == 0) cancellationCheck()
                     val value = values[offset]
                     if (!value.isFinite()) continue
-                    if (minimumPoint == null || value < minimumPoint!!.value) {
-                        minimumPoint = WaveformPlotPoint(offset, value)
+                    if (minimumOffset < 0 || value < minimumValue) {
+                        minimumOffset = offset
+                        minimumValue = value
                     }
-                    if (maximumPoint == null || value > maximumPoint!!.value) {
-                        maximumPoint = WaveformPlotPoint(offset, value)
+                    if (maximumOffset < 0 || value > maximumValue) {
+                        maximumOffset = offset
+                        maximumValue = value
                     }
-                    overallMinimum = minOf(overallMinimum, value)
-                    overallMaximum = maxOf(overallMaximum, value)
                 }
-                val minimum = minimumPoint
-                val maximum = maximumPoint
-                if (minimum != null && maximum != null) {
-                    if (minimum.offset <= maximum.offset) {
-                        points += minimum
-                        if (maximum.offset != minimum.offset) points += maximum
+                if (minimumOffset >= 0) {
+                    if (minimumOffset <= maximumOffset) {
+                        observe(minimumOffset, minimumValue)
+                        if (maximumOffset != minimumOffset) observe(maximumOffset, maximumValue)
                     } else {
-                        points += maximum
-                        points += minimum
+                        observe(maximumOffset, maximumValue)
+                        observe(minimumOffset, minimumValue)
                     }
                 }
             }

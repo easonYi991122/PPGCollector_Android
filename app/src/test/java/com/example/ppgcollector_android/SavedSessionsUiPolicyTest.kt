@@ -13,7 +13,7 @@ import org.junit.Test
 
 class SavedSessionsUiPolicyTest {
     @Test
-    fun subjectAndExplicitSessionSelectionResolvesToDistinctSessionCount() {
+    fun selectionIsTheDirectorySetAfterAChildWasExcluded() {
         val first = stored("PPG-A-1")
         val second = stored("PPG-A-2")
         val snapshot = SubjectArchiveSnapshot(
@@ -42,10 +42,9 @@ class SavedSessionsUiPolicyTest {
         val selected = SavedSessionsUiPolicy.selectedSessionDirectories(
             archive = snapshot,
             selectedDirectories = setOf(first.directory),
-            selectedSubjects = setOf("A"),
         )
 
-        assertEquals(setOf(first.directory, second.directory), selected)
+        assertEquals(setOf(first.directory), selected)
     }
 
     @Test

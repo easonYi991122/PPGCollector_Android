@@ -2,6 +2,13 @@ package com.example.ppgcollector_android.core.ble
 
 import com.example.ppgcollector_android.core.signal.StreamFreshness
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
+import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
+import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
+import com.example.ppgcollector_android.core.protocol.CupFrameSequenceTracker
+import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
+import com.example.ppgcollector_android.core.protocol.CupBatchFrame
+import com.example.ppgcollector_android.core.protocol.CupPpgSample
+import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,10 +110,11 @@ enum class BleCoordinatorAction {
 class BleCoordinator(
     private val transport: BleTransport,
     apiLevel: Int,
-    private val uptimeSeconds: () -> Double = { 0.0 },
-    private val hostMonotonicNanos: () -> Long = { 0L },
+    private val uptimeSeconds: () -> Double = { System.nanoTime() / 1_000_000_000.0 },
+    private val hostMonotonicNanos: () -> Long = System::nanoTime,
     private val ownerDispatcher: ((() -> Unit) -> Unit) = { action -> action() },
     profiles: List<CupBleDeviceProfile> = CupBleDeviceProfile.supportedBringUpProfiles,
+    private val ticker: BleOwnerTicker = BleOwnerTicker.system,
 ) : AutoCloseable {
     private val ownerLock = Any()
     private var closed = false
@@ -117,10 +125,15 @@ class BleCoordinator(
         uptimeSeconds = uptimeSeconds,
         monotonicNanos = hostMonotonicNanos,
     )
-    private val previewRuntime = BlePreviewRuntime(
-        onAcceptedFrame = ::handlePreviewAcceptedFrame,
-        onClockTick = ::handlePreviewClockTick,
-    )
+    private val previewRuntime = BlePreviewRuntime()
+    private var tickerHandle: AutoCloseable? = null
+    private var tickerGeneration: Long? = null
+    private var tickerEpoch: Any? = null
+    private var healthGeneration: Long? = null
+    private var healthMode: CupStreamProtocolMode? = null
+    private var healthDecoder = CupBatchStreamDecoder()
+    private var healthAdsDecoder = Ads1292rStreamDecoder()
+    private var healthSequence = CupFrameSequenceTracker()
     private var copiedDiscoveredDevices: List<DiscoveredBleDevice> = emptyList()
     private var copiedDiscoveredDevicesEpoch: Long = Long.MIN_VALUE
 
@@ -146,6 +159,8 @@ class BleCoordinator(
     val previewDiagnostics: BlePreviewRuntimeDiagnostics
         get() = previewRuntime.diagnostics()
 
+    private var recordingSinkOwner: Any? = null
+    private var recordingTransactionOwner: Any? = null
     private var recordingRawSink: ((BleRawNotificationChunk) -> Unit)? = null
     private var previewGeneration = snapshot.connectionGeneration
     private var previewWasActive = false
@@ -153,10 +168,42 @@ class BleCoordinator(
     private var previewUiActive = true
 
     var onRawChunk: ((BleRawNotificationChunk) -> Unit)?
-        get() = recordingRawSink
+        get() = synchronized(ownerLock) { recordingRawSink }
         set(value) {
-            recordingRawSink = value
+            synchronized(ownerLock) {
+                recordingSinkOwner = null
+                recordingRawSink = value
+            }
         }
+
+    fun attachRecordingSink(token: Any, sink: (BleRawNotificationChunk) -> Unit) {
+        synchronized(ownerLock) {
+            check(recordingTransactionOwner == null || recordingTransactionOwner === token)
+            recordingSinkOwner = token
+            recordingRawSink = sink
+        }
+    }
+
+    /** Reserve across service instances, including initialization and destroy drain. */
+    fun tryAcquireRecordingOwner(token: Any): Boolean = synchronized(ownerLock) {
+        if (recordingTransactionOwner != null) return@synchronized false
+        recordingTransactionOwner = token
+        true
+    }
+
+    fun releaseRecordingOwner(token: Any) {
+        synchronized(ownerLock) {
+            if (recordingTransactionOwner === token) recordingTransactionOwner = null
+        }
+    }
+
+    fun detachRecordingSink(token: Any) {
+        synchronized(ownerLock) {
+            if (recordingSinkOwner !== token) return
+            recordingRawSink = null
+            recordingSinkOwner = null
+        }
+    }
 
     init {
         // The coordinator is the sole event sink installed above the pure owner.
@@ -174,6 +221,7 @@ class BleCoordinator(
                 // the preview decoder only; a recording must never receive a
                 // second copy of the same notification.
                 replay.forEach(::dispatchReplayChunk)
+                if (uiSliceChanged()) publish()
             }
         }
         // Match the platform transport contract: install the event sink before
@@ -255,6 +303,7 @@ class BleCoordinator(
                 val replay = owner.takeProtocolReplay()
                 publish()
                 replay.forEach(::dispatchReplayChunk)
+                if (uiSliceChanged()) publish()
             }
             accepted
         }
@@ -296,6 +345,9 @@ class BleCoordinator(
         synchronized(ownerLock) {
             if (closed) return
             closed = true
+            tickerHandle?.close()
+            tickerHandle = null
+            tickerEpoch = null
         }
         previewRuntime.close()
         transport.close()
@@ -326,33 +378,64 @@ class BleCoordinator(
         previewWasActive = previewActive
         snapshot = next
         _snapshotFlow.value = snapshot
+        updateTicker(next)
     }
 
     private fun dispatchRawChunk(chunk: BleRawNotificationChunk) {
-        if (previewUiActive) previewRuntime.offer(chunk)
+        // Raw is acknowledged/enqueued before either disposable decoder.
         recordingRawSink?.invoke(chunk)
+        confirmHealth(chunk)
+        if (previewUiActive) previewRuntime.offer(chunk)
     }
 
     private fun dispatchReplayChunk(chunk: BleRawNotificationChunk) {
-        previewRuntime.offer(chunk)
+        confirmHealth(chunk)
+        if (previewUiActive) previewRuntime.offer(chunk)
     }
 
-    private fun handlePreviewAcceptedFrame(generation: Long) {
-        synchronized(ownerLock) {
-            if (closed) return
-            if (owner.connectionGeneration != generation) return
-            if (owner.markValidFrame(uptimeSeconds())) publish()
+    private fun confirmHealth(chunk: BleRawNotificationChunk) {
+        if (healthGeneration != chunk.connectionGeneration || healthMode != chunk.streamProtocolMode) {
+            healthGeneration = chunk.connectionGeneration
+            healthMode = chunk.streamProtocolMode
+            healthDecoder = CupBatchStreamDecoder(protocolMode = chunk.streamProtocolMode)
+            healthAdsDecoder = Ads1292rStreamDecoder()
+            healthSequence = CupFrameSequenceTracker()
         }
+        val frames = if (chunk.streamProtocolMode == CupStreamProtocolMode.ADS1292R_120) {
+            healthAdsDecoder.feed(chunk.bytes).map { packet ->
+                CupBatchFrame(packet.sequenceNumber.toUByte(), packet.red.indices.map {
+                    CupPpgSample(packet.red[it], packet.ir[it])
+                }, packet.sequenceNumber, CupWireFrameProfile.SENSOR_PACKET_168)
+            }
+        } else healthDecoder.feed(chunk.bytes)
+        val accepted = frames.map(healthSequence::observe).any {
+            it !is CupSequenceEvent.Duplicate && it !is CupSequenceEvent.OutOfOrder
+        }
+        if (accepted) owner.markValidFrame(uptimeSeconds())
     }
 
-    private fun handlePreviewClockTick(generation: Long) {
-        synchronized(ownerLock) {
-            if (closed) return
-            if (owner.connectionGeneration != generation) return
-            val previous = owner.freshness
-            val current = owner.refreshFreshness(uptimeSeconds())
-            val probeChanged = owner.pollProtocolProbe(uptimeSeconds())
-            if (current != previous || probeChanged) publish()
+    private fun updateTicker(value: BleCoordinatorSnapshot) {
+        val active = !closed && value.phase.deviceId != null &&
+            value.phase !is BleConnectionPhase.Disconnecting
+        val generation = value.connectionGeneration.takeIf { active }
+        if (generation == tickerGeneration) return
+        tickerHandle?.close()
+        tickerHandle = null
+        tickerGeneration = generation
+        val epoch = Any()
+        tickerEpoch = epoch
+        if (generation == null) return
+        tickerHandle = ticker.start {
+            ownerDispatcher {
+                synchronized(ownerLock) {
+                    if (closed || tickerEpoch !== epoch || owner.connectionGeneration != generation) return@synchronized
+                    val now = uptimeSeconds()
+                    val expired = owner.pollDeadline(now)
+                    owner.refreshFreshness(now)
+                    val probeChanged = owner.pollProtocolProbe(now)
+                    if (expired || probeChanged || uiSliceChanged()) publish()
+                }
+            }
         }
     }
 

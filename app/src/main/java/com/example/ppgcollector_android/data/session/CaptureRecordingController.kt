@@ -5,6 +5,7 @@ import com.example.ppgcollector_android.core.ble.BleRawNotificationChunk
 import com.example.ppgcollector_android.core.ble.LiveStreamDiagnostics
 import com.example.ppgcollector_android.core.protocol.CupBatchStreamDecoder
 import com.example.ppgcollector_android.core.protocol.Ads1292rStreamDecoder
+import com.example.ppgcollector_android.core.protocol.Ads1292rPacket
 import com.example.ppgcollector_android.core.protocol.CupDecodedFrameEvent
 import com.example.ppgcollector_android.core.protocol.CupBatchFrame
 import com.example.ppgcollector_android.core.protocol.CupPpgSample
@@ -13,6 +14,7 @@ import com.example.ppgcollector_android.core.protocol.CupSequenceEvent
 import com.example.ppgcollector_android.core.protocol.CupStreamProtocolMode
 import com.example.ppgcollector_android.core.protocol.CupWireFrameProfile
 import com.example.ppgcollector_android.core.signal.StreamFreshness
+import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisRequest
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalysisResult
 import com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer
 import com.example.ppgcollector_android.core.signal.LivePpgSignalRuntime
@@ -31,6 +33,7 @@ import kotlin.concurrent.thread
 
 enum class CaptureRecordingState {
     IDLE,
+    STARTING,
     RECORDING,
     STOPPING,
     FINALIZED,
@@ -49,6 +52,9 @@ data class CaptureAnalysisSnapshot(
 
 data class CaptureRecordingSnapshot(
     val state: CaptureRecordingState = CaptureRecordingState.IDLE,
+    val sessionId: String? = null,
+    val baseName: String? = null,
+    val sessionToken: Long = 0L,
     val recordMode: CaptureRecordMode = CaptureRecordMode.MANUAL,
     val plannedDurationSeconds: Int? = null,
     val acceptedSampleCount: Long = 0L,
@@ -69,8 +75,9 @@ sealed interface CaptureRecordingStartResult {
 }
 
 /**
- * Serialized recording seam for the future connectedDevice foreground service.
- * BLE callbacks only copy/enqueue bytes; decoding and file I/O run on [worker].
+ * Serialized recording owner. Start/close are blocking and run off Main in the
+ * service. Stop only requests a transition; decoding and I/O run on [worker].
+ * No successor can start until the writer and analysis workers have really exited.
  */
 class CaptureRecordingController(
     private val sessionsRoot: Path,
@@ -82,6 +89,8 @@ class CaptureRecordingController(
     ) -> CaptureSessionWriter = ::CaptureSessionWriter,
     private val queueCapacity: Int = 256,
     private val workerStartGate: CountDownLatch? = null,
+    private val analyze: (LiveMetricAnalysisRequest) -> LiveMetricAnalysisResult = { LiveMetricAnalyzer.analyze(it) },
+    private val waitForAnalysisExit: (Thread) -> Unit = { it.join() },
 ) : AutoCloseable {
     init {
         require(queueCapacity > 0)
@@ -101,6 +110,9 @@ class CaptureRecordingController(
     private val bloodPressureQueue = ArrayBlockingQueue<ManualBloodPressureEvent>(queueCapacity)
     private val participantQueue = ArrayBlockingQueue<ParticipantUpdate>(4)
     private var writer: CaptureSessionWriter? = null
+    private var sessionId: String? = null
+    private var baseName: String? = null
+    private var sessionToken = 0L
     private var activeGeneration: Long? = null
     private var activeStreamProtocolMode: CupStreamProtocolMode? = null
     private var stopReason: CaptureStopReason? = null
@@ -117,7 +129,6 @@ class CaptureRecordingController(
     private var signalRuntime = LivePpgSignalRuntime()
     private var comboSqiDebounce = ComboSqiDebounce()
     private var comboGeneration = -1L
-    private var latestAcceptedSourceSampleIndex: Long? = null
     private var nextReferenceEventIndex = 0L
     private var finalizedLatch = CountDownLatch(0)
     private var lastProgressPublishNanos = Long.MIN_VALUE
@@ -132,7 +143,7 @@ class CaptureRecordingController(
         val ecgSamples: List<UInt> = emptyList(),
     )
 
-    private data class ParticipantUpdate(val participant: CaptureParticipantSnapshot?)
+    private data class ParticipantUpdate(val sessionId: String, val token: Long, val participant: CaptureParticipantSnapshot?)
 
     @Volatile
     private var snapshotValue = CaptureRecordingSnapshot()
@@ -155,10 +166,30 @@ class CaptureRecordingController(
         availableBytes: Long? = null,
         participant: CaptureParticipantSnapshot? = null,
     ): CaptureRecordingStartResult {
-        synchronized(lock) {
+        val previousWorker = synchronized(lock) {
+            if (snapshotValue.state in setOf(CaptureRecordingState.STARTING,
+                    CaptureRecordingState.RECORDING, CaptureRecordingState.STOPPING)) {
+                return CaptureRecordingStartResult.Rejected(CaptureStartFailure.AlreadyRecording)
+            }
+            sessionId = configuration.sessionId
+            baseName = configuration.baseName
+            sessionToken++
+            stopReason = null
+            stopRequested = false
+            lastError = null
+            finalSummary = null
+            finalizedLatch = CountDownLatch(1)
+            publish(CaptureRecordingState.STARTING)
+            worker
+        }
+        // The previous terminal state is published only after analysis exits.
+        // Join the writer's last return outside the lock before reusing queues.
+        previousWorker?.join()
+        var acceptedWriter: CaptureSessionWriter? = null
+        try {
             val gateFailure = CaptureStartGate.validate(
                 CaptureStartContext(
-                    isRecording = writer != null,
+                    isRecording = false,
                     phase = phase,
                     freshness = freshness,
                     sessionsRoot = sessionsRoot,
@@ -169,91 +200,64 @@ class CaptureRecordingController(
                     plannedDurationSeconds = configuration.plannedDurationSeconds,
                 ),
             )
-            if (gateFailure != null) return CaptureRecordingStartResult.Rejected(gateFailure)
-            if (snapshotValue.state == CaptureRecordingState.STOPPING) {
-                return CaptureRecordingStartResult.Failed("recording is stopping")
+            if (gateFailure != null) {
+                synchronized(lock) {
+                    publish(CaptureRecordingState.FAILED)
+                    finalizedLatch.countDown()
+                }
+                return CaptureRecordingStartResult.Rejected(gateFailure)
             }
-            var acceptedWriter: CaptureSessionWriter? = null
-            return try {
-                acceptedWriter = writerFactory(configuration, sessionsRoot, capacityProvider)
-                val writerForStart = acceptedWriter
-                    ?: error("writer factory returned null")
-                stopReason = null
-                stopRequested = false
+            val writerForStart = writerFactory(configuration, sessionsRoot, capacityProvider)
+            acceptedWriter = writerForStart
+            val initialBloodPressure = initialBloodPressureEvent(writerForStart.configuration, connectionGeneration)
+            if (initialBloodPressure != null) writerForStart.appendBloodPressure(initialBloodPressure)
+            synchronized(lock) {
                 queue.clear()
                 analysisQueue.clear()
                 metricQueue.clear()
                 bloodPressureQueue.clear()
                 participantQueue.clear()
                 committedReferenceTokens.clear()
-                latestAcceptedSourceSampleIndex = null
+                initialBloodPressure?.let {
+                    committedReferenceTokens += "${it.reference.sessionId}:${it.reference.eventIndex}"
+                }
                 acceptedSampleCount = 0L
                 queueOverflowCount = 0L
                 analysisInputDropCount = 0L
                 streamDiagnosticsValue = LiveStreamDiagnostics()
-                val initialBloodPressure = initialBloodPressureEvent(
-                    configuration = writerForStart.configuration,
-                    connectionGeneration = connectionGeneration,
-                )
-                if (initialBloodPressure != null) {
-                    // The pre-record BP sidecar is part of the startup
-                    // transaction. Do not publish an active recording until
-                    // this write has succeeded.
-                    writerForStart.appendBloodPressure(initialBloodPressure)
-                    committedReferenceTokens +=
-                        "${initialBloodPressure.reference.sessionId}:${initialBloodPressure.reference.eventIndex}"
-                }
                 writer = writerForStart
                 activeGeneration = connectionGeneration
                 activeStreamProtocolMode =
                     CupStreamProtocolMode.fromProtocolProfileIdentifier(configuration.protocolProfile)
                 nextReferenceEventIndex = if (initialBloodPressure == null) 0L else 1L
                 analysisStopRequested = false
-                finalizedLatch = CountDownLatch(1)
                 lastProgressPublishNanos = Long.MIN_VALUE
                 signalRuntime = LivePpgSignalRuntime()
                 comboSqiDebounce = ComboSqiDebounce()
                 comboGeneration = -1L
-                _analysisSnapshot.value = CaptureAnalysisSnapshot(
-                    state = CaptureAnalysisState.WARMING,
-                )
+                _analysisSnapshot.value = CaptureAnalysisSnapshot(state = CaptureAnalysisState.WARMING)
                 _waveformSnapshot.value = LiveWaveformSnapshot()
-                finalSummary = null
-                lastError = null
-                analysisWorker = thread(start = true, name = "ppg-capture-analysis") {
-                    analysisLoop()
-                }
+                // A stop/destroy during initialization is retained through handoff.
+                publish(if (stopRequested) CaptureRecordingState.STOPPING else CaptureRecordingState.RECORDING)
+                analysisWorker = thread(start = true, name = "ppg-capture-analysis") { analysisLoop() }
                 worker = thread(start = true, name = "ppg-capture-writer") { workerLoop() }
-                publish(CaptureRecordingState.RECORDING)
-                CaptureRecordingStartResult.Started
-            } catch (error: Exception) {
-                acceptedWriter?.let { startupWriter ->
-                    runCatching {
-                        if (!startupWriter.discardIfEmptyBeforeRecording()) {
-                            startupWriter.close()
-                        }
-                    }
+            }
+            return CaptureRecordingStartResult.Started
+        } catch (error: Exception) {
+            acceptedWriter?.let { startupWriter ->
+                runCatching {
+                    if (!startupWriter.discardIfEmptyBeforeRecording()) startupWriter.close()
                 }
+            }
+            synchronized(lock) {
                 writer = null
                 activeGeneration = null
                 activeStreamProtocolMode = null
-                stopReason = null
-                stopRequested = false
-                analysisStopRequested = false
-                queue.clear()
-                analysisQueue.clear()
-                metricQueue.clear()
-                bloodPressureQueue.clear()
-                participantQueue.clear()
-                committedReferenceTokens.clear()
-                acceptedSampleCount = 0L
-                latestAcceptedSourceSampleIndex = null
-                finalSummary = null
                 lastError = error.message
                 publish(CaptureRecordingState.FAILED)
                 finalizedLatch.countDown()
-                CaptureRecordingStartResult.Failed(error.message ?: "cannot create session")
             }
+            return CaptureRecordingStartResult.Failed(error.message ?: "cannot create session")
         }
     }
 
@@ -319,7 +323,8 @@ class CaptureRecordingController(
     /** First stop reason wins; worker drains already accepted raw chunks before finalizing. */
     fun stop(reason: CaptureStopReason, error: String? = null) {
         synchronized(lock) {
-            if (writer == null) return
+            if (snapshotValue.state !in setOf(CaptureRecordingState.STARTING,
+                    CaptureRecordingState.RECORDING, CaptureRecordingState.STOPPING)) return
             requestStopLocked(reason, error)
             publish(CaptureRecordingState.STOPPING)
         }
@@ -332,7 +337,7 @@ class CaptureRecordingController(
     ): CaptureReferenceTimestamp? = synchronized(lock) {
         val currentWriter = writer ?: return@synchronized null
         if (snapshotValue.state != CaptureRecordingState.RECORDING) return@synchronized null
-        val sampleIndex = latestAcceptedSourceSampleIndex ?: return@synchronized null
+        val sampleIndex = (acceptedSampleCount - 1L).takeIf { it >= 0L } ?: return@synchronized null
         val generation = activeGeneration ?: return@synchronized null
         CaptureReferenceTimestamp(
             sessionId = currentWriter.configuration.sessionId,
@@ -368,12 +373,12 @@ class CaptureRecordingController(
     }
 
     /** Coalesces profile edits so the writer owns all metadata mutations. */
-    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean = synchronized(lock) {
-        if (writer == null || snapshotValue.state != CaptureRecordingState.RECORDING) {
+    fun updateParticipantProfile(sessionId: String, participant: CaptureParticipantSnapshot?): Boolean = synchronized(lock) {
+        if (writer?.configuration?.sessionId != sessionId || snapshotValue.state != CaptureRecordingState.RECORDING) {
             return@synchronized false
         }
         participantQueue.clear()
-        participantQueue.offer(ParticipantUpdate(participant))
+        participantQueue.offer(ParticipantUpdate(sessionId, sessionToken, participant))
     }
 
     fun awaitFinalized(timeout: Long, unit: TimeUnit): CaptureSessionSummary? {
@@ -385,8 +390,8 @@ class CaptureRecordingController(
 
     override fun close() {
         stop(CaptureStopReason.UNKNOWN, "controller closed")
-        awaitFinalized(5, TimeUnit.SECONDS)
-        worker?.join(100)
+        finalizedLatch.await()
+        worker?.join()
     }
 
     private fun requestStopLocked(reason: CaptureStopReason, error: String?) {
@@ -402,6 +407,7 @@ class CaptureRecordingController(
         }
         if (lastError == null) lastError = error.message ?: error::class.simpleName
         stopRequested = true
+        publish(CaptureRecordingState.STOPPING)
     }
 
     private companion object {
@@ -438,13 +444,21 @@ class CaptureRecordingController(
                     }
                     val acceptedBefore = acceptedSampleIndex
                     if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                        var packets: List<Ads1292rPacket> = emptyList()
                         writer?.appendRawThenDerive(
                             hostMonotonicNanoseconds = item.hostMonotonicNanoseconds,
                             data = item.bytes,
                             acceptedSampleStartIndex = acceptedBefore,
-                        ) { emptyList() }
+                        ) {
+                            packets = adsDecoder.feed(item.bytes)
+                            writer?.updateDecoderDiagnostics(
+                                adsDecoder.stats.invalidHeaders + adsDecoder.stats.invalidTails,
+                                adsDecoder.stats.discardedBytes,
+                            )
+                            emptyList()
+                        }
                         val acceptedEcgSamples = ArrayList<UInt>()
-                        val adsEvents = adsDecoder.feed(item.bytes).map { packet ->
+                        val adsEvents = packets.map { packet ->
                             val frame = CupBatchFrame(
                                 sequence = packet.sequenceNumber.toUByte(),
                                 sequenceNumber = packet.sequenceNumber,
@@ -534,7 +548,12 @@ class CaptureRecordingController(
                         acceptedSampleStartIndex = acceptedBefore,
                     ) {
                         // The writer has already acknowledged raw before this lambda runs.
-                        events = decoder.feed(item.bytes).map { frame ->
+                        val frames = decoder.feed(item.bytes)
+                        writer?.updateDecoderDiagnostics(
+                            (decoder.stats.invalidFunction + decoder.stats.invalidLength + decoder.stats.invalidTail).toLong(),
+                            decoder.stats.bytesDiscarded.toLong(),
+                        )
+                        events = frames.map { frame ->
                             val sequence = sequenceTracker.observe(frame)
                             lastSequenceNumber = frame.sequenceNumber
                             lastSequenceStep = sequenceStep(sequence)
@@ -637,14 +656,6 @@ class CaptureRecordingController(
                             nowNanos = nowNanos,
                             acceptedEcgSamples = input.ecgSamples,
                         )
-                        val acceptedSamples = input.frames.filter { it.isAccepted }
-                            .sumOf { it.frame.samples.size }
-                        if (acceptedSamples > 0) {
-                            synchronized(lock) {
-                                latestAcceptedSourceSampleIndex =
-                                    input.acceptedSampleStartIndex + acceptedSamples - 1L
-                            }
-                        }
                         signal.waveform?.let { _waveformSnapshot.value = it }
                         val request = signal.metricRequest
                         val hardReset = signalRuntime.generation != signalGenerationBefore
@@ -664,7 +675,7 @@ class CaptureRecordingController(
                             )
                         }
                         if (request != null) {
-                            val result = LiveMetricAnalyzer.analyze(request)
+                            val result = analyze(request)
                             val comboResult = synchronized(lock) {
                                 if (comboGeneration != signalRuntime.generation) {
                                     comboSqiDebounce.reset()
@@ -721,7 +732,11 @@ class CaptureRecordingController(
         synchronized(lock) {
             analysisStopRequested = true
         }
-        analysisWorker?.join(5_000)
+        // A timeout is not an exit. Keep STOPPING and the write lease until
+        // the real worker has drained, so no old result can enter a new session.
+        analysisWorker?.let { worker ->
+            while (worker.isAlive) waitForAnalysisExit(worker)
+        }
         analysisWorker = null
     }
 
@@ -753,7 +768,9 @@ class CaptureRecordingController(
         while (true) {
             val participant = participantQueue.poll() ?: return
             try {
-                writer?.updateParticipant(participant.participant)
+                if (participant.sessionId == writer?.configuration?.sessionId && participant.token == sessionToken) {
+                    writer?.updateParticipant(participant.participant)
+                }
             } catch (error: Throwable) {
                 synchronized(lock) { requestWriteFailureLocked(error) }
                 return
@@ -762,20 +779,19 @@ class CaptureRecordingController(
     }
 
     private fun finalizeWriter() {
+        val (currentWriter, reason, error) = synchronized(lock) {
+            val current = writer ?: return
+            Triple(current, stopReason ?: CaptureStopReason.UNKNOWN, lastError)
+        }
+        // Disk force/metadata replacement must never hold the control lock.
+        val result = runCatching { currentWriter.finish(reason, error) }
         synchronized(lock) {
-            if (finalSummary != null) return
-            val currentWriter = writer ?: return
-            val reason = stopReason ?: CaptureStopReason.UNKNOWN
-            finalSummary = runCatching { currentWriter.finish(reason, lastError) }
-                .onFailure { lastError = it.message ?: it::class.simpleName }
-                .getOrNull()
+            finalSummary = result.getOrNull()
+            result.exceptionOrNull()?.let { lastError = it.message ?: it::class.simpleName }
             writer = null
             activeGeneration = null
             activeStreamProtocolMode = null
             publish(if (finalSummary != null) CaptureRecordingState.FINALIZED else CaptureRecordingState.FAILED)
-            // Signal only after the terminal snapshot is visible to callers
-            // waiting for finalization; otherwise awaitFinalized can return
-            // between writer.close() and the StateFlow publication.
             finalizedLatch.countDown()
         }
     }
@@ -784,6 +800,9 @@ class CaptureRecordingController(
         val previous = snapshotValue
         val next = CaptureRecordingSnapshot(
             state = state,
+            sessionId = sessionId,
+            baseName = baseName,
+            sessionToken = sessionToken,
             recordMode = writer?.configuration?.recordMode ?: snapshotValue.recordMode,
             plannedDurationSeconds =
                 writer?.configuration?.plannedDurationSeconds ?: snapshotValue.plannedDurationSeconds,

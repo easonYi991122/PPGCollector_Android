@@ -436,6 +436,201 @@ class CaptureRecordingControllerTest {
         }
     }
 
+    @Test
+    fun blockedAnalysisCannotReuseSessionAfterAnExpiredJoinAndBpUsesWriterCursor() {
+        val root = Files.createTempDirectory("capture-analysis-ownership")
+        val analyzing = CountDownLatch(1)
+        val releaseAnalysis = CountDownLatch(1)
+        val expiredJoin = CountDownLatch(1)
+        val waitingForExit = CountDownLatch(1)
+        val waits = java.util.concurrent.atomic.AtomicInteger()
+        val controller = CaptureRecordingController(
+            root, CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            analyze = { request ->
+                if (request.windowEndSampleIndex == 799L) {
+                    analyzing.countDown()
+                    check(releaseAnalysis.await(10, TimeUnit.SECONDS))
+                }
+                com.example.ppgcollector_android.core.signal.LiveMetricAnalyzer.analyze(request)
+            },
+            waitForAnalysisExit = { worker ->
+                if (waits.getAndIncrement() == 0) {
+                    // Simulate the old timed join returning while analysis is alive.
+                    expiredJoin.countDown()
+                } else {
+                    waitingForExit.countDown()
+                    worker.join()
+                }
+            },
+        )
+        try {
+            startForTest(controller, configuration(), 71)
+            repeat(40) { index ->
+                assertTrue(controller.onRawChunk(BleRawNotificationChunk(71, index.toLong(), encodeCupBatchFrame(analysisFrame(index)))))
+            }
+            assertTrue(analyzing.await(3, TimeUnit.SECONDS))
+            repeat(10) { offset ->
+                val index = offset + 40
+                assertTrue(controller.onRawChunk(BleRawNotificationChunk(71, index.toLong(), encodeCupBatchFrame(analysisFrame(index)))))
+            }
+            awaitCondition { controller.snapshot.acceptedSampleCount == 1_000L }
+            assertEquals(999L, controller.captureReferenceTimestamp()!!.sourceSampleIndex)
+            controller.stop(CaptureStopReason.USER)
+            assertTrue(expiredJoin.await(3, TimeUnit.SECONDS))
+            assertTrue(waitingForExit.await(3, TimeUnit.SECONDS))
+            assertEquals(CaptureRecordingState.STOPPING, controller.snapshot.state)
+            val second = configuration().copy(sessionId = "session-B", baseName = "session_B")
+            assertEquals(CaptureRecordingStartResult.Rejected(CaptureStartFailure.AlreadyRecording),
+                controller.start(second, BleConnectionPhase.Receiving("device"), StreamFreshness.FRESH, 72))
+            assertFalse(Files.exists(root.resolve("session_B")))
+            releaseAnalysis.countDown()
+            assertNotNull(controller.awaitFinalized(5, TimeUnit.SECONDS))
+            startForTest(controller, second, 72)
+            controller.stop(CaptureStopReason.USER)
+            val summary = controller.awaitFinalized(5, TimeUnit.SECONDS)!!
+            assertEquals(0L, summary.writer.acceptedSamples)
+            assertEquals(0L, summary.writer.metricsRows)
+        } finally {
+            releaseAnalysis.countDown()
+            controller.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun delayedProfileSuccessCannotChangeSuccessorIdentity() {
+        val root = Files.createTempDirectory("capture-profile-token")
+        val controller = CaptureRecordingController(root, CaptureStorageCapacityProvider { Long.MAX_VALUE })
+        try {
+            val first = configuration().copy(sessionId = "A")
+            startForTest(controller, first, 1)
+            controller.stop(CaptureStopReason.USER)
+            assertNotNull(controller.awaitFinalized(3, TimeUnit.SECONDS))
+            val participantB = CaptureParticipantSnapshot(subjectId = "S002", profileComplete = false)
+            startForTest(controller, configuration().copy(sessionId = "B", baseName = "session_B", participant = participantB), 2)
+            assertFalse(controller.updateParticipantProfile("A", CaptureParticipantSnapshot(subjectId = "S001", profileRevisionId = "late-A", profileComplete = false)))
+            controller.stop(CaptureStopReason.USER)
+            val summary = controller.awaitFinalized(3, TimeUnit.SECONDS)!!
+            val metadata = CaptureSessionMetadataCodec.decode(Files.readString(summary.directory.resolve("session_B.session.json")))
+            assertEquals("S002", metadata.participant!!.subjectId)
+            assertEquals(null, metadata.participant!!.profileRevisionId)
+        } finally {
+            controller.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun finalDecoderEvidenceSurvivesEveryStopReasonForBatchAndAds() {
+        for (mode in listOf(CupStreamProtocolMode.BATCH_COMPATIBLE, CupStreamProtocolMode.ADS1292R_120)) {
+            for (reason in CaptureStopReason.entries) {
+                val root = Files.createTempDirectory("capture-diagnostics")
+                val controller = CaptureRecordingController(root, CaptureStorageCapacityProvider { Long.MAX_VALUE })
+                try {
+                    val config = configuration().copy(protocolProfile = mode.configuredProfileIdentifier)
+                    startForTest(controller, config, 3)
+                    val good = if (mode == CupStreamProtocolMode.ADS1292R_120) Ads1292rPacketProtocol.encode(adsPacket(1u))
+                        else encodeCupBatchFrame(frame())
+                    val bad = good.copyOf().also { it[it.lastIndex] = 0 }
+                    assertTrue(controller.onRawChunk(BleRawNotificationChunk(3, 1, bad + good, mode)))
+                    awaitCondition { controller.snapshot.acceptedSampleCount > 0 }
+                    controller.stop(reason)
+                    val summary = controller.awaitFinalized(3, TimeUnit.SECONDS)!!
+                    val metadata = CaptureSessionMetadataCodec.decode(Files.readString(summary.directory.resolve("controller_001.session.json")))
+                    assertEquals("$mode/$reason", 1L, metadata.invalidFrames)
+                    assertEquals("$mode/$reason", good.size.toLong(), metadata.discardedBytes)
+                } finally {
+                    controller.close()
+                    root.toFile().deleteRecursively()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun stopDoesNotWaitForWriterInitializationOrFinalForce() {
+        val root = Files.createTempDirectory("capture-nonblocking-stop")
+        val initializing = CountDownLatch(1)
+        val releaseInit = CountDownLatch(1)
+        val forcing = CountDownLatch(1)
+        val releaseForce = CountDownLatch(1)
+        val registry = CaptureSessionAccessRegistry()
+        val controller = CaptureRecordingController(root, CaptureStorageCapacityProvider { Long.MAX_VALUE },
+            writerFactory = { config, dir, capacity ->
+                initializing.countDown()
+                check(releaseInit.await(5, TimeUnit.SECONDS))
+                CaptureSessionWriter(config, dir, capacity, registry) { path ->
+                    if (path.fileName.toString().endsWith(".cupraw")) {
+                        forcing.countDown()
+                        check(releaseForce.await(5, TimeUnit.SECONDS))
+                    }
+                }
+            })
+        val starter = kotlin.concurrent.thread { startForTest(controller, configuration(), 1) }
+        try {
+            assertTrue(initializing.await(3, TimeUnit.SECONDS))
+            controller.stop(CaptureStopReason.USER)
+            assertEquals(CaptureRecordingState.STOPPING, controller.snapshot.state)
+            releaseInit.countDown()
+            starter.join(3_000)
+            assertFalse(starter.isAlive)
+            assertTrue(forcing.await(3, TimeUnit.SECONDS))
+            controller.stop(CaptureStopReason.USER)
+            assertEquals(CaptureRecordingState.STOPPING, controller.snapshot.state)
+            releaseForce.countDown()
+            assertNotNull(controller.awaitFinalized(3, TimeUnit.SECONDS))
+        } finally {
+            releaseInit.countDown()
+            releaseForce.countDown()
+            starter.join()
+            controller.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun checkpointContainsCurrentSessionDecoderDamageIncludingAdsRawFirstPath() {
+        for (mode in listOf(CupStreamProtocolMode.BATCH_COMPATIBLE, CupStreamProtocolMode.ADS1292R_120)) {
+            val root = Files.createTempDirectory("capture-checkpoint-diagnostics")
+            val clock = java.util.concurrent.atomic.AtomicLong()
+            val controller = CaptureRecordingController(root, CaptureStorageCapacityProvider { Long.MAX_VALUE },
+                writerFactory = { config, dir, capacity ->
+                    CaptureSessionWriter(config, dir, capacity, CaptureSessionAccessRegistry(), monotonicNanos = clock::get, beforeForce = {})
+                })
+            try {
+                startForTest(controller, configuration().copy(protocolProfile = mode.configuredProfileIdentifier), 9)
+                val good = if (mode == CupStreamProtocolMode.ADS1292R_120) Ads1292rPacketProtocol.encode(adsPacket(1u))
+                    else encodeCupBatchFrame(frame())
+                val bad = good.copyOf().also { it[it.lastIndex] = 0 }
+                clock.set(2_000_000_000L)
+                assertTrue(controller.onRawChunk(BleRawNotificationChunk(9, 1, bad + good, mode)))
+                val path = root.resolve("controller_001/controller_001.session.json")
+                awaitCondition { CaptureSessionMetadataCodec.decode(Files.readString(path)).rawChunkCount == 1L }
+                val checkpoint = CaptureSessionMetadataCodec.decode(Files.readString(path))
+                assertFalse(checkpoint.complete)
+                assertEquals(1L, checkpoint.invalidFrames)
+                assertEquals(good.size.toLong(), checkpoint.discardedBytes)
+                controller.stop(CaptureStopReason.USER)
+                assertNotNull(controller.awaitFinalized(3, TimeUnit.SECONDS))
+            } finally {
+                controller.close()
+                root.toFile().deleteRecursively()
+            }
+        }
+    }
+
+    private fun startForTest(controller: CaptureRecordingController, config: CaptureSessionConfiguration, generation: Long) {
+        assertEquals(CaptureRecordingStartResult.Started,
+            controller.start(config, BleConnectionPhase.Receiving("device"), StreamFreshness.FRESH, generation,
+                availableBytes = Long.MAX_VALUE))
+    }
+
+    private fun awaitCondition(predicate: () -> Boolean) {
+        val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+        while (!predicate() && System.nanoTime() < end) Thread.yield()
+        assertTrue(predicate())
+    }
+
     private fun configuration() = CaptureSessionConfiguration(
         sessionId = "controller-session-id",
         baseName = "controller_001",

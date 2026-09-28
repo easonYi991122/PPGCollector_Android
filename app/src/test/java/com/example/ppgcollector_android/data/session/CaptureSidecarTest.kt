@@ -11,6 +11,53 @@ import org.junit.Test
 
 class CaptureSidecarTest {
     @Test
+    fun generationResetAndSafeTailShareOneValidationRule() {
+        val path = Files.createTempFile("generation", ".csv")
+        try {
+            fun row(generation: Long, epoch: Long, source: Long): String =
+                CaptureMetricSeries.format(CaptureMetricEpoch(
+                    "source", generation, epoch, source, source / 100.0,
+                    Instant.EPOCH, LiveMetricSnapshot.warmingUp(),
+                ))
+            val prefix = CaptureMetricSeries.header + row(0, 1, 799) + row(1, 1, 899)
+            Files.writeString(path, prefix + row(1, 2, 999).trimEnd())
+            val scan = CaptureMetricSeries.scan(path)
+            assertEquals(2L, scan.completeDataRowCount)
+            assertEquals(prefix.toByteArray().size.toLong(), scan.validByteCount)
+            assertEquals(2, CaptureMetricSeries.readTimeline(path).size)
+            assertTrue(scan.hasTruncatedFinalLine)
+            Files.writeString(path, prefix + row(0, 2, 999))
+            assertTrue(CaptureMetricSeries.scan(path).monotonicityError != null)
+            assertThrows(IllegalArgumentException::class.java) { CaptureMetricSeries.readTimeline(path) }
+        } finally {
+            Files.deleteIfExists(path)
+        }
+    }
+
+    @Test
+    fun allSidecarsExcludeUnterminatedRowFromEveryCommittedField() {
+        val path = Files.createTempFile("safe-tail", ".csv")
+        try {
+            val bp = ManualBloodPressureEvent(
+                CaptureReferenceTimestamp("original", 0, 0, 0, 0.0, 0u, Instant.EPOCH),
+                Instant.EPOCH, 120, 80,
+            )
+            Files.writeString(path, CaptureBloodPressureSeries.header + CaptureBloodPressureSeries.format(bp).trimEnd())
+            val pressure = CaptureBloodPressureSeries.scan(path)
+            assertEquals(0L, pressure.completeDataRowCount)
+            assertEquals(CaptureBloodPressureSeries.header.length.toLong(), pressure.validByteCount)
+            assertEquals(null, pressure.sessionId)
+            Files.writeString(path, CaptureEcgCsv.header + CaptureEcgCsv.format("original", 0, 0u, 5u).trimEnd())
+            val ecg = CaptureEcgCsv.scan(path)
+            assertEquals(0L, ecg.completeDataRowCount)
+            assertEquals(CaptureEcgCsv.header.length.toLong(), ecg.validByteCount)
+            assertEquals(null, ecg.sessionId)
+        } finally {
+            Files.deleteIfExists(path)
+        }
+    }
+
+    @Test
     fun metricAndBloodPressureSidecarsRoundTripAndInspectionSeesV2Files() {
         val root = Files.createTempDirectory("sidecar")
         try {

@@ -18,6 +18,100 @@ import org.junit.Test
 
 class CaptureSessionRecoveryServiceTest {
     @Test
+    fun recoveryCopyCancellationStopsAt64KiBAndLeavesNoStaging() {
+        val root = Files.createTempDirectory("recovery-copy-cancel")
+        try {
+            val writer = CaptureSessionWriter(configuration("source"), root)
+            writer.finish(CaptureStopReason.USER)
+            val raw = CaptureSessionRepository.expectedFiles(writer.directory).raw
+            Files.delete(raw)
+            CupRawWriter(raw).use { output -> repeat(1000) { output.append(it.toULong(), frameWire(it.toUByte())) } }
+            val source = CaptureSessionRepository.listSessions(root).single()
+            val hash = CaptureExportSource.hash(raw)
+            val cancelled = java.util.concurrent.CancellationException("copy")
+            var copiedAtCancel = 0L
+            org.junit.Assert.assertSame(cancelled, org.junit.Assert.assertThrows(java.util.concurrent.CancellationException::class.java) {
+                CaptureSessionRecoveryService.recover(source, "cancelled", recoverySessionId = "copy",
+                    cancellationCheck = {
+                        val copy = root.resolve(".recovery-copy/cancelled.cupraw")
+                        if (Files.exists(copy) && Files.size(copy) >= 64 * 1024) {
+                            copiedAtCancel = Files.size(copy)
+                            throw cancelled
+                        }
+                    })
+            })
+            assertEquals(64L * 1024, copiedAtCancel)
+            assertFalse(Files.exists(root.resolve(".recovery-copy")))
+            assertEquals(hash, CaptureExportSource.hash(raw))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun twoRecoveriesPreserveOriginalIdentityAndMbPrefixUnderCustomNames() {
+        val root = Files.createTempDirectory("recovery-chain")
+        try {
+            val source = ReviewSessionFixtures.writeProtocols(root).single { it.baseName.startsWith("MB-") }
+            val first = CaptureSessionRecoveryService.recover(source, "custom_one", recoverySessionId = "r1")
+            val firstSession = CaptureSessionRepository.listSessions(root).single { it.directory == first.directory }
+            val before = CaptureSessionRepository.expectedFiles(first.directory).allPaths.associateWith { CaptureExportSource.hash(it) }
+            val second = CaptureSessionRecoveryService.recover(firstSession, "custom_two", recoverySessionId = "r2")
+            val metadata = CaptureSessionMetadataCodec.decode(second.metadataPath)
+            assertEquals(source.metadata!!.sessionId, metadata.recovery!!.sourceSessionId)
+            assertEquals("r1", metadata.recovery.parentSessionId)
+            assertEquals("MB", metadata.recovery.originalCanonicalPrefix)
+            assertEquals("custom_one", metadata.recovery.sourceDirectoryName)
+            assertEquals(before.getValue(first.rawPath), metadata.recovery.sourceRawSha256)
+            val inspection = CaptureSessionInspectionService.inspect(second.directory)
+            assertTrue(inspection.findings.toString(), inspection.findings.none { it.severity == CaptureInspectionSeverity.ERROR })
+            assertEquals(2L, inspection.metrics!!.completeDataRowCount)
+            assertEquals(1L, inspection.bloodPressure!!.completeDataRowCount)
+            assertEquals(80L, inspection.ecg!!.completeDataRowCount)
+            before.forEach { (path, sha) -> assertEquals(sha, CaptureExportSource.hash(path)) }
+            val archive = SubjectArchiveRepository.rebuild(root, root.resolve("profiles"))
+            assertEquals(3, archive.groups.single().sessions.count { it.identity.prefix == SessionNamePrefix.MB })
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun allUnterminatedSidecarRowsStayOutsideRecoveryCounts() {
+        val root = Files.createTempDirectory("recovery-sidecar-tail")
+        try {
+            val source = ReviewSessionFixtures.writeProtocols(root).single { it.baseName.startsWith("MB-") }
+            val files = CaptureSessionRepository.expectedFiles(source.directory)
+            for (path in listOf(files.metrics!!, files.bloodPressure!!, files.ecg!!)) {
+                val firstTwo = Files.readAllLines(path).take(2)
+                Files.writeString(path, firstTwo.joinToString("\n"))
+            }
+            val before = files.allPaths.associateWith { CaptureExportSource.hash(it) }
+            val result = CaptureSessionRecoveryService.recover(source, "tails")
+            val metadata = CaptureSessionMetadataCodec.decode(result.metadataPath)
+            assertEquals(0L, metadata.writer.metricsRows)
+            assertEquals(0L, metadata.writer.bloodPressureRows)
+            assertEquals(0L, CaptureMetricSeries.scan(result.metricsPath!!).completeDataRowCount)
+            assertEquals(0L, CaptureBloodPressureSeries.scan(result.bloodPressurePath!!).completeDataRowCount)
+            assertEquals(0L, CaptureEcgCsv.scan(result.ecgPath!!).completeDataRowCount)
+            assertEquals(Files.size(files.raw), result.rawCopiedBytes)
+            before.forEach { (path, sha) -> assertEquals(sha, CaptureExportSource.hash(path)) }
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun recoveryCancellationRemovesStagingAndPropagatesOriginalException() {
+        val root = Files.createTempDirectory("recovery-cancel")
+        try {
+            val source = ReviewSessionFixtures.writeProtocols(root).first()
+            val cancellation = java.util.concurrent.CancellationException("recovery")
+            val thrown = org.junit.Assert.assertThrows(java.util.concurrent.CancellationException::class.java) {
+                CaptureSessionRecoveryService.recover(source, "cancelled", recoverySessionId = "cancel",
+                    cancellationCheck = { if (Files.exists(root.resolve(".recovery-cancel"))) throw cancellation })
+            }
+            org.junit.Assert.assertSame(cancellation, thrown)
+            assertFalse(Files.exists(root.resolve(".recovery-cancel")))
+            assertFalse(Files.exists(root.resolve("cancelled")))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun recoveryCopiesOnlySafePrefixesAndPreservesSource() {
         val root = Files.createTempDirectory("session-recovery")
         try {

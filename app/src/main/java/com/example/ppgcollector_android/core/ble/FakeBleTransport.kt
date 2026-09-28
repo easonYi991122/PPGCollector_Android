@@ -131,3 +131,26 @@ class FakeBleTransport(
         eventHandler?.invoke(event)
     }
 }
+
+/** Deterministic owner clock; advancing it drives the production coordinator. */
+class FakeBleOwnerTicker(initialSeconds: Double = 1_000.0) : BleOwnerTicker {
+    var nowSeconds = initialSeconds
+        private set
+    val nowNanos: Long get() = (nowSeconds * 1_000_000_000.0).toLong()
+    private val callbacks = linkedMapOf<Any, () -> Unit>()
+    private val retired = mutableListOf<() -> Unit>()
+
+    override fun start(tick: () -> Unit): AutoCloseable {
+        val token = Any()
+        callbacks[token] = tick
+        return AutoCloseable { callbacks.remove(token)?.let(retired::add) }
+    }
+
+    fun advanceBy(seconds: Double) {
+        require(seconds >= 0)
+        nowSeconds += seconds
+        callbacks.values.toList().forEach { it() }
+    }
+
+    fun deliverCancelledTicks() = retired.toList().forEach { it() }
+}

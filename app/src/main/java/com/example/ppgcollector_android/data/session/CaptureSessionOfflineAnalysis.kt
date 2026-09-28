@@ -63,6 +63,7 @@ enum class PersistedMetricSidecarState {
     PERSISTED_NO_VALID_VALUES,
     SIDECAR_MISSING,
     SIDECAR_INVALID,
+    NOT_LOADED_BUDGET,
 }
 
 enum class CaptureMetricTimelineSource {
@@ -146,6 +147,16 @@ data class CaptureSessionSignalTrace(
     ),
     val metricUnavailableSourceIndices: IntArray = intArrayOf(),
     val bloodPressureEvents: List<ManualBloodPressureEvent> = emptyList(),
+    val bloodPressureReadError: String? = null,
+    val sourceSampleIndices: LongArray = LongArray(rawRed.size) { it.toLong() },
+    val totalAcceptedSamples: Long = replay.acceptedSamples,
+    val sourceIdentity: CaptureSignalSourceIdentity? = null,
+    val budget: CaptureSignalLoadBudget? = null,
+    val budgetDegraded: Boolean = false,
+    val gapSourceIndices: LongArray = LongArray(breakIndices.size) { breakIndices[it].toLong() },
+    val gapMarkersTruncated: Boolean = false,
+    val stages: Map<CaptureSignalStage, CaptureSignalStageStatus> = emptyMap(),
+    val metricAvailability: Map<CaptureTimelineMetric, CaptureMetricAvailability> = emptyMap(),
 )
 
 object CaptureSessionOfflineAnalysisService {
@@ -161,12 +172,16 @@ object CaptureSessionOfflineAnalysisService {
         progress: (CaptureSessionAnalysisProgress) -> Unit = {},
         cancellationCheck: () -> Unit = {},
         now: () -> Instant = Instant::now,
-    ): CaptureSessionAnalysisArtifact {
-        val files = CaptureSessionRepository.expectedFiles(session.directory)
+        budget: CaptureSignalLoadBudget = CaptureSignalLoadBudget.runtime(),
+    ): CaptureSessionAnalysisArtifact = requireSessionLease(
+        session.directory, CaptureSessionAccessRegistry.Access.WRITE,
+    ).use {
+        val files = CaptureSessionRepository.expectedFiles(session.directory, cancellationCheck)
         require(Files.isRegularFile(files.raw)) { "会话缺少 raw 文件" }
         val started = now()
         progress(CaptureSessionAnalysisProgress(CaptureAnalysisStage.HASHING, 0.01, 0, 0, 0))
-        val rawSha = sha256(files.raw, cancellationCheck)
+        val rawSource = CaptureExportSource.freeze(files.raw, files.raw.fileName.toString(), cancellationCheck)
+        val rawSha = rawSource.sha256
         cancellationCheck()
 
         val replayed = loadRawInput(
@@ -175,6 +190,7 @@ object CaptureSessionOfflineAnalysisService {
             protocolProfile = session.metadata?.protocolProfile,
             progress = progress,
             cancellationCheck = cancellationCheck,
+            budget = budget,
         )
         cancellationCheck()
         var lastCompletedWindows = 0
@@ -199,6 +215,7 @@ object CaptureSessionOfflineAnalysisService {
             cancellationCheck = cancellationCheck,
         )
         cancellationCheck()
+        rawSource.verify(cancellationCheck)
         val report = buildReport(
             session = session,
             rawSha = rawSha,
@@ -232,96 +249,199 @@ object CaptureSessionOfflineAnalysisService {
         return artifact
     }
 
-    fun listArtifacts(session: StoredCaptureSession): List<CaptureSessionAnalysisArtifact> =
-        listArtifacts(session.directory)
+    fun listArtifactSummaries(
+        session: StoredCaptureSession,
+        cancellationCheck: () -> Unit = {},
+    ): List<CaptureArtifactSummary> = listArtifactSummaries(session.directory, cancellationCheck)
 
-    fun listArtifacts(sessionDirectory: Path): List<CaptureSessionAnalysisArtifact> {
-        val analysisDirectory = sessionDirectory.resolve("analysis")
-        if (!Files.isDirectory(analysisDirectory)) return emptyList()
-        Files.list(analysisDirectory).use { paths ->
-            val artifacts = paths
-                .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".json") }
-                .map { path -> runCatching { readArtifact(path) }.getOrNull() }
+    fun listArtifactSummaries(
+        sessionDirectory: Path,
+        cancellationCheck: () -> Unit = {},
+    ): List<CaptureArtifactSummary> = requireSessionLease(
+        sessionDirectory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT,
+    ).use { listSummariesUnderLease(sessionDirectory, cancellationCheck) }
+
+    internal fun listSummariesUnderLease(
+        sessionDirectory: Path,
+        cancellationCheck: () -> Unit,
+    ): List<CaptureArtifactSummary> {
+        val directory = sessionDirectory.resolve("analysis")
+        if (!Files.isDirectory(directory)) return emptyList()
+        Files.list(directory).use { paths ->
+            return paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".json") }
+                .map { CaptureArtifactSummaryReader.read(it, cancellationCheck) }
                 .collect(Collectors.toList())
-                .filterNotNull()
-            return artifacts.sortedWith(
-                compareByDescending<CaptureSessionAnalysisArtifact> { it.report.endedUtc }
-                    .thenByDescending { it.path.fileName.toString() },
+                .sortedWith(compareByDescending<CaptureArtifactSummary> { it.endedUtc }
+                    .thenByDescending { it.path.fileName.toString() })
+        }
+    }
+
+    /** Compatibility view: reports are loaded on access; the list retains summaries only. */
+    fun listArtifacts(session: StoredCaptureSession): List<CaptureSessionAnalysisArtifact> = listArtifacts(session.directory)
+    fun listArtifacts(sessionDirectory: Path): List<CaptureSessionAnalysisArtifact> {
+        val summaries = listArtifactSummaries(sessionDirectory)
+        return object : AbstractList<CaptureSessionAnalysisArtifact>() {
+            override val size: Int get() = summaries.size
+            override fun get(index: Int): CaptureSessionAnalysisArtifact = readArtifact(
+                summaries[index].path, expectedSourceVersion = summaries[index].sourceVersion,
             )
         }
     }
 
-    fun readArtifact(path: Path): CaptureSessionAnalysisArtifact =
-        CaptureSessionAnalysisArtifact(path, CaptureSessionAnalysisCodec.decode(readBounded(path)))
+    // At most one selected report, and only a small report, may stay cached.
+    private var cachedArtifact: Pair<CaptureArtifactSourceVersion, CaptureSessionAnalysisArtifact>? = null
 
-    /** Loads the complete accepted signal for interactive visualization only. */
+    fun readArtifact(
+        path: Path,
+        cancellationCheck: () -> Unit = {},
+        expectedSourceVersion: CaptureArtifactSourceVersion? = null,
+    ): CaptureSessionAnalysisArtifact = requireSessionLease(
+        path.parent.parent, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT,
+    ).use {
+        cancellationCheck()
+        val summary = CaptureArtifactSummaryReader.read(path, cancellationCheck)
+        require(summary.state == CaptureArtifactReadState.READY) { summary.detail ?: "artifact unavailable" }
+        val version = requireNotNull(summary.sourceVersion)
+        require(expectedSourceVersion == null || expectedSourceVersion == version) { "artifact source version changed" }
+        synchronized(this) { cachedArtifact }?.let { (cachedVersion, artifact) ->
+            if (cachedVersion == version && artifact.path == path) return artifact
+        }
+        val budget = CaptureSignalLoadBudget.runtime()
+        if (version.sizeBytes > budget.workingBytes / 64) {
+            throw CaptureSignalBudgetException("完整分析报告超出可用内存预算；摘要仍可读取")
+        }
+        val text = readBounded(path, cancellationCheck)
+        val sha = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        require(sha == version.sha256) { "artifact changed while reading" }
+        val artifact = CaptureSessionAnalysisArtifact(path, CaptureSessionAnalysisCodec.decode(text))
+        cancellationCheck()
+        synchronized(this) { cachedArtifact = if (version.sizeBytes <= 256 * 1024) version to artifact else null }
+        artifact
+    }
+
+    /** RAW is published first. Large inputs retain a bounded extrema preview and never run fallback. */
     fun loadSignalTrace(
         session: StoredCaptureSession,
         cancellationCheck: () -> Unit = {},
         onPartial: ((CaptureSessionSignalTrace) -> Unit)? = null,
-    ): CaptureSessionSignalTrace {
-        val files = CaptureSessionRepository.expectedFiles(session.directory)
+        budget: CaptureSignalLoadBudget = CaptureSignalLoadBudget.runtime(),
+    ): CaptureSessionSignalTrace = requireSessionLease(
+        session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT,
+    ).use {
+        cancellationCheck()
+        val files = CaptureSessionRepository.expectedFiles(session.directory, cancellationCheck)
         require(Files.isRegularFile(files.raw)) { "会话缺少 raw 文件" }
-        val loaded = loadRawInput(
-            path = files.raw,
-            expectedSampleCount = session.metadata?.sampleCount,
-            protocolProfile = session.metadata?.protocolProfile,
-            progress = {},
-            cancellationCheck = cancellationCheck,
+        val rawSource = CaptureExportSource.freeze(files.raw, files.raw.fileName.toString(), cancellationCheck)
+        val metadata = if (Files.isRegularFile(files.metadata)) CaptureSessionMetadataCodec.decode(files.metadata, cancellationCheck) else session.metadata
+        val identity = CaptureSignalSourceIdentity(metadata?.sessionId, rawSource.sha256, rawSource.version.size)
+        val mode = CupStreamProtocolMode.fromProtocolProfileIdentifier(metadata?.protocolProfile)
+        val preview = loadBoundedRawPreview(files.raw, mode, budget, cancellationCheck)
+        rawSource.verify(cancellationCheck)
+        if (!budget.permits(preview.replay.acceptedSamples)) {
+            val reason = "会话超出内存预算，显示 RAW 极值预览；ZERO/FIXED 与自动指标重算不可用"
+            val cursors = preview.points.map { it.sampleIndex }.toLongArray()
+            val breaks = preview.gapSourceIndices.asSequence().mapNotNull { gap ->
+                cursors.binarySearch(gap).let { if (it >= 0) it else -it - 1 }.takeIf { it in cursors.indices }
+            }.distinct().toList().toIntArray()
+            val trace = CaptureSessionSignalTrace(
+                timeSeconds = DoubleArray(cursors.size) { cursors[it] / 100.0 },
+                rawRed = preview.points.map { it.sample.red.toDouble() }.toDoubleArray(),
+                rawIr = preview.points.map { it.sample.ir.toDouble() }.toDoubleArray(),
+                filteredRed = doubleArrayOf(), filteredIr = doubleArrayOf(),
+                fixedLagRed = doubleArrayOf(), fixedLagIr = doubleArrayOf(), breakIndices = breaks,
+                replay = preview.replay, preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
+                fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
+                metricTimelineEvidence = CaptureMetricTimelineEvidence(
+                    if (files.metrics == null) PersistedMetricSidecarState.SIDECAR_MISSING else PersistedMetricSidecarState.NOT_LOADED_BUDGET,
+                    CaptureMetricTimelineSource.UNAVAILABLE, reason),
+                sourceSampleIndices = cursors, sourceIdentity = identity, budget = budget, budgetDegraded = true,
+                gapSourceIndices = preview.gapSourceIndices, gapMarkersTruncated = preview.gapMarkersTruncated,
+                stages = CaptureSignalStage.entries.associateWith { stage -> CaptureSignalStageStatus(
+                    if (stage == CaptureSignalStage.RAW) CaptureSignalStageState.READY else CaptureSignalStageState.UNAVAILABLE_BUDGET, reason) },
+                metricAvailability = CaptureTimelineMetric.entries.associateWith {
+                    CaptureMetricAvailability(CaptureMetricTimelineSource.UNAVAILABLE, null, longArrayOf(), reason)
+                },
+            )
+            onPartial?.invoke(trace)
+            cancellationCheck()
+            return trace
+        }
+        val loaded = loadRawInput(files.raw, preview.replay.acceptedSamples, metadata?.protocolProfile,
+            {}, cancellationCheck, budget)
+        rawSource.verify(cancellationCheck)
+        var trace = CaptureSessionSignalTrace(
+            timeSeconds = loaded.rawInput.timeSeconds, rawRed = loaded.rawInput.red, rawIr = loaded.rawInput.ir,
+            filteredRed = doubleArrayOf(), filteredIr = doubleArrayOf(), fixedLagRed = doubleArrayOf(), fixedLagIr = doubleArrayOf(),
+            breakIndices = loaded.rawInput.breakIndices, replay = loaded.replay,
+            preprocessProfile = OfflinePpgAnalyzer.preprocessProfile, fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
+            sourceIdentity = identity, budget = budget,
+            metricTimelineEvidence = CaptureMetricTimelineEvidence(PersistedMetricSidecarState.LOADING,
+                CaptureMetricTimelineSource.UNAVAILABLE, "RAW 已就绪，派生信号与指标加载中"),
+            stages = CaptureSignalStage.entries.associateWith { CaptureSignalStageStatus(
+                if (it == CaptureSignalStage.RAW) CaptureSignalStageState.READY else CaptureSignalStageState.LOADING) },
         )
+        onPartial?.invoke(trace)
         cancellationCheck()
-        val filtered = OfflinePpgAnalyzer.filterFullSignal(loaded.analysisInput, cancellationCheck)
-        val fixedLag = OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.analysisInput, cancellationCheck)
-        val partial = CaptureSessionSignalTrace(
-            timeSeconds = loaded.rawInput.timeSeconds,
-            rawRed = loaded.rawInput.red,
-            rawIr = loaded.rawInput.ir,
-            filteredRed = filtered.red,
-            filteredIr = filtered.ir,
-            fixedLagRed = fixedLag.red,
-            fixedLagIr = fixedLag.ir,
-            breakIndices = loaded.rawInput.breakIndices,
-            replay = loaded.replay,
-            preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
-            fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
-            metricTimelineEvidence = CaptureMetricTimelineEvidence(
-                persistedState = PersistedMetricSidecarState.LOADING,
-                source = CaptureMetricTimelineSource.UNAVAILABLE,
-                detail = "raw/滤波已就绪，指标时间轴加载中",
-            ),
-        )
-        onPartial?.invoke(partial)
-        cancellationCheck()
-        val metrics = resolveMetricTimeline(
-            metricsPath = files.metrics,
-            analysisInput = loaded.analysisInput,
-            acceptedSessionIds = setOfNotNull(
-                session.metadata?.sessionId,
-                session.metadata?.recovery?.sourceSessionId,
-            ),
-            cancellationCheck = cancellationCheck,
-        )
-        val bloodPressure = files.bloodPressure?.let { path ->
-            runCatching { CaptureBloodPressureSeries.read(path) }.getOrDefault(emptyList())
-        }.orEmpty()
-        return CaptureSessionSignalTrace(
-            timeSeconds = loaded.rawInput.timeSeconds,
-            rawRed = loaded.rawInput.red,
-            rawIr = loaded.rawInput.ir,
-            filteredRed = filtered.red,
-            filteredIr = filtered.ir,
-            fixedLagRed = fixedLag.red,
-            fixedLagIr = fixedLag.ir,
-            breakIndices = loaded.rawInput.breakIndices,
-            replay = loaded.replay,
-            preprocessProfile = OfflinePpgAnalyzer.preprocessProfile,
-            fixedLagProfile = OfflinePpgAnalyzer.fixedLagProfile,
-            metricTimeline = metrics.points,
-            metricTimelineEvidence = metrics.evidence,
-            metricUnavailableSourceIndices = metrics.unavailableSourceIndices,
-            bloodPressureEvents = bloodPressure,
-        )
+        // Resolve any full-analysis fallback before retaining ZERO/FIXED arrays.
+        // Only its bounded metric timeline survives into the display-filter phases.
+        val metrics = resolveMetricTimeline(files.metrics, loaded.analysisInput,
+            metadata.allowedRowSessionIds(), cancellationCheck)
+        var pressureReadError: String? = null
+        val pressure = try {
+            files.bloodPressure?.let {
+                CaptureBloodPressureSeries.read(it, metadata.allowedRowSessionIds(), cancellationCheck)
+            }.orEmpty()
+        } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
+            pressureReadError = boundedError(error)
+            emptyList()
+        }
+        trace = trace.copy(metricTimeline = metrics.points, metricTimelineEvidence = metrics.evidence,
+            metricUnavailableSourceIndices = metrics.unavailableSourceIndices, bloodPressureEvents = pressure,
+            bloodPressureReadError = pressureReadError,
+            stages = trace.stages + (CaptureSignalStage.METRICS to CaptureSignalStageStatus(CaptureSignalStageState.READY)),
+            metricAvailability = metricAvailability(metrics))
+        for (stage in listOf(CaptureSignalStage.ZERO, CaptureSignalStage.FIXED)) {
+            trace = try {
+                val filtered = if (stage == CaptureSignalStage.ZERO) OfflinePpgAnalyzer.filterFullSignal(loaded.analysisInput, cancellationCheck)
+                    else OfflinePpgAnalyzer.filterFixedLagFullSignal(loaded.analysisInput, cancellationCheck)
+                val stages = trace.stages + (stage to CaptureSignalStageStatus(CaptureSignalStageState.READY))
+                if (stage == CaptureSignalStage.ZERO) trace.copy(filteredRed = filtered.red, filteredIr = filtered.ir, stages = stages)
+                else trace.copy(fixedLagRed = filtered.red, fixedLagIr = filtered.ir, stages = stages)
+            } catch (error: Exception) {
+                if (error is java.util.concurrent.CancellationException) throw error
+                trace.copy(stages = trace.stages + (stage to CaptureSignalStageStatus(CaptureSignalStageState.FAILED, boundedError(error))))
+            }
+            onPartial?.invoke(trace)
+            cancellationCheck()
+        }
+        rawSource.verify(cancellationCheck)
+        trace
     }
+
+    private fun metricAvailability(metrics: ResolvedMetricTimeline): Map<CaptureTimelineMetric, CaptureMetricAvailability> =
+        CaptureTimelineMetric.entries.associateWith { metric ->
+            fun value(point: CaptureMetricTimelinePoint): Double? = when (metric) {
+                CaptureTimelineMetric.HEART_RATE -> point.heartRateBpm
+                CaptureTimelineMetric.SQI -> point.signalQuality
+                CaptureTimelineMetric.RATIO -> point.ratioOfRatios
+                CaptureTimelineMetric.PERFUSION_INDEX -> point.perfusionIndexPercent
+            }
+            val available = metrics.points.any { value(it) != null }
+            CaptureMetricAvailability(
+                if (available) metrics.evidence.source else CaptureMetricTimelineSource.UNAVAILABLE,
+                when (metrics.evidence.source) {
+                    CaptureMetricTimelineSource.RECORDED_1_HZ -> 100L
+                    CaptureMetricTimelineSource.OFFLINE_RECOMPUTED -> (OfflinePpgAnalyzer.hopSeconds * 100).toLong()
+                    else -> null
+                },
+                (metrics.points.filter { value(it) == null }.map { it.sourceSampleIndex } +
+                    metrics.unavailableSourceIndices.map { it.toLong() }).distinct().sorted().toLongArray(),
+                if (available) null else if (metrics.evidence.source == CaptureMetricTimelineSource.OFFLINE_RECOMPUTED)
+                    "此离线分析未提供该指标" else metrics.evidence.detail,
+            )
+        }
 
     private fun loadRawInput(
         path: Path,
@@ -329,24 +449,28 @@ object CaptureSessionOfflineAnalysisService {
         protocolProfile: String?,
         progress: (CaptureSessionAnalysisProgress) -> Unit,
         cancellationCheck: () -> Unit,
+        budget: CaptureSignalLoadBudget = CaptureSignalLoadBudget.runtime(),
     ): LoadedRawInput {
+        if (expectedSampleCount != null && !budget.permits(expectedSampleCount)) {
+            throw CaptureSignalBudgetException("完整分析超出可用内存预算")
+        }
         val expected = expectedSampleCount
             ?.coerceIn(0L, maximumAcceptedSamples.toLong())
             ?.toInt()
-            ?: 8_192
+            ?: minOf(8_192L, budget.maximumFullSamples).toInt()
         val red = DoubleArrayBuilder(expected)
         val ir = DoubleArrayBuilder(expected)
         val time = DoubleArrayBuilder(expected)
         val breaks = IntArrayBuilder()
         var lastPublishedFrame = 0
         val protocolMode = CupStreamProtocolMode.fromProtocolProfileIdentifier(protocolProfile)
-        val replay = CupRawReplayEngine.replay(path, protocolMode) { sample ->
+        val replay = CupRawReplayEngine.replay(path, protocolMode, cancellationCheck) { sample ->
             cancellationCheck()
             if (sample.sampleInFrame == 0 && sample.missingFramesBefore > 0) {
                 breaks.add(red.size)
             }
-            if (red.size >= maximumAcceptedSamples) {
-                error("离线分析样本超过 $maximumAcceptedSamples 上限")
+            if (!budget.permits(red.size.toLong() + 1)) {
+                throw CaptureSignalBudgetException("完整分析超出可用内存预算")
             }
             red.add(sample.sample.red.toDouble())
             ir.add(sample.sample.ir.toDouble())
@@ -396,6 +520,7 @@ object CaptureSessionOfflineAnalysisService {
                 val points = CaptureMetricSeries.readTimeline(
                     metricsPath,
                     acceptedSessionIds = acceptedSessionIds,
+                    cancellationCheck = cancellationCheck,
                 )
                 require(points.all { it.sourceSampleIndex in analysisInput.red.indices }) {
                     "metrics source_sample_index exceeds accepted raw samples"
@@ -626,26 +751,13 @@ object CaptureSessionOfflineAnalysisService {
         return CaptureSessionAnalysisArtifact(destination, report)
     }
 
-    private fun sha256(path: Path, cancellationCheck: () -> Unit): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                cancellationCheck()
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun readBounded(path: Path): String {
+    private fun readBounded(path: Path, cancellationCheck: () -> Unit): String {
         val maximumBytes = 8 * 1024 * 1024
         val bytes = ByteArrayOutputStream()
         Files.newInputStream(path).use { input ->
             val buffer = ByteArray(16 * 1024)
             while (true) {
+                cancellationCheck()
                 val count = input.read(buffer)
                 if (count < 0) break
                 if (bytes.size() + count > maximumBytes) error("analysis JSON exceeds 8 MiB")

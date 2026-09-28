@@ -38,9 +38,17 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
     buildFeatures {
         compose = true
     }
+}
+
+// Resolve test SDKs through Gradle, without Robolectric writing ~/.m2 or a
+// user-home download lock. These artifacts never enter an APK.
+val robolectricSdk by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
 }
 
 dependencies {
@@ -57,12 +65,39 @@ dependencies {
     implementation(libs.androidx.profileinstaller)
     "baselineProfile"(project(":baselineprofile"))
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    // Android Studio's JBR is Java 25; Robolectric's older ASM cannot read its classes.
+    testRuntimeOnly("org.ow2.asm:asm:9.9")
+    testRuntimeOnly("org.ow2.asm:asm-commons:9.9")
+    testRuntimeOnly("org.ow2.asm:asm-tree:9.9")
+    robolectricSdk("org.robolectric:android-all-instrumented:15-robolectric-12650502-i7")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+val prepareRobolectricSdk by tasks.registering(Sync::class) {
+    from(robolectricSdk)
+    into(layout.buildDirectory.dir("robolectric-sdk"))
+}
+
+// Review controls are opt-in and affect only forked test JVMs.
+tasks.withType<Test>().configureEach {
+    dependsOn(prepareRobolectricSdk)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir",
+        layout.buildDirectory.dir("robolectric-sdk").get().asFile.absolutePath)
+    providers.gradleProperty("ppgReviewHeap").orNull?.let {
+        maxHeapSize = it
+        maxParallelForks = 1
+    }
+    listOf("ppgReviewSwiftFixtures", "ppgReviewGenerateFixtures", "ppgReviewFixtureOutput").forEach { name ->
+        providers.gradleProperty(name).orNull?.let { systemProperty(name, it) }
+    }
 }
 
 baselineProfile {
@@ -98,110 +133,127 @@ val releaseBleTransportContractReport = layout.buildDirectory.file(
  * the connected-device foreground-service permissions or alter the target API.
  */
 tasks.register("verifyReleaseApiContract") {
-    dependsOn("processReleaseManifest")
+    val expectedMinSdk = migrationMinSdk
+    val expectedCompileSdk = migrationCompileSdk
+    val expectedTargetSdk = migrationTargetSdk
+    val releaseManifestFile = releaseMergedManifest.get().asFile
+    val reportFile = releaseApiContractReport.get().asFile
+    dependsOn("processReleaseManifest", "processDebugManifest")
     inputs.property("migrationMinSdk", migrationMinSdk)
     inputs.property("migrationCompileSdk", migrationCompileSdk)
     inputs.property("migrationTargetSdk", migrationTargetSdk)
     inputs.file(releaseMergedManifest)
+    val debugMergedManifest = layout.buildDirectory.file("intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml")
+    inputs.file(debugMergedManifest)
     outputs.file(releaseApiContractReport)
 
     doLast {
-        val manifestFile = releaseMergedManifest.get().asFile
-        check(manifestFile.isFile) {
-            "REL-006/REL-007 merged manifest is missing: ${manifestFile.path}"
-        }
-
-        val document = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = true
-        }.newDocumentBuilder().parse(manifestFile)
-        val androidNamespace = "http://schemas.android.com/apk/res/android"
-        fun androidAttribute(node: org.w3c.dom.Node, name: String): String =
-            node.attributes.getNamedItemNS(androidNamespace, name)?.nodeValue.orEmpty()
-        fun nodes(tagName: String): List<org.w3c.dom.Node> {
-            val nodeList = document.getElementsByTagName(tagName)
-            return (0 until nodeList.length).map { nodeList.item(it) }
-        }
-
-        val manifest = document.documentElement
-        val sdk = document.getElementsByTagName("uses-sdk").item(0)
-        check(sdk != null) { "REL-006 merged manifest has no uses-sdk" }
-        val mergedMinSdk = androidAttribute(sdk, "minSdkVersion")
-        val mergedTargetSdk = androidAttribute(sdk, "targetSdkVersion")
-        check(mergedMinSdk == migrationMinSdk.toString()) {
-            "REL-006 minSdk mismatch: merged=$mergedMinSdk expected=$migrationMinSdk"
-        }
-        check(mergedTargetSdk == migrationTargetSdk.toString()) {
-            "REL-006 targetSdk mismatch: merged=$mergedTargetSdk expected=$migrationTargetSdk"
-        }
-
-        val permissions = nodes("uses-permission")
-            .asSequence()
-            .map { androidAttribute(it, "name") }
-            .toSet()
-        val requiredPermissions = setOf(
-            "android.permission.BLUETOOTH_SCAN",
-            "android.permission.BLUETOOTH_CONNECT",
-            "android.permission.FOREGROUND_SERVICE",
-            "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
-            "android.permission.POST_NOTIFICATIONS",
-        )
-        check(permissions.containsAll(requiredPermissions)) {
-            "REL-007 required permission missing: ${requiredPermissions - permissions}"
-        }
-
-        val locationPermission = nodes("uses-permission")
-            .asSequence()
-            .firstOrNull {
-                androidAttribute(it, "name") == "android.permission.ACCESS_FINE_LOCATION"
+        for (manifestFile in listOf(debugMergedManifest.get().asFile, releaseManifestFile)) {
+            check(manifestFile.isFile) {
+                "REL-006/REL-007 merged manifest is missing: ${manifestFile.path}"
             }
-        check(locationPermission != null) {
-            "REL-006 legacy BLE location permission is missing"
-        }
-        check(androidAttribute(locationPermission, "maxSdkVersion") == "30") {
-            "REL-006 legacy location maxSdkVersion must remain 30"
-        }
 
-        val scanPermission = nodes("uses-permission")
-            .asSequence()
-            .firstOrNull {
-                androidAttribute(it, "name") == "android.permission.BLUETOOTH_SCAN"
+            val document = DocumentBuilderFactory.newInstance().apply {
+                isNamespaceAware = true
+            }.newDocumentBuilder().parse(manifestFile)
+            val androidNamespace = "http://schemas.android.com/apk/res/android"
+            fun androidAttribute(node: org.w3c.dom.Node, name: String): String =
+                node.attributes.getNamedItemNS(androidNamespace, name)?.nodeValue.orEmpty()
+            fun nodes(tagName: String): List<org.w3c.dom.Node> {
+                val nodeList = document.getElementsByTagName(tagName)
+                return (0 until nodeList.length).map { nodeList.item(it) }
             }
-        check(androidAttribute(scanPermission!!, "usesPermissionFlags") == "neverForLocation") {
-            "REL-006 BLUETOOTH_SCAN must retain neverForLocation"
-        }
 
-        val services = nodes("service")
-        val captureService = services.asSequence().firstOrNull {
-            androidAttribute(it, "name").endsWith(".CaptureForegroundService")
-        }
-        check(captureService != null) { "REL-007 capture foreground service is missing" }
-        check(androidAttribute(captureService, "exported") == "false") {
-            "REL-007 capture foreground service must remain private"
-        }
-        check(androidAttribute(captureService, "foregroundServiceType") == "connectedDevice") {
-            "REL-007 capture foreground service type must be connectedDevice"
-        }
+            val manifest = document.documentElement
+            val sdk = document.getElementsByTagName("uses-sdk").item(0)
+            check(sdk != null) { "REL-006 merged manifest has no uses-sdk" }
+            val mergedMinSdk = androidAttribute(sdk, "minSdkVersion")
+            val mergedTargetSdk = androidAttribute(sdk, "targetSdkVersion")
+            check(mergedMinSdk == expectedMinSdk.toString()) {
+                "REL-006 minSdk mismatch: merged=$mergedMinSdk expected=$expectedMinSdk"
+            }
+            check(mergedTargetSdk == expectedTargetSdk.toString()) {
+                "REL-006 targetSdk mismatch: merged=$mergedTargetSdk expected=$expectedTargetSdk"
+            }
 
-        val report = buildString {
-            appendLine("REL-006/REL-007 release API contract")
-            appendLine("declared_min_sdk=$migrationMinSdk")
-            appendLine("declared_compile_sdk=$migrationCompileSdk")
-            appendLine("declared_target_sdk=$migrationTargetSdk")
-            appendLine("merged_min_sdk=$mergedMinSdk")
-            appendLine("merged_target_sdk=$mergedTargetSdk")
-            appendLine("merged_package=${manifest.getAttribute("package")}")
-            appendLine("legacy_location_max_sdk=30")
-            appendLine("bluetooth_scan_flags=neverForLocation")
-            appendLine("capture_service_type=connectedDevice")
-            appendLine("capture_service_exported=false")
-            appendLine("required_permissions=${requiredPermissions.sorted().joinToString(",")}")
-            appendLine("status=passed")
+            val permissions = nodes("uses-permission")
+                .asSequence()
+                .map { androidAttribute(it, "name") }
+                .toSet()
+            val requiredPermissions = setOf(
+                "android.permission.BLUETOOTH",
+                "android.permission.BLUETOOTH_ADMIN",
+                "android.permission.BLUETOOTH_SCAN",
+                "android.permission.BLUETOOTH_CONNECT",
+                "android.permission.FOREGROUND_SERVICE",
+                "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+                "android.permission.POST_NOTIFICATIONS",
+            )
+            check(permissions.containsAll(requiredPermissions)) {
+                "REL-007 required permission missing: ${requiredPermissions - permissions}"
+            }
+
+            for (permission in listOf("android.permission.BLUETOOTH", "android.permission.BLUETOOTH_ADMIN")) {
+                val node = nodes("uses-permission").single { androidAttribute(it, "name") == permission }
+                check(androidAttribute(node, "maxSdkVersion") == "30") {
+                    "REL-006 $permission must be capped at API 30 in ${manifestFile.path}"
+                }
+            }
+
+            val locationPermission = nodes("uses-permission")
+                .asSequence()
+                .firstOrNull {
+                    androidAttribute(it, "name") == "android.permission.ACCESS_FINE_LOCATION"
+                }
+            check(locationPermission != null) {
+                "REL-006 legacy BLE location permission is missing"
+            }
+            check(androidAttribute(locationPermission, "maxSdkVersion") == "30") {
+                "REL-006 legacy location maxSdkVersion must remain 30"
+            }
+
+            val scanPermission = nodes("uses-permission")
+                .asSequence()
+                .firstOrNull {
+                    androidAttribute(it, "name") == "android.permission.BLUETOOTH_SCAN"
+                }
+            check(androidAttribute(scanPermission!!, "usesPermissionFlags") == "neverForLocation") {
+                "REL-006 BLUETOOTH_SCAN must retain neverForLocation"
+            }
+
+            val services = nodes("service")
+            val captureService = services.asSequence().firstOrNull {
+                androidAttribute(it, "name").endsWith(".CaptureForegroundService")
+            }
+            check(captureService != null) { "REL-007 capture foreground service is missing" }
+            check(androidAttribute(captureService, "exported") == "false") {
+                "REL-007 capture foreground service must remain private"
+            }
+            check(androidAttribute(captureService, "foregroundServiceType") == "connectedDevice") {
+                "REL-007 capture foreground service type must be connectedDevice"
+            }
+
+            val report = buildString {
+                appendLine("REL-006/REL-007 release API contract")
+                appendLine("declared_min_sdk=$expectedMinSdk")
+                appendLine("declared_compile_sdk=$expectedCompileSdk")
+                appendLine("declared_target_sdk=$expectedTargetSdk")
+                appendLine("merged_min_sdk=$mergedMinSdk")
+                appendLine("merged_target_sdk=$mergedTargetSdk")
+                appendLine("merged_package=${manifest.getAttribute("package")}")
+                appendLine("legacy_location_max_sdk=30")
+                appendLine("bluetooth_scan_flags=neverForLocation")
+                appendLine("capture_service_type=connectedDevice")
+                appendLine("capture_service_exported=false")
+                appendLine("required_permissions=${requiredPermissions.sorted().joinToString(",")}")
+                appendLine("status=passed")
+            }
+            reportFile.apply {
+                parentFile.mkdirs()
+                writeText(report)
+            }
         }
-        releaseApiContractReport.get().asFile.apply {
-            parentFile.mkdirs()
-            writeText(report)
-        }
-        logger.lifecycle("REL-006/REL-007 release API contract passed: ${releaseApiContractReport.get().asFile}")
+        logger.lifecycle("REL-006/REL-007 debug/release API contract passed: $reportFile")
     }
 }
 
@@ -211,21 +263,29 @@ tasks.register("verifyReleaseApiContract") {
  * available for runtime lifecycle tests.
  */
 tasks.register("verifyReleaseLifecycleContract") {
+    val serviceFile = captureServiceSource.asFile
+    val viewModelFile = captureViewModelSource.asFile
+    val reportFile = releaseLifecycleContractReport.get().asFile
     dependsOn("compileReleaseKotlin")
     inputs.file(captureServiceSource)
     inputs.file(captureViewModelSource)
+    val lifecycleSource = layout.projectDirectory.file("src/main/java/com/example/ppgcollector_android/CaptureServiceLifecycle.kt")
+    inputs.file(lifecycleSource)
     outputs.file(releaseLifecycleContractReport)
 
     doLast {
-        val source = captureServiceSource.asFile.readText()
-        val viewModelSource = captureViewModelSource.asFile.readText()
+        val source = serviceFile.readText()
+        val viewModelSource = viewModelFile.readText()
         val requiredFragments = listOf(
             "return START_NOT_STICKY",
-            "stopJob?.cancel()",
-            "serviceScope.cancel()",
-            "recordingController.close()",
-            "snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED",
-            "snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FAILED",
+            "lifecycle = CaptureServiceLifecycle(",
+            "lifecycle.start(",
+            "lifecycle.destroy()",
+            "bleCoordinator.attachRecordingSink(token, recordingController::onRawChunk)",
+            "claimRecordingOwner = bleCoordinator::tryAcquireRecordingOwner",
+            "releaseRecordingOwner = bleCoordinator::releaseRecordingOwner",
+            "detachSink = bleCoordinator::detachRecordingSink",
+            "stopSelfResult(startId)",
             "stopForeground(STOP_FOREGROUND_REMOVE)",
             "PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE",
         )
@@ -239,17 +299,35 @@ tasks.register("verifyReleaseLifecycleContract") {
             "REL-003/REL-004 onDestroy body is missing"
         }
         val onDestroy = source.substring(onDestroyStart, onDestroyEnd)
-        val cleanupOrder = listOf(
-            "stopJob?.cancel()",
-            "serviceScope.cancel()",
-            "recordingController.close()",
-            "stopForeground(STOP_FOREGROUND_REMOVE)",
-        ).map(onDestroy::indexOf)
-        check(cleanupOrder.zipWithNext().all { (first, second) -> first >= 0 && first < second }) {
-            "REL-003/REL-004 onDestroy cleanup order changed: $cleanupOrder"
+        check(onDestroy.contains("lifecycle.destroy()") &&
+            !onDestroy.contains("serviceScope.cancel()") && !onDestroy.contains("recordingController.close()")) {
+            "REL-003/REL-004 destroy must hand cleanup to the retained asynchronous owner"
+        }
+        val lifecycle = lifecycleSource.asFile.readText()
+        val lifecycleFragments = listOf(
+            "controller.snapshotFlow.collect(::observe)",
+            "withContext(ioDispatcher)",
+            "transaction.handoffComplete = true",
+            "transaction.stopReason?.let(controller::stop)",
+            "observe(controller.snapshot)",
+            "snapshot.state == CaptureRecordingState.FINALIZED",
+            "snapshot.state == CaptureRecordingState.FAILED",
+            "if (active !== transaction) return",
+            "if (!claimRecordingOwner(transaction.token))",
+            "releaseRecordingOwner(transaction.token)",
+            "if (transaction.sinkAttached) detachSink(transaction.token)",
+            "stopSelf(transaction.startId)",
+            "if (destroyed) releaseOwner()",
+            "if (active == null) releaseOwner()",
+            "acknowledgeStartId(startId)",
+            "terminalObserver.cancel()",
+            "scope.cancel()",
+        )
+        check(lifecycleFragments.all(lifecycle::contains)) {
+            "REL-003/REL-004 asynchronous handoff, session isolation or exactly-once cleanup contract missing"
         }
         val requiredFailureFlowFragments = listOf(
-            "_runtimeFailure.value = CaptureStartFailure.ForegroundServiceStartRejected",
+            "onFailure = { _runtimeFailure.value = it }",
             "fun runtimeFailureFlow(): StateFlow<CaptureStartFailure?>",
             "runtimeFailure = localBinder.runtimeFailureFlow().value",
             "runtimeFailureJob = observeRuntimeFailure(localBinder)",
@@ -271,16 +349,16 @@ tasks.register("verifyReleaseLifecycleContract") {
             appendLine("terminal_states=FINALIZED,FAILED")
             appendLine("stop_observer=capture_recording_snapshot_flow")
             appendLine("notification_action=immutable_stop_and_save")
-            appendLine("on_destroy=cancel_observer_then_close_controller_then_remove_foreground")
+            appendLine("on_destroy=retained_owner_waits_for_handoff_and_terminal_then_detaches_sink_removes_foreground_stops_start_id")
             appendLine("runtime_failure=service_stateflow_scoped_to_current_capture_gate")
             appendLine("status=passed")
         }
-        releaseLifecycleContractReport.get().asFile.apply {
+        reportFile.apply {
             parentFile.mkdirs()
             writeText(report)
         }
         logger.lifecycle(
-            "REL-003/REL-004 release lifecycle contract passed: ${releaseLifecycleContractReport.get().asFile}",
+            "REL-003/REL-004 release lifecycle contract passed: $reportFile",
         )
     }
 }
@@ -290,12 +368,14 @@ tasks.register("verifyReleaseLifecycleContract") {
  * the map, callback bookkeeping, pending CCCD write and platform GATT object.
  */
 tasks.register("verifyReleaseBleTransportContract") {
+    val transportFile = releaseBleTransportSource.asFile
+    val reportFile = releaseBleTransportContractReport.get().asFile
     dependsOn("compileReleaseKotlin")
     inputs.file(releaseBleTransportSource)
     outputs.file(releaseBleTransportContractReport)
 
     doLast {
-        val source = releaseBleTransportSource.asFile.readText()
+        val source = transportFile.readText()
         val requiredFragments = listOf(
             "private val scanTimeoutMillis: Long = DEFAULT_SCAN_TIMEOUT_MILLIS",
             "mainHandler.postDelayed(scanTimeout, scanTimeoutMillis)",
@@ -344,12 +424,12 @@ tasks.register("verifyReleaseBleTransportContract") {
             appendLine("cccd_permission_failure=notification_state_error")
             appendLine("status=passed")
         }
-        releaseBleTransportContractReport.get().asFile.apply {
+        reportFile.apply {
             parentFile.mkdirs()
             writeText(report)
         }
         logger.lifecycle(
-            "REL-002 Android BLE transport contract passed: ${releaseBleTransportContractReport.get().asFile}",
+            "REL-002 Android BLE transport contract passed: $reportFile",
         )
     }
 }

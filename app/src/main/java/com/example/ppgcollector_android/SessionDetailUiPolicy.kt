@@ -12,6 +12,25 @@ internal enum class SessionDetailSection {
 }
 
 internal object SessionDetailUiPolicy {
+    fun bloodPressureError(systolic: Int?, diastolic: Int?): String? = when {
+        systolic == null && diastolic == null -> null
+        systolic == null || diastolic == null -> "请同时填写 SBP 和 DBP"
+        systolic !in 20..300 || diastolic !in 10..250 -> "SBP 须为 20–300，DBP 须为 10–250"
+        systolic <= diastolic -> "SBP 必须高于 DBP"
+        else -> null
+    }
+
+    fun bloodPressureTextError(systolic: String, diastolic: String): String? =
+        if ((systolic.isNotBlank() && systolic.toIntOrNull() == null) ||
+            (diastolic.isNotBlank() && diastolic.toIntOrNull() == null)) "请输入有效整数"
+        else bloodPressureError(systolic.toIntOrNull(), diastolic.toIntOrNull())
+
+    fun signalState(loading: Boolean, error: String?, hasSignal: Boolean): SessionSignalUiState = when {
+        hasSignal -> SessionSignalUiState.READY
+        error != null -> SessionSignalUiState.FAILED
+        loading -> SessionSignalUiState.LOADING
+        else -> SessionSignalUiState.EMPTY
+    }
     val defaultExpandedSections: Set<SessionDetailSection> = emptySet()
 
     fun toggle(
@@ -29,6 +48,15 @@ internal object SessionDetailUiPolicy {
         }
 
     fun durationLabel(seconds: Long?): String = seconds?.let { "$it 秒" } ?: "—"
+}
+
+internal enum class SessionSignalUiState { LOADING, FAILED, EMPTY, READY }
+
+internal object ReviewAdaptiveLayoutPolicy {
+    const val rangeColumns = 2
+    const val rangeButtonMinimumHeightDp = 48
+    fun sidebarWidthDp(widthDp: Float): Float = (widthDp * 0.31f).coerceIn(220f, 340f)
+    fun rangeButtonWidthDp(widthDp: Float): Float = (sidebarWidthDp(widthDp) - 40f - 6f) / rangeColumns
 }
 
 internal enum class SessionSignalDrawLayer {
@@ -49,7 +77,7 @@ internal object SessionGapMarkerPolicy {
         breakCount > 0 && !isHighDensity(breakCount, sampleCount)
 
     fun pathBreaksForRawStage(isRawStage: Boolean, breakIndices: IntArray): IntArray =
-        if (isRawStage) breakIndices else intArrayOf()
+        if (isRawStage) breakIndices else SessionRenderKey.EMPTY_INDICES
 
     fun drawLayers(showMarkers: Boolean): List<SessionSignalDrawLayer> = buildList {
         if (showMarkers) add(SessionSignalDrawLayer.GAP_MARKERS)

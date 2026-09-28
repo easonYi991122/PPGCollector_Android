@@ -35,7 +35,6 @@ private enum class AppPage { LIVE, SESSIONS, SESSION_DETAIL, WORKBENCH, COMPARE 
 class MainActivity : ComponentActivity() {
     private val captureViewModel: CaptureViewModel by viewModels()
     private val sessionsViewModel: SessionsViewModel by viewModels()
-    private var archiveExportMode = false
 
     private val bleCoordinator
         get() = (application as PpgCollectorApplication).bleCoordinator
@@ -53,19 +52,13 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         captureViewModel.setNotificationPermissionResult(granted)
-        if (granted) captureViewModel.startRecording(notificationPermissionGranted = true)
     }
 
     private val exportLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { destination ->
-        if (destination == null) {
-            sessionsViewModel.cancelExportPicker()
-            archiveExportMode = false
-        } else {
-            if (archiveExportMode) sessionsViewModel.exportArchiveTo(destination)
-            else sessionsViewModel.exportSelectedTo(destination)
-            archiveExportMode = false
+        sessionsViewModel.pendingExport?.let { request ->
+            sessionsViewModel.completeExportPicker(request.token, destination)
         }
     }
 
@@ -110,10 +103,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                BackHandler(enabled = page != AppPage.LIVE) {
+                LaunchedEffect(captureStatus.recording, sessionName) {
+                    sessionsViewModel.observeRecording(captureStatus.recording, pendingBaseName = sessionName)
+                }
+                fun leavePage() {
                     page = when (page) {
                         AppPage.WORKBENCH -> AppPage.SESSION_DETAIL
-                        AppPage.SESSION_DETAIL, AppPage.COMPARE -> AppPage.SESSIONS
+                        AppPage.SESSION_DETAIL -> {
+                            sessionsViewModel.clearSelection()
+                            AppPage.SESSIONS
+                        }
+                        AppPage.COMPARE -> {
+                            sessionsViewModel.releaseArtifacts()
+                            AppPage.SESSIONS
+                        }
                         AppPage.SESSIONS -> {
                             sessionsViewModel.cancelSessionSelection()
                             AppPage.LIVE
@@ -121,6 +124,8 @@ class MainActivity : ComponentActivity() {
                         AppPage.LIVE -> AppPage.LIVE
                     }
                 }
+
+                BackHandler(enabled = page != AppPage.LIVE, onBack = ::leavePage)
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -147,6 +152,11 @@ class MainActivity : ComponentActivity() {
                             onParticipantDraftChange = captureViewModel::setParticipantDraft,
                             onUseSuggestedName = captureViewModel::useSuggestedSessionName,
                             onStartCapture = ::requestCaptureStart,
+                            onRequestNotificationPermission = { notificationPermissionLauncher.launch(POST_NOTIFICATIONS_PERMISSION) },
+                            onOpenNotificationSettings = {
+                                startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+                            },
                             onStopCapture = captureViewModel::stopRecording,
                             onOpenBloodPressure = captureViewModel::openManualBloodPressure,
                             onScan = ::requestScan,
@@ -164,10 +174,7 @@ class MainActivity : ComponentActivity() {
                             val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                             SavedSessionsRoute(
                                 state = sessions,
-                                onBack = {
-                                    sessionsViewModel.cancelSessionSelection()
-                                    page = AppPage.LIVE
-                                },
+                                onBack = ::leavePage,
                                 onRefresh = sessionsViewModel::refresh,
                                 onSelect = { item ->
                                     sessionsViewModel.select(item)
@@ -194,10 +201,9 @@ class MainActivity : ComponentActivity() {
                             val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                             SavedSessionDetailScreen(
                                 state = sessions,
-                                onBack = {
-                                    sessionsViewModel.clearSelection()
-                                    page = AppPage.SESSIONS
-                                },
+                                onBack = ::leavePage,
+                                onRetrySignal = sessionsViewModel::retrySignal,
+                                onLoadArtifacts = sessionsViewModel::loadArtifacts,
                                 onCancelInspection = sessionsViewModel::cancelInspection,
                                 onRequestExport = ::requestSessionExport,
                                 onRecover = sessionsViewModel::recoverSelected,
@@ -215,7 +221,9 @@ class MainActivity : ComponentActivity() {
                             val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                             FullscreenSessionWorkbenchScreen(
                                 state = sessions,
-                                onBack = { page = AppPage.SESSION_DETAIL },
+                                onBack = ::leavePage,
+                                onRetrySignal = sessionsViewModel::retrySignal,
+                                onLoadArtifacts = sessionsViewModel::loadArtifacts,
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -224,7 +232,8 @@ class MainActivity : ComponentActivity() {
                             val sessions by sessionsViewModel.state.collectAsStateWithLifecycle()
                             SessionComparisonScreen(
                                 state = sessions,
-                                onBack = { page = AppPage.SESSIONS },
+                                onBack = ::leavePage,
+                                onLoadArtifacts = sessionsViewModel::loadArtifacts,
                                 modifier = Modifier.padding(innerPadding),
                             )
                         }
@@ -245,6 +254,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         bleCoordinator.setPreviewUiActive(true)
+        captureViewModel.setNotificationPermissionResult(notificationPermissionGranted())
         captureViewModel.onStart()
     }
 
@@ -263,26 +273,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestCaptureStart() {
-        val requiresNotificationPermission =
-            CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(Build.VERSION.SDK_INT)
-        if (!requiresNotificationPermission ||
+    private fun notificationPermissionGranted(): Boolean =
+        !CaptureNotificationPermissionPolicy.isRuntimePermissionRequired(Build.VERSION.SDK_INT) ||
             checkSelfPermission(POST_NOTIFICATIONS_PERMISSION) == PackageManager.PERMISSION_GRANTED
-        ) {
-            captureViewModel.setNotificationPermissionResult(granted = true)
-            captureViewModel.startRecording()
-        } else {
-            notificationPermissionLauncher.launch(POST_NOTIFICATIONS_PERMISSION)
-        }
+
+    private fun requestCaptureStart() {
+        val granted = notificationPermissionGranted()
+        captureViewModel.setNotificationPermissionResult(granted)
+        if (granted) captureViewModel.startRecording()
+        else notificationPermissionLauncher.launch(POST_NOTIFICATIONS_PERMISSION)
     }
 
     private fun requestSessionExport(item: SessionListItemUi) {
-        archiveExportMode = false
-        exportLauncher.launch("${item.baseName}.zip")
+        sessionsViewModel.prepareSingleExport(item)?.let { exportLauncher.launch("${item.baseName}.zip") }
     }
 
     private fun requestArchiveExport() {
-        archiveExportMode = true
-        exportLauncher.launch("ppgcollector-archive.zip")
+        sessionsViewModel.prepareArchiveExport()?.let { exportLauncher.launch("ppgcollector-archive.zip") }
     }
 }

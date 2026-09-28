@@ -389,6 +389,193 @@ class BleCoordinatorTest {
         }
     }
 
+    @Test
+    fun ownerTickerDrivesEveryConnectionDeadlineAndRejectsLateCallbacks() {
+        for (stage in BleConnectionOperation.entries) {
+            val ticker = FakeBleOwnerTicker()
+            val transport = FakeBleTransport(autoCompleteMtuRequest = false)
+            val coordinator = clockedCoordinator(transport, ticker)
+            try {
+                discoverAndConnect(coordinator, transport)
+                // CONNECT starts at 1000, not zero: a small tick cannot expire it.
+                ticker.advanceBy(0.1)
+                assertEquals(BleConnectionPhase.Connecting(deviceId), coordinator.snapshot.phase)
+                val profile = CupBleDeviceProfile.cupNusBringUp
+                if (stage != BleConnectionOperation.CONNECT) transport.emit(BleTransportEvent.Connected(deviceId))
+                if (stage !in setOf(BleConnectionOperation.CONNECT, BleConnectionOperation.MTU_NEGOTIATION)) {
+                    transport.emit(BleTransportEvent.MtuChanged(deviceId, 247, null))
+                }
+                if (stage in setOf(BleConnectionOperation.CHARACTERISTIC_DISCOVERY, BleConnectionOperation.NOTIFICATION_SUBSCRIPTION)) {
+                    transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+                }
+                if (stage == BleConnectionOperation.NOTIFICATION_SUBSCRIPTION) emitCharacteristics(transport)
+                ticker.advanceBy(20.0)
+                assertEquals(stage, coordinator.snapshot.attemptDiagnostics.lastTimedOutOperation)
+                val expired = coordinator.snapshot.phase
+                if (stage == BleConnectionOperation.MTU_NEGOTIATION) {
+                    assertEquals(BleConnectionPhase.DiscoveringServices(deviceId), expired)
+                    assertEquals(BleMtuNegotiationStatus.FALLBACK, coordinator.snapshot.mtu.status)
+                    transport.emit(BleTransportEvent.MtuChanged(deviceId, 517, null))
+                } else {
+                    assertTrue("$stage should fail", expired is BleConnectionPhase.Failed)
+                    when (stage) {
+                        BleConnectionOperation.CONNECT -> transport.emit(BleTransportEvent.Connected(deviceId))
+                        BleConnectionOperation.SERVICE_DISCOVERY -> transport.emit(BleTransportEvent.ServicesDiscovered(deviceId, listOf(profile.serviceUuid), null))
+                        BleConnectionOperation.CHARACTERISTIC_DISCOVERY -> emitCharacteristics(transport)
+                        BleConnectionOperation.NOTIFICATION_SUBSCRIPTION -> transport.emit(BleTransportEvent.NotificationStateChanged(deviceId, profile.notifyCharacteristicUuid, true, null))
+                        else -> Unit
+                    }
+                }
+                assertEquals(expired, coordinator.snapshot.phase)
+                assertTrue(coordinator.snapshot.diagnostics.ignoredStaleCallbackCount > 0)
+            } finally { coordinator.close() }
+        }
+    }
+
+    @Test
+    fun ownerTickerRunsProbeBeforeFirstNotificationAndIgnoresCancelledGeneration() {
+        val ticker = FakeBleOwnerTicker()
+        val transport = FakeBleTransport()
+        val coordinator = clockedCoordinator(transport, ticker)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            assertFalse(coordinator.previewDiagnostics.previewWorkerActive)
+            ticker.advanceBy(3.0)
+            assertTrue(coordinator.snapshot.protocolProbeTimedOut)
+            assertEquals(StreamFreshness.STALE, coordinator.snapshot.freshness)
+            coordinator.disconnect()
+            transport.emit(BleTransportEvent.Disconnected(deviceId, null))
+            discoverAndConnect(coordinator, transport)
+            ticker.deliverCancelledTicks()
+            assertEquals(BleConnectionPhase.Connecting(deviceId), coordinator.snapshot.phase)
+            ticker.advanceBy(1.0)
+            assertEquals(BleConnectionPhase.Connecting(deviceId), coordinator.snapshot.phase)
+        } finally { coordinator.close() }
+    }
+
+    @Test
+    fun backgroundLegalFlowStaysFreshOverTenSecondsGarbageAndSilenceExpire() {
+        val ticker = FakeBleOwnerTicker()
+        val transport = FakeBleTransport()
+        val coordinator = clockedCoordinator(transport, ticker)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            coordinator.setPreviewUiActive(false)
+            var raw = 0
+            coordinator.onRawChunk = { raw++ }
+            repeat(15) { index ->
+                transport.emit(BleTransportEvent.ValueReceived(deviceId, CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    encodeCupBatchFrame(batchFrame(index.toUByte())), null))
+                ticker.advanceBy(1.0)
+                assertEquals(StreamFreshness.FRESH, coordinator.snapshot.freshness)
+            }
+            assertEquals(15, raw)
+            assertFalse(coordinator.previewDiagnostics.previewWorkerActive)
+            repeat(8) {
+                transport.emit(BleTransportEvent.ValueReceived(deviceId, CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                    byteArrayOf(1, 2, 3), null))
+                ticker.advanceBy(1.0)
+            }
+            assertEquals(StreamFreshness.STALE, coordinator.snapshot.freshness)
+            transport.emit(BleTransportEvent.ValueReceived(deviceId, CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                encodeCupBatchFrame(batchFrame(16u)), null))
+            assertEquals(StreamFreshness.FRESH, coordinator.snapshot.freshness)
+            ticker.advanceBy(3.0)
+            assertEquals(StreamFreshness.STALE, coordinator.snapshot.freshness)
+        } finally { coordinator.close() }
+    }
+
+    @Test
+    fun invisiblePreviewStillConfirmsNordicAndAdsFramesAndRejectsRepeatedSequence() {
+        for (mode in listOf(CupStreamProtocolMode.SENSOR_PACKET_168, CupStreamProtocolMode.ADS1292R_120)) {
+            val ticker = FakeBleOwnerTicker()
+            val transport = FakeBleTransport()
+            val coordinator = clockedCoordinator(transport, ticker)
+            fun wire(index: Int) = if (mode == CupStreamProtocolMode.ADS1292R_120) {
+                Ads1292rPacketProtocol.encode(adsPacket(index.toUInt()))
+            } else com.example.ppgcollector_android.core.protocol.encodeCupSensorPacketFrame(
+                batchFrame(index.toUByte()).copy(sequenceNumber = index.toUInt(),
+                    wireProfile = com.example.ppgcollector_android.core.protocol.CupWireFrameProfile.SENSOR_PACKET_168))
+            fun emit(index: Int) = transport.emit(BleTransportEvent.ValueReceived(deviceId,
+                CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid, wire(index), null))
+            try {
+                subscribe(coordinator, transport, "Nordic_UART_Service")
+                coordinator.setPreviewUiActive(false)
+                repeat(5, ::emit)
+                ticker.advanceBy(0.0)
+                assertEquals(mode, coordinator.snapshot.activeStreamProtocolMode)
+                assertEquals(StreamFreshness.FRESH, coordinator.snapshot.freshness)
+                repeat(15) { index ->
+                    emit(index + 5)
+                    ticker.advanceBy(1.0)
+                    assertEquals(StreamFreshness.FRESH, coordinator.snapshot.freshness)
+                }
+                assertFalse(coordinator.previewDiagnostics.previewWorkerActive)
+                repeat(5) { emit(19); ticker.advanceBy(1.0) }
+                assertEquals(StreamFreshness.STALE, coordinator.snapshot.freshness)
+            } finally { coordinator.close() }
+        }
+    }
+
+    @Test
+    fun garbageBeforeFirstLegalFrameCannotReturnStaleProbeToWaiting() {
+        for (name in listOf("CUP-SIM", "Nordic_UART_Service")) {
+            val ticker = FakeBleOwnerTicker()
+            val transport = FakeBleTransport()
+            val coordinator = clockedCoordinator(transport, ticker)
+            try {
+                subscribe(coordinator, transport, name)
+                coordinator.setPreviewUiActive(false)
+                ticker.advanceBy(10.0)
+                repeat(20) {
+                    transport.emit(BleTransportEvent.ValueReceived(deviceId,
+                        CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid, byteArrayOf(1, 2, 3), null))
+                    assertEquals(StreamFreshness.STALE, coordinator.snapshot.freshness)
+                }
+            } finally { coordinator.close() }
+        }
+    }
+
+    @Test
+    fun oldRecordingOwnerCannotDetachSuccessorSink() {
+        val transport = FakeBleTransport()
+        val ticker = FakeBleOwnerTicker()
+        val coordinator = clockedCoordinator(transport, ticker)
+        try {
+            subscribe(coordinator, transport, "CUP-SIM")
+            val old = Any()
+            val current = Any()
+            var accepted = 0
+            coordinator.attachRecordingSink(old) { error("stale sink") }
+            coordinator.attachRecordingSink(current) { accepted++ }
+            coordinator.detachRecordingSink(old)
+            transport.emit(BleTransportEvent.ValueReceived(deviceId, CupBleDeviceProfile.cupNusBringUp.notifyCharacteristicUuid,
+                encodeCupBatchFrame(batchFrame(1u)), null))
+            assertEquals(1, accepted)
+            coordinator.detachRecordingSink(current)
+            assertEquals(null, coordinator.onRawChunk)
+        } finally { coordinator.close() }
+    }
+
+    private fun clockedCoordinator(transport: FakeBleTransport, ticker: FakeBleOwnerTicker): BleCoordinator {
+        val coordinator = BleCoordinator(transport, apiLevel = 33, uptimeSeconds = { ticker.nowSeconds },
+            hostMonotonicNanos = { ticker.nowNanos }, ticker = ticker)
+        coordinator.applyPermissionResult(mapOf("android.permission.BLUETOOTH_SCAN" to true, "android.permission.BLUETOOTH_CONNECT" to true))
+        transport.emit(BleTransportEvent.AvailabilityChanged(BluetoothAvailability.POWERED_ON))
+        return coordinator
+    }
+
+    private fun discoverAndConnect(coordinator: BleCoordinator, transport: FakeBleTransport) {
+        transport.emit(BleTransportEvent.Discovered(BleTransportDiscovery(deviceId, "CUP-SIM", -40, true, Instant.EPOCH)))
+        assertEquals(BleCoordinatorAction.STARTED, coordinator.connect(deviceId))
+    }
+
+    private fun emitCharacteristics(transport: FakeBleTransport) {
+        val profile = CupBleDeviceProfile.cupNusBringUp
+        transport.emit(BleTransportEvent.CharacteristicsDiscovered(deviceId, profile.serviceUuid,
+            listOf(BleTransportCharacteristic(profile.notifyCharacteristicUuid, listOf("notify"), true, false)), null))
+    }
+
     private fun grantedCoordinator(transport: FakeBleTransport): BleCoordinator {
         val coordinator = BleCoordinator(transport, apiLevel = 33)
         coordinator.applyPermissionResult(

@@ -45,67 +45,57 @@ object CaptureBloodPressureSeries {
         event.diastolicMmHg.toString(),
     ).joinToString(",", transform = ::escapeSessionCsvField) + "\n"
 
-    fun read(path: Path): List<ManualBloodPressureEvent> {
+    fun read(
+        path: Path,
+        acceptedSessionIds: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = {},
+    ): List<ManualBloodPressureEvent> {
         if (!java.nio.file.Files.isRegularFile(path)) return emptyList()
-        java.nio.file.Files.newBufferedReader(path).use { reader ->
-            require(reader.readLine() == header.trimEnd('\n')) { "unexpected blood-pressure header" }
-            val result = ArrayList<ManualBloodPressureEvent>()
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isBlank()) continue
-                val fields = parseSessionCsvFields(line.removeSuffix("\r"))
-                require(fields.size == columns.size) { "expected ${columns.size} blood-pressure fields" }
-                require(fields[0] == schemaVersion) { "unsupported blood-pressure schema" }
+        val result = ArrayList<ManualBloodPressureEvent>()
+        val report = scanSessionSidecar(path, header, acceptedSessionIds, cancellationCheck,
+            onValidRow = { fields ->
+                require(result.size < 10_000) { "blood pressure event count exceeds limit" }
                 result += ManualBloodPressureEvent(
-                    reference = CaptureReferenceTimestamp(
-                        sessionId = fields[1],
-                        // v1 sidecar predates a persisted generation column; the
-                        // session id and source cursor remain the stable join key.
-                        connectionGeneration = 0L,
-                        eventIndex = fields[2].toLong(),
-                        sourceSampleIndex = fields[3].toLong(),
-                        sourceTimeSeconds = fields[4].toDouble(),
-                        dialogOpenHostMonotonicNanoseconds = fields[5].toULong(),
-                        dialogOpenUtc = Instant.parse(fields[6]),
-                    ),
-                    savedUtc = Instant.parse(fields[7]),
-                    systolicMmHg = fields[8].toInt(),
-                    diastolicMmHg = fields[9].toInt(),
+                    CaptureReferenceTimestamp(fields[1], 0, fields[2].toLong(), fields[3].toLong(),
+                        fields[4].toDouble(), fields[5].toULong(), Instant.parse(fields[6])),
+                    Instant.parse(fields[7]), fields[8].toInt(), fields[9].toInt(),
                 )
-            }
-            return result
-        }
+            }, rowValidator = ::validateRow)
+        require(report.isStructurallyValid) { report.monotonicityError ?: "unexpected blood-pressure header" }
+        return result
     }
 
-    fun scan(path: Path): CaptureSidecarScanReport =
-        scanSessionSidecar(path, header) { fields, previous ->
-            if (fields.size != columns.size) return@scanSessionSidecar "expected ${columns.size} fields"
-            if (fields[0] != schemaVersion) return@scanSessionSidecar "unsupported schema_version"
-            if (fields[1].isBlank()) return@scanSessionSidecar "session_id is blank"
-            val event = fields[2].toLongOrNull() ?: return@scanSessionSidecar "invalid event_index"
-            fields[3].toLongOrNull() ?: return@scanSessionSidecar "invalid source_sample_index"
-            fields[4].toDoubleOrNull()?.takeIf(Double::isFinite)
-                ?: return@scanSessionSidecar "invalid source_time_s"
-            fields[5].toULongOrNull() ?: return@scanSessionSidecar "invalid dialog_open_host_monotonic_ns"
-            runCatching { Instant.parse(fields[6]) }.getOrElse {
-                return@scanSessionSidecar "invalid dialog_open_utc"
-            }
-            runCatching { Instant.parse(fields[7]) }.getOrElse {
-                return@scanSessionSidecar "invalid saved_utc"
-            }
-            val systolic = fields[8].toIntOrNull() ?: return@scanSessionSidecar "invalid systolic"
-            val diastolic = fields[9].toIntOrNull() ?: return@scanSessionSidecar "invalid diastolic"
-            if (systolic <= 0 || diastolic <= 0) return@scanSessionSidecar "blood pressure must be positive"
-            if (systolic <= diastolic) return@scanSessionSidecar "systolic must be greater than diastolic"
-            if (previous != null && event <= (previous[2].toLongOrNull() ?: -1L)) {
-                return@scanSessionSidecar "event_index is not increasing"
-            }
-            if (previous != null && fields[1] != previous[1]) {
-                return@scanSessionSidecar "session_id changed within sidecar"
-            }
-            if (previous != null && fields[3].toLongOrNull()!! < previous[3].toLongOrNull()!!) {
-                return@scanSessionSidecar "source_sample_index is not monotonic"
-            }
-            null
+    fun scan(
+        path: Path,
+        acceptedSessionIds: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = {},
+    ): CaptureSidecarScanReport =
+        scanSessionSidecar(path, header, acceptedSessionIds, cancellationCheck, rowValidator = ::validateRow)
+
+    private fun validateRow(fields: List<String>, previous: List<String>?): String? {
+        if (fields.size != columns.size) return "expected ${columns.size} fields"
+        if (fields[0] != schemaVersion) return "unsupported schema_version"
+        if (fields[1].isBlank()) return "session_id is blank"
+        val event = fields[2].toLongOrNull() ?: return "invalid event_index"
+        val cursor = fields[3].toLongOrNull() ?: return "invalid source_sample_index"
+        val time = fields[4].toDoubleOrNull()?.takeIf(Double::isFinite) ?: return "invalid source_time_s"
+        if (event < 0 || cursor < 0 || kotlin.math.abs(time - cursor / 100.0) > 0.000001) return "invalid BP cursor/time"
+        fields[5].toULongOrNull() ?: return "invalid dialog_open_host_monotonic_ns"
+        try { Instant.parse(fields[6]); Instant.parse(fields[7]) }
+        catch (_: java.time.format.DateTimeParseException) { return "invalid blood-pressure UTC" }
+        val systolic = fields[8].toIntOrNull() ?: return "invalid systolic"
+        val diastolic = fields[9].toIntOrNull() ?: return "invalid diastolic"
+        if (systolic <= 0 || diastolic <= 0) return "blood pressure must be positive"
+        if (systolic <= diastolic) return "systolic must be greater than diastolic"
+        if (previous != null && event <= (previous[2].toLongOrNull() ?: -1L)) {
+            return "event_index is not increasing"
         }
+        if (previous != null && fields[1] != previous[1]) {
+            return "session_id changed within sidecar"
+        }
+        if (previous != null && fields[3].toLongOrNull()!! < previous[3].toLongOrNull()!!) {
+            return "source_sample_index is not monotonic"
+        }
+        return null
+    }
 }

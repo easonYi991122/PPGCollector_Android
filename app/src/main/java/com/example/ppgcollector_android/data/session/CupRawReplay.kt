@@ -75,10 +75,11 @@ object CupRawReplayEngine {
     fun replay(
         path: Path,
         protocolMode: CupStreamProtocolMode = CupStreamProtocolMode.BATCH_COMPATIBLE,
+        cancellationCheck: () -> Unit = {},
         onAcceptedSample: (CupReplaySample) -> Unit,
     ): CupRawReplayReport {
         val accumulator = ReplayAccumulator(protocolMode, onAcceptedSample)
-        val summary = CupRawReader.scan(path) { record ->
+        val summary = CupRawReader.scan(path, cancellationCheck) { record ->
             accumulator.receive(record)
         }
         return accumulator.report(summary)
@@ -113,8 +114,29 @@ object CupRawReplayEngine {
 
         fun receive(record: CupRawRecord) {
             rawPayloadBytes += record.chunk.size.toLong()
-            val frames = if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
-                adsDecoder.feed(record.chunk).map { packet ->
+            // Before the first complete frame, feed incrementally so discarded bytes
+            // after that frame in the same notification cannot become alignment bytes.
+            var offset = 0
+            while (!hasDecodedFrame && offset < record.chunk.size) {
+                val firstFrames = decode(byteArrayOf(record.chunk[offset++]))
+                if (firstFrames.isNotEmpty() || decoder.stats.auxiliaryFrames > 0) {
+                    leadingAlignmentBytes = if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                        adsDecoder.stats.discardedBytes.toIntSaturated()
+                    } else decoder.stats.bytesDiscarded
+                    hasDecodedFrame = true
+                    acceptDecoded(firstFrames, record)
+                }
+            }
+            while (offset < record.chunk.size) {
+                val end = minOf(offset + 128, record.chunk.size)
+                acceptDecoded(decode(record.chunk.copyOfRange(offset, end)), record)
+                offset = end
+            }
+        }
+
+        private fun decode(chunk: ByteArray): List<CupBatchFrame> =
+            if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
+                adsDecoder.feed(chunk).map { packet ->
                     CupBatchFrame(
                         sequence = packet.sequenceNumber.toUByte(),
                         sequenceNumber = packet.sequenceNumber,
@@ -124,20 +146,9 @@ object CupRawReplayEngine {
                         },
                     )
                 }
-            } else {
-                decoder.feed(record.chunk)
-            }
-            if (!hasDecodedFrame && frames.isNotEmpty()) {
-                // Raw-first capture can attach while the shared live decoder is already
-                // inside a frame. Replay has no earlier context, so this prefix is an
-                // auditable alignment condition rather than post-alignment corruption.
-                leadingAlignmentBytes = if (protocolMode == CupStreamProtocolMode.ADS1292R_120) {
-                    adsDecoder.stats.discardedBytes
-                } else {
-                    decoder.stats.bytesDiscarded.toLong()
-                }.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-                hasDecodedFrame = true
-            }
+            } else decoder.feed(chunk)
+
+        private fun acceptDecoded(frames: List<CupBatchFrame>, record: CupRawRecord) {
             frames.forEach { frame ->
                 when (val event = sequenceTracker.observe(frame)) {
                     CupSequenceEvent.Duplicate,

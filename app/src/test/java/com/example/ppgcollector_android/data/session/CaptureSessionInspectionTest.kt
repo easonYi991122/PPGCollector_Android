@@ -18,6 +18,62 @@ import org.junit.Test
 
 class CaptureSessionInspectionTest {
     @Test
+    fun equalLineCountBogusWrongIdentityAndLegalAdcMutationAreRejected() {
+        for (mutation in listOf("bogus", "identity", "adc")) {
+            val root = Files.createTempDirectory("csv-evidence-$mutation")
+            try {
+                val session = ReviewSessionFixtures.writeProtocols(root).single { it.baseName == "PPG-KOTLIN-2" }
+                val files = CaptureSessionRepository.expectedFiles(session.directory)
+                val originalLines = Files.readAllLines(files.csv)
+                val lines = originalLines.toMutableList()
+                lines[4] = if (mutation == "bogus") "bogus" else {
+                    val fields = parseSessionCsvFields(lines[4]).toMutableList()
+                    fields[if (mutation == "identity") 1 else 7] = if (mutation == "identity") "foreign" else "123456"
+                    fields.joinToString(",")
+                }
+                Files.writeString(files.csv, lines.joinToString("\n", postfix = "\n"))
+                val before = files.allPaths.associateWith { CaptureExportSource.hash(it) }
+                val inspection = CaptureSessionInspectionService.inspect(session.directory)
+                assertFalse(inspection.isVerifiedConsistent)
+                assertEquals(3L, inspection.csv!!.completeDataRowCount)
+                assertTrue(inspection.findings.any { it.id == "csv-row" })
+                val recovered = CaptureSessionRecoveryService.recover(session, "copy_$mutation")
+                assertEquals(Files.size(files.raw), recovered.rawCopiedBytes)
+                assertEquals(3L, CaptureSessionInspectionService.scanCsv(recovered.csvPath).completeDataRowCount)
+                assertTrue(CaptureSessionInspectionService.inspect(recovered.directory).findings.any { it.id == "raw-csv-sample-count" })
+                before.forEach { (path, hash) -> assertEquals(hash, CaptureExportSource.hash(path)) }
+            } finally { root.toFile().deleteRecursively() }
+        }
+    }
+
+    @Test
+    fun cancellationEscapesInspectionWithoutBecomingDamage() {
+        val root = Files.createTempDirectory("inspection-cancel")
+        try {
+            val session = ReviewSessionFixtures.writeProtocols(root).first()
+            val cancellation = java.util.concurrent.CancellationException("inspection test")
+            var checks = 0
+            val thrown = org.junit.Assert.assertThrows(java.util.concurrent.CancellationException::class.java) {
+                CaptureSessionInspectionService.inspect(session.directory, cancellationCheck = {
+                    if (++checks == 6) throw cancellation
+                })
+            }
+            org.junit.Assert.assertSame(cancellation, thrown)
+            assertEquals(6, checks)
+            CaptureSessionInspectionService.inspect(session.directory) // The lease was released.
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun onlyGarbageBeforeFirstFrameIsLeadingAlignment() {
+        val report = CupRawReplayEngine.replay(rawBytes(1u,
+            byteArrayOf(1, 2, 3) + referenceFrame(1u) + byteArrayOf(4, 5, 6, 7)))
+        assertEquals(3, report.leadingAlignmentBytes)
+        assertEquals(4, report.structuralDiscardedBytes)
+        assertFalse(report.isStructurallyClean)
+    }
+
+    @Test
     fun replayUsesOnePipelineAndKeepsOnlyRecentSamples() {
         val first = referenceFrame(42u)
         val second = referenceFrame(44u)
@@ -174,7 +230,10 @@ class CaptureSessionInspectionTest {
                     repeat(CupBatchProtocolV1.samplesPerFrame) { sampleIndex ->
                         append(
                             CaptureCsvFormatter.format(
-                                csvRow(frame, sampleIndex),
+                                csvRow(frame, sampleIndex).copy(
+                                    sampleIndex = (frameIndex * 20 + sampleIndex).toLong(),
+                                    hostFrameTimeNanoseconds = if (frameIndex == 0) 1_000u else 3_000u,
+                                ),
                                 frameIndex * CupBatchProtocolV1.samplesPerFrame.toLong(),
                             ),
                         )
@@ -219,7 +278,7 @@ class CaptureSessionInspectionTest {
             Files.writeString(directory.resolve("$base.csv"), buildString {
                 append(CaptureCsvSchema.header)
                 repeat(CupBatchProtocolV1.samplesPerFrame) { index ->
-                    append(CaptureCsvFormatter.format(csvRow(frame, index), 0))
+                    append(CaptureCsvFormatter.format(csvRow(frame, index).copy(hostFrameTimeNanoseconds = 2_000u), 0))
                 }
             })
             Files.writeString(
@@ -238,7 +297,7 @@ class CaptureSessionInspectionTest {
 
     @Test
     fun csvScanIsStreamingAndClassifiesNonNewlineTerminatedTail() {
-        val complete = CaptureCsvSchema.header + "row,1\n"
+        val complete = CaptureCsvSchema.header + CaptureCsvFormatter.format(csvRow(referenceFrame(1u), 0), 0)
         val path = Files.createTempFile("capture-scan", ".csv")
         try {
             Files.writeString(path, complete + "partial")
@@ -355,7 +414,7 @@ class CaptureSessionInspectionTest {
         .toByteArray()
 
     private fun csvRow(frame: ByteArray, index: Int): CaptureCsvRow = CaptureCsvRow(
-        schemaVersion = "capture_csv_v1",
+        schemaVersion = CaptureCsvSchema.version1,
         sessionId = "session",
         sampleIndex = index.toLong(),
         hostFrameTimeNanoseconds = 1_000u,

@@ -88,6 +88,8 @@ data class CaptureSessionRecoveryMetadata(
     val sourceBloodPressureSha256: String? = null,
     val sourceBloodPressureTotalBytes: Long = 0,
     val sourceBloodPressureCopiedBytes: Long = 0,
+    val parentSessionId: String? = null,
+    val originalCanonicalPrefix: String? = null,
 )
 
 data class CaptureSessionMetadata(
@@ -128,6 +130,10 @@ data class CaptureSessionMetadata(
     val bloodPressureUpdatedUtc: Instant? = null,
 )
 
+/** An empty provenance set must never turn a damaged session into an identity wildcard. */
+internal fun CaptureSessionMetadata?.allowedRowSessionIds(): Set<String> =
+    setOfNotNull(this?.sessionId, this?.recovery?.sourceSessionId).ifEmpty { setOf("") }
+
 class CaptureSessionMetadataJsonException(message: String) :
     IllegalArgumentException(message)
 
@@ -148,11 +154,15 @@ object CaptureSessionMetadataCodec {
         decode(bytes.toString(Charsets.UTF_8))
 
     /** Reads bounded UTF-8 metadata without relying on post-API-26 Files helpers. */
-    fun decode(path: Path): CaptureSessionMetadata {
+    fun decode(path: Path, cancellationCheck: () -> Unit = {}): CaptureSessionMetadata =
+        decode(readBytes(path, cancellationCheck))
+
+    internal fun readBytes(path: Path, cancellationCheck: () -> Unit): ByteArray {
         val bytes = ByteArrayOutputStream()
         Files.newInputStream(path, StandardOpenOption.READ).use { input ->
             val buffer = ByteArray(8 * 1024)
             while (true) {
+                cancellationCheck()
                 val count = input.read(buffer)
                 if (count < 0) break
                 if (bytes.size() + count > maxMetadataBytes) {
@@ -161,7 +171,8 @@ object CaptureSessionMetadataCodec {
                 bytes.write(buffer, 0, count)
             }
         }
-        return decode(bytes.toByteArray())
+        cancellationCheck()
+        return bytes.toByteArray()
     }
 
     private fun toJson(metadata: CaptureSessionMetadata): JsonValue.ObjectValue =
@@ -261,6 +272,8 @@ object CaptureSessionMetadataCodec {
             "recovered_utc" to string(recovery.recoveredUtc.toString()),
             "recovery_soft_version" to string(recovery.recoverySoftVersion),
             "source_directory_name" to string(recovery.sourceDirectoryName),
+            "parent_session_id" to (recovery.parentSessionId?.let(::string) ?: JsonValue.NullValue),
+            "original_canonical_prefix" to (recovery.originalCanonicalPrefix?.let(::string) ?: JsonValue.NullValue),
             "source_session_id" to (recovery.sourceSessionId?.let(::string)
                 ?: JsonValue.NullValue),
             "source_raw_sha256" to string(recovery.sourceRawSha256),
@@ -384,6 +397,10 @@ object CaptureSessionMetadataCodec {
             recoveredUtc = recovery.requiredInstant("recovered_utc"),
             recoverySoftVersion = recovery.requiredString("recovery_soft_version"),
             sourceDirectoryName = recovery.requiredString("source_directory_name"),
+            parentSessionId = recovery.optionalString("parent_session_id"),
+            originalCanonicalPrefix = recovery.optionalString("original_canonical_prefix")?.also {
+                if (it != "PPG" && it != "MB") throw CaptureSessionMetadataJsonException("invalid original_canonical_prefix")
+            },
             sourceSessionId = recovery.optionalString("source_session_id"),
             sourceRawSha256 = recovery.requiredString("source_raw_sha256"),
             sourceCsvSha256 = recovery.requiredString("source_csv_sha256"),

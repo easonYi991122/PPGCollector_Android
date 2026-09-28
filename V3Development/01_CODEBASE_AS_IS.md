@@ -261,6 +261,17 @@ ViewModel 另加通知权限、FGS 启动失败。UI：`开始录制` 的 `enabl
 - `loadSignalTrace` 先通过 `onPartial` 发布 raw/滤波 signal，再加载 sidecar/后备指标；SessionsViewModel 可先展示波形，旧任务切换仍按目录校验。R12 未设置未经测量的性能目标或引入无界缓存。
 - R12 新增 RAW 变换、metrics 校验、partial signal 和指标断线策略回归。完整门禁：242 JVM tests，0 failure/error/skip；lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均通过。真机仍待测。
 
+## 跨端审阅现状（2026-09-27）
+
+- 录制 service 接受启动时进入 `STARTING` 并先建立前台通知；初始化在 I/O dispatcher 执行。service 生命周期事务保留到 writer 真正进入 `FINALIZED` 或 `FAILED` 后才拆 raw sink、移除通知、停止 service、释放录制 owner。启动初始化和异步终结不会因 Activity 销毁而取消。
+- 录制期后台采集走独立 raw sink。健康监视每秒检查连接 generation、Subscribed/Receiving phase 与 freshness；代际/连接失效立即以 `DEVICE_DISCONNECT` 结束，freshness 连续 stale 超过 5 秒以 `DATA_TIMEOUT` 结束。它证明的是应用观察到合法新帧的健康状态，不证明设备或 BLE 在所有真机后台场景下持续可靠。
+- `CaptureRecordingController` 为每次会话递增 `sessionToken`；指标、BP 与 participant 队列项按 session/token 校验。应用级 recording-owner 防重复录制；文件访问 registry 对写入、导出快照、删除和恢复持有互斥 lease。停止时先阻止新写入、排空 worker/sidecar 队列，再完成 writer force/finalize；这些 JVM 结果不等同于断电耐久性实测。
+- BP 手工事件冻结当时 accepted PPG cursor，时间以 100 Hz cursor 推导并由 writer 单调追加；CSV/metrics/BP/ECG 检查器验证 header、身份、行数、时间/cursor 与值域。CSV `sqi` 仍由模板匹配写入；Combo SQI 是暂定实时反馈，不是已校准医学结果。
+- 新 recovery metadata 键保持可选解码。`source_session_id` 指向 recovery 链的原始 session 身份，`parent_session_id` 指向直接父 recovery/session；source hash 将来源内容与本次安全前缀副本关联。恢复仅读源并复制 `.cupraw`/CSV/sidecar 安全前缀，不改源 raw。缺少新增字段的旧 session、旧 artifact 继续按旧路径读取。
+- 会话列表摘要与 artifact 摘要采用有界读取；离线信号按内存预算和分桶摘要控制绘图量，raw/filter partial trace 可先展示，后续 stage 或指标可单独显示预算不足/失败。pending export 以 SavedStateHandle 中的 token、类型和目录保存，Activity result 仅消费匹配 token 的请求。
+- 通知权限未授予时采集 gate 给出明确阻止原因及设置入口。紧凑实时指标 caption 去掉已由 tile 数值承载的末尾括号分数，并使用较小字体/行高；此为显示压缩，不改 metric provenance 或值。
+- 本轮实际 Swift writer 导出由 `ReviewCrossPlatformContractTest` 的 `-PppgReviewSwiftFixtures=<zip>` 参数交给 Kotlin reader；当前 zip 有 6 sessions / 34 entries，SHA-256 为 `008ab9f12adb4c09d54903ec8ed106e23413e01c6569639751b8748eedd08d5e`。2026-09-27 JVM 336/336 通过；真机后台长流、通知权限、布局/字体与真实 session 回看仍未实测。
+
 ## R7 后代码结构审计（2026-08-20）
 
 - `app/src/main/java` 共 76 个 Kotlin 文件、约 2.14 万行；`core/ble`、`core/protocol`、`core/signal`、`data/session` 的分包边界与当前项目规模相称。短文件主要承载单一协议、策略或文件契约，不适合为了减少文件数量而合并。

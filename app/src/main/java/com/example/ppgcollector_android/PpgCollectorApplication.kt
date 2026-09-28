@@ -6,10 +6,24 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import com.example.ppgcollector_android.core.ble.AndroidBleTransport
 import com.example.ppgcollector_android.core.ble.BleCoordinator
+import com.example.ppgcollector_android.data.session.CaptureRecordingSnapshot
+import com.example.ppgcollector_android.data.session.CaptureSessionAccessRegistry
 import com.example.ppgcollector_android.data.session.CaptureSessionRepository
 import com.example.ppgcollector_android.data.session.StoredCaptureSession
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class PpgCollectorApplication : Application() {
+    val sessionAccessRegistry = CaptureSessionAccessRegistry.app
+    /** Last terminal event survives Activity unbinding while the service finishes. */
+    private val _captureTerminal = MutableStateFlow<CaptureRecordingSnapshot?>(null)
+    val captureTerminal: StateFlow<CaptureRecordingSnapshot?> = _captureTerminal.asStateFlow()
+
+    fun recordCaptureTerminal(snapshot: CaptureRecordingSnapshot) {
+        _captureTerminal.value = snapshot
+    }
+
     val sessionsRoot
         get() = filesDir.toPath().resolve("sessions")
 

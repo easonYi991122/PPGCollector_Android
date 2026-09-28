@@ -25,8 +25,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import com.example.ppgcollector_android.data.session.CaptureRecordingStartResult
@@ -50,10 +48,8 @@ import java.util.UUID
 class CaptureForegroundService : Service() {
     private lateinit var recordingController: CaptureRecordingController
     private lateinit var bleCoordinator: BleCoordinator
-    private var rawSinkInstalled = false
+    private lateinit var lifecycle: CaptureServiceLifecycle
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var stopJob: Job? = null
-    private var startJob: Job? = null
     private var healthJob: Job? = null
     private val _runtimeFailure = MutableStateFlow<CaptureStartFailure?>(null)
 
@@ -83,8 +79,8 @@ class CaptureForegroundService : Service() {
             .captureReferenceTimestamp(dialogOpenUtc, dialogOpenHostMonotonicNanoseconds)
         fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
             this@CaptureForegroundService.commitManualBloodPressure(event)
-        fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
-            this@CaptureForegroundService.updateParticipantProfile(participant)
+        fun updateParticipantProfile(sessionId: String, participant: CaptureParticipantSnapshot?): Boolean =
+            this@CaptureForegroundService.updateParticipantProfile(sessionId, participant)
     }
 
     override fun onCreate() {
@@ -98,41 +94,43 @@ class CaptureForegroundService : Service() {
         )
         bleCoordinator = (application as PpgCollectorApplication).bleCoordinator
         createNotificationChannel()
+        lifecycle = CaptureServiceLifecycle(
+            controller = recordingController,
+            scope = serviceScope,
+            claimRecordingOwner = bleCoordinator::tryAcquireRecordingOwner,
+            releaseRecordingOwner = bleCoordinator::releaseRecordingOwner,
+            attachSink = { token -> bleCoordinator.attachRecordingSink(token, recordingController::onRawChunk) },
+            detachSink = bleCoordinator::detachRecordingSink,
+            removeForeground = {
+                healthJob?.cancel()
+                healthJob = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            },
+            stopSelf = { startId -> stopSelfResult(startId) },
+            onFailure = { _runtimeFailure.value = it },
+            onTerminal = (application as PpgCollectorApplication)::recordCaptureTerminal,
+        )
+    }
+
+    private fun startHealthMonitoring() {
+        healthJob?.cancel()
         healthJob = serviceScope.launch {
-            var staleSinceMillis: Long? = null
+            val health = CaptureStreamHealthMonitor(android.os.SystemClock::elapsedRealtime, STREAM_STALE_GRACE_MILLIS)
             while (isActive) {
                 kotlinx.coroutines.delay(STREAM_HEALTH_POLL_MILLIS)
-                val recording = recordingController.snapshot
-                if (recording.state != com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING) {
-                    staleSinceMillis = null
-                    continue
-                }
-                val ble = bleCoordinator.snapshot
-                val activePhase = ble.phase is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Subscribed ||
-                    ble.phase is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Receiving
-                if (ble.connectionGeneration != recording.connectionGeneration || !activePhase) {
-                    stopRecording(CaptureStopReason.DEVICE_DISCONNECT)
-                    staleSinceMillis = null
-                    continue
-                }
-                if (ble.freshness == com.example.ppgcollector_android.core.signal.StreamFreshness.STALE) {
-                    val now = System.currentTimeMillis()
-                    if (staleSinceMillis == null) staleSinceMillis = now
-                    if (now - staleSinceMillis!! >= STREAM_STALE_GRACE_MILLIS) {
-                        stopRecording(CaptureStopReason.DATA_TIMEOUT)
-                        staleSinceMillis = null
-                    }
-                } else {
-                    staleSinceMillis = null
-                }
+                health.stopReason(recordingController.snapshot, bleCoordinator.snapshot)?.let(::stopRecording)
             }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startRecording(intent)
-            ACTION_STOP -> stopRecording(CaptureStopReason.USER)
+            ACTION_START -> startRecording(intent, startId)
+            ACTION_STOP -> {
+                if (!lifecycle.stop(CaptureStopReason.USER, startId)) {
+                    stopSelfResult(startId)
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -140,25 +138,16 @@ class CaptureForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = localBinder
 
     override fun onDestroy() {
-        startJob?.cancel()
-        startJob = null
         healthJob?.cancel()
         healthJob = null
-        stopJob?.cancel()
-        stopJob = null
-        serviceScope.cancel()
-        if (rawSinkInstalled) {
-            bleCoordinator.onRawChunk = null
-            rawSinkInstalled = false
-        }
-        recordingController.close()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        // The transaction retains its scope until controller terminal publication.
+        lifecycle.destroy()
         super.onDestroy()
     }
 
-    fun snapshot(): CaptureRecordingSnapshot = recordingController.snapshot
+    fun snapshot(): CaptureRecordingSnapshot = lifecycle.recording.value
 
-    fun recordingFlow(): StateFlow<CaptureRecordingSnapshot> = recordingController.snapshotFlow
+    fun recordingFlow(): StateFlow<CaptureRecordingSnapshot> = lifecycle.recording
 
     fun analysisSnapshot(): CaptureAnalysisSnapshot = recordingController.analysisSnapshot.value
 
@@ -185,168 +174,104 @@ class CaptureForegroundService : Service() {
     fun commitManualBloodPressure(event: ManualBloodPressureEvent): Boolean =
         recordingController.commitManualBloodPressure(event)
 
-    fun updateParticipantProfile(participant: CaptureParticipantSnapshot?): Boolean =
-        recordingController.updateParticipantProfile(participant)
+    fun updateParticipantProfile(sessionId: String, participant: CaptureParticipantSnapshot?): Boolean =
+        recordingController.updateParticipantProfile(sessionId, participant)
 
     fun stopRecording(reason: CaptureStopReason) {
-        recordingController.stop(reason)
-        val state = recordingController.snapshot.state
-        if (state != com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING &&
-            state != com.example.ppgcollector_android.data.session.CaptureRecordingState.STOPPING
-        ) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
-        stopJob?.cancel()
-        stopJob = serviceScope.launch {
-            recordingController.snapshotFlow.first { snapshot ->
-                snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FINALIZED ||
-                    snapshot.state == com.example.ppgcollector_android.data.session.CaptureRecordingState.FAILED
-            }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        }
+        lifecycle.stop(reason)
     }
 
-    private fun startRecording(intent: Intent) {
+    private fun startRecording(intent: Intent, startId: Int) {
+        if (lifecycle.acknowledgeStartId(startId)) return
         _runtimeFailure.value = null
-        if (recordingController.snapshot.state ==
-            com.example.ppgcollector_android.data.session.CaptureRecordingState.RECORDING
-        ) return
-
-        val notification = buildNotification(
-            deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "CUP",
-            status = "准备录制",
-        )
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-        } catch (error: SecurityException) {
-            _runtimeFailure.value = CaptureStartFailure.ForegroundServiceStartRejected
-            stopSelfResult(0)
-            return
-        }
-
         val snapshot = bleCoordinator.snapshot
-        val phase = snapshot.phase
-        val deviceId = phase.deviceId
+        val deviceId = snapshot.phase.deviceId
         val baseName = intent.getStringExtra(EXTRA_SESSION_NAME)
-        if (deviceId == null || baseName == null) {
-            stopRecording(CaptureStopReason.PROTOCOL_ERROR)
-            return
-        }
-
         val profile = snapshot.activeProfile
         val streamProtocolMode = snapshot.activeStreamProtocolMode
-        if (profile == null || streamProtocolMode == null) {
-            stopRecording(CaptureStopReason.PROTOCOL_ERROR)
-            return
-        }
         val deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME) ?:
             snapshot.discoveredDevices.firstOrNull { it.id == deviceId }?.name ?: "CUP"
         val participant = participantFromIntent(intent)
         val configuration = CaptureSessionConfiguration(
-                sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: UUID.randomUUID().toString(),
-                baseName = baseName,
-                startedUtc = Instant.now(),
-                softVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
-                algorithmVersion = "unavailable",
-                preprocessProfile = "ios-baseline-0.1",
-                protocolProfile = streamProtocolMode.configuredProfileIdentifier,
-                transportProfile = profile.identifier,
-                device = CaptureDeviceContext(
-                    name = deviceName,
-                    identifier = deviceId,
-                    serviceUuid = profile.serviceUuid,
-                    notifyCharacteristicUuid = profile.notifyCharacteristicUuid,
-                ),
-                participant = participant,
-                systolicBp = intent.getIntExtra(EXTRA_SBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
-                diastolicBp = intent.getIntExtra(EXTRA_DBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
-                recordMode = intent.getStringExtra(EXTRA_RECORD_MODE)
-                    ?.let { runCatching { CaptureRecordMode.valueOf(it) }.getOrNull() }
-                    ?: CaptureRecordMode.MANUAL,
-                plannedDurationSeconds = intent.getIntExtra(
-                    EXTRA_PLANNED_DURATION_SECONDS,
-                    Int.MIN_VALUE,
-                ).takeIf { it != Int.MIN_VALUE },
+            sessionId = UUID.randomUUID().toString(),
+            baseName = baseName.orEmpty(),
+            startedUtc = Instant.now(),
+            softVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
+            algorithmVersion = "unavailable",
+            preprocessProfile = "ios-baseline-0.1",
+            protocolProfile = streamProtocolMode?.configuredProfileIdentifier.orEmpty(),
+            transportProfile = profile?.identifier.orEmpty(),
+            device = CaptureDeviceContext(
+                name = deviceName,
+                identifier = deviceId.orEmpty(),
+                serviceUuid = profile?.serviceUuid.orEmpty(),
+                notifyCharacteristicUuid = profile?.notifyCharacteristicUuid.orEmpty(),
+            ),
+            participant = participant,
+            systolicBp = intent.getIntExtra(EXTRA_SBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+            diastolicBp = intent.getIntExtra(EXTRA_DBP, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE },
+            recordMode = intent.getStringExtra(EXTRA_RECORD_MODE)
+                ?.let { runCatching { CaptureRecordMode.valueOf(it) }.getOrNull() }
+                ?: CaptureRecordMode.MANUAL,
+            plannedDurationSeconds = intent.getIntExtra(EXTRA_PLANNED_DURATION_SECONDS, Int.MIN_VALUE)
+                .takeIf { it != Int.MIN_VALUE },
         )
-        startJob?.cancel()
-        startJob = serviceScope.launch(Dispatchers.IO) {
-            // Re-read the BLE snapshot on the service transaction lane. The
-            // main-thread preflight above is only a UI hint; a disconnect or
-            // protocol switch while storage/profile work is queued must not
-            // create a session directory from stale generation data.
-            val current = bleCoordinator.snapshot
-            val currentMode = current.activeStreamProtocolMode
-            val currentProfile = current.activeProfile
-            val preflightFailure = when {
-                current.connectionGeneration != snapshot.connectionGeneration ||
-                    current.phase.deviceId != deviceId ||
-                    currentProfile?.identifier != configuration.transportProfile ->
-                    CaptureStartFailure.DeviceNotReady
-                current.phase !is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Subscribed &&
-                    current.phase !is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Receiving ->
-                    CaptureStartFailure.DeviceNotReady
-                current.freshness != com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH ->
-                    CaptureStartFailure.StreamNotFresh
-                currentMode?.configuredProfileIdentifier != configuration.protocolProfile ->
-                    CaptureStartFailure.DeviceNotReady
-                else -> null
-            }
-            val result = if (preflightFailure != null) {
-                CaptureRecordingStartResult.Rejected(preflightFailure)
-            } else {
-                try {
+        lifecycle.start(
+            startId = startId,
+            sessionId = configuration.sessionId,
+            baseName = configuration.baseName,
+            prepareForeground = {
+                val notification = buildNotification(deviceName, "准备录制")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            },
+            initialize = {
+                val current = bleCoordinator.snapshot
+                val failure = when {
+                    deviceId == null || baseName == null || profile == null || streamProtocolMode == null ->
+                        CaptureStartFailure.DeviceNotReady
+                    current.connectionGeneration != snapshot.connectionGeneration ||
+                        current.phase.deviceId != deviceId ||
+                        current.activeProfile?.identifier != configuration.transportProfile ->
+                        CaptureStartFailure.DeviceNotReady
+                    current.phase !is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Subscribed &&
+                        current.phase !is com.example.ppgcollector_android.core.ble.BleConnectionPhase.Receiving ->
+                        CaptureStartFailure.DeviceNotReady
+                    current.freshness != com.example.ppgcollector_android.core.signal.StreamFreshness.FRESH ->
+                        CaptureStartFailure.StreamNotFresh
+                    current.activeStreamProtocolMode?.configuredProfileIdentifier != configuration.protocolProfile ->
+                        CaptureStartFailure.DeviceNotReady
+                    else -> null
+                }
+                if (failure != null) CaptureRecordingStartResult.Rejected(failure) else {
                     recordingController.start(
                         configuration = configuration,
                         phase = current.phase,
                         freshness = current.freshness,
                         connectionGeneration = current.connectionGeneration,
                         availableBytes = runCatching {
-                            Files.getFileStore((application as PpgCollectorApplication).sessionsRoot.parent)
-                                .usableSpace
+                            Files.getFileStore((application as PpgCollectorApplication).sessionsRoot.parent).usableSpace
                         }.getOrNull(),
                         participant = participant,
                     )
-                } catch (error: Exception) {
-                    CaptureRecordingStartResult.Failed(
-                        error.message ?: error::class.simpleName ?: "recording start failed",
-                    )
                 }
-            }
-            kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
-                if (result is CaptureRecordingStartResult.Started) {
-                    bleCoordinator.onRawChunk = recordingController::onRawChunk
-                    rawSinkInstalled = true
-                    updateNotification(deviceName, "录制中")
-                    persistAcceptedParticipant(participant)
-                } else {
-                    if (result is CaptureRecordingStartResult.Rejected) {
-                        _runtimeFailure.value = result.failure
-                    } else if (result is CaptureRecordingStartResult.Failed) {
-                        _runtimeFailure.value = CaptureStartFailure.RecordingStartFailed(result.message)
-                    }
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
-            }
-        }
+            },
+            onAccepted = {
+                updateNotification(deviceName, "录制中")
+                startHealthMonitoring()
+                persistAcceptedParticipant(configuration.sessionId, participant)
+            },
+        )
     }
 
-    private fun persistAcceptedParticipant(participant: CaptureParticipantSnapshot?) {
+    private fun persistAcceptedParticipant(sessionId: String, participant: CaptureParticipantSnapshot?) {
         val subject = participant?.subjectId ?: return
         if (!participant.profileComplete) return
-        serviceScope.launch(Dispatchers.IO) {
-            val saved = runCatching {
+        lifecycle.persistParticipant(sessionId) {
+            val saved =
                 SubjectProfileStore((application as PpgCollectorApplication).subjectsRoot).saveRevision(
                     subject = subject,
                     sex = participant.sex,
@@ -357,16 +282,11 @@ class CaptureForegroundService : Service() {
                     drinkingFreq = participant.drinkingFreq,
                     additionalFields = participant.additionalFields,
                 )
-            }.getOrNull() ?: return@launch
-            val latest = saved.latest ?: return@launch
-            val updated = latest.asParticipantSnapshot(subject).copy(
+            val latest = saved.latest ?: return@persistParticipant null
+            latest.asParticipantSnapshot(subject).copy(
                 sequence = participant.sequence,
-                additionalFields = latest.additionalFields +
-                    participant.additionalFields.sessionScopedParticipantFields(),
+                additionalFields = latest.additionalFields + participant.additionalFields.sessionScopedParticipantFields(),
             )
-            kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
-                recordingController.updateParticipantProfile(updated)
-            }
         }
     }
 

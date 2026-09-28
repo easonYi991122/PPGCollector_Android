@@ -1,9 +1,16 @@
 # V3.0 开发状态（简版）
 
-更新：2026-09-04
-当前轮次：**R12 代码修正已通过完整自动门禁并待提交；R9/R10/R11/R12 真机节点仍待测**
+更新：2026-09-27
+当前轮次：**V3.R13 审阅修正轮（2026-09-27）已完成自动门禁：R1–R12 与本轮修正已实施；完整 `lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 通过（336 JVM tests，0 failure/error/skip；lint 0 error）。R9/R10/R11/R12 及本轮后台/权限真机节点仍待测。**
 
-## 当前代码审计（2026-09-04，仅规划）
+## 当前回归快照（2026-09-27）
+
+- Controller 确认 A-CORE/A-FILES/A-UI 已接受且仍未提交；此前完整 JVM 336/336、`assembleDebug`、`assembleRelease` 通过。I-EVID 当前 Swift writer 导出为 6 sessions / 34 entries，SHA-256 `008ab9f12adb4c09d54903ec8ed106e23413e01c6569639751b8748eedd08d5e`。
+- 本轮使用真实 Swift zip 运行 Kotlin reader：336 tests / 64 suites，0 failure、0 error、0 skipped；`ReviewCrossPlatformContractTest` 的 3 项和 `ReviewAndroidFixtureProducerTest` 的 1 项均执行通过。单独 `assembleDebug` 成功。
+- `assembleDebugAndroidTest` 和 `verifyReleasePrivacy` 均成功；privacy 输出 `REL-005 privacy/profile audit passed`，release APK 相关 task 为 up-to-date。首次组合命令因 lintDebug 1 error 失败；lint 唯一 error（`SessionsViewModel.kt` 的 `Path::of`，API 34 > minSdk 26，会在 Android 8–13 崩溃）已由 controller 改为 `Paths.get` 修复，随后 controller 重跑完整门禁 `lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy` 通过（lint 0 error、30 warnings）。
+- R11/R12 实施历史与各自 2026-09-04 自动门禁记录保留在下方。本轮自动化门禁已全部通过；设备/用户体验项仍为待测，不以 fake/JVM 代替。
+
+## 历史审计快照（2026-09-04，仅规划；非当前状态）
 
 - 基线 `12d2d11`；保留工作区已有 SQI 排版/测试、`.idea` 与 `app/release/` 改动。本次仅更新规划和状态，不修改生产代码。
 - 已定位：启动 I/O 失败清理不完整、ADS 离线报告读取错误 decoder、恢复副本遗漏字段及 ECG 身份误报、RAW 回放隐式去趋势、指标无效区间/孤点/身份校验缺口、波形加载与全量指标后备耦合。
@@ -26,6 +33,13 @@
 - R12 定向/完整 JVM：242 tests，0 failure/error/skip；完整 `test lintDebug assembleDebug assembleDebugAndroidTest :app:verifyReleasePrivacy --no-configuration-cache --no-daemon` 门禁通过，lint、Debug/AndroidTest、Release、API/lifecycle/BLE/privacy 均成功。未执行真机。
 
 > 本文件后面的 R10–R5.1 记录保留作历史基线；以下先记录 2026-08-25 对 R3/R4.1E/R6 F.5 遗留综合 SQI 的收口。
+
+## 跨端审阅回归记录（2026-09-27）
+
+- 范围：仅同步源码事实和门禁，不创建新轮次/编号、不改生产代码、不生成 commit hash。review detail：[`REVIEW_ROUND_20260927.md`](REVIEW_ROUND_20260927.md)。
+- 已确认：service `STARTING` → `FINALIZED/FAILED` 终态清理；后台 raw sink 与每秒 freshness/generation 检查；session token 与排他访问 lease；停止时 worker/sidecar drain 和 writer force；BP accepted cursor；CSV/metrics/BP/ECG 校验；bounded archive/artifact/离线图形加载；SavedStateHandle pending export；通知权限 gate；compact SQI caption 去尾部分数。
+- 恢复 provenance：`source_session_id` 表示原始来源，`parent_session_id` 表示直接父项；新恢复字段可选解码、旧 session/artifact 保持可读，源 `.cupraw` 不改写。CSV `sqi` 仍为模板匹配；Combo 仍是未校准的暂定反馈。
+- 自动门禁与真机清单分开。仍待真机验证后台真实 BLE 长流和 stale finalize、通知权限系统交互、R9 BP/MTU、R10 高 gap 前后会话、R11 recovery、R12 RAW/metrics partial 展示和 compact caption；不要求跨平台 UI 像素 parity。
 
 ## R3 综合 SQI 口径收口（2026-08-25）
 

@@ -60,11 +60,16 @@ sealed class CaptureSessionRecoveryException(message: String) : Exception(messag
 object CaptureSessionRecoveryService {
     const val strategy = "copy_safe_prefix_v1"
 
-    fun assess(session: StoredCaptureSession): CaptureSessionRecoveryAssessment {
+    fun assess(
+        session: StoredCaptureSession,
+        cancellationCheck: () -> Unit = {},
+    ): CaptureSessionRecoveryAssessment = requireSessionLease(
+        session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT,
+    ).use {
         if (!session.isRecoveryCandidate) {
             return CaptureSessionRecoveryAssessment(false, false, 0, 0, null)
         }
-        val files = CaptureSessionRepository.expectedFiles(session.directory)
+        val files = CaptureSessionRepository.expectedFiles(session.directory, cancellationCheck)
         if (!Files.isRegularFile(files.raw) || !Files.isRegularFile(files.csv)) {
             return CaptureSessionRecoveryAssessment(
                 canCreateRecoveryCopy = false,
@@ -75,8 +80,12 @@ object CaptureSessionRecoveryService {
             )
         }
         return try {
-            val raw = CupRawReader.scan(files.raw)
-            val csv = CaptureSessionInspectionService.scanCsv(files.csv)
+            val raw = CupRawReader.scan(files.raw, cancellationCheck)
+            val csv = CaptureSessionInspectionService.scanCsv(
+                files.csv, session.metadata.allowedRowSessionIds(),
+                files.raw, CupStreamProtocolMode.fromProtocolProfileIdentifier(session.metadata?.protocolProfile),
+                cancellationCheck,
+            )
             if (!csv.hasExpectedHeader) {
                 CaptureSessionRecoveryAssessment(
                     canCreateRecoveryCopy = false,
@@ -101,6 +110,7 @@ object CaptureSessionRecoveryService {
                 )
             }
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
             CaptureSessionRecoveryAssessment(
                 canCreateRecoveryCopy = false,
                 requiresRecovery = true,
@@ -130,11 +140,16 @@ object CaptureSessionRecoveryService {
         recoveredAt: Instant = Instant.now(),
         recoverySessionId: String = UUID.randomUUID().toString(),
         recoverySoftVersion: String = "android-unknown",
-    ): CaptureSessionRecoveryResult {
+        cancellationCheck: () -> Unit = {},
+        accessRegistry: CaptureSessionAccessRegistry = CaptureSessionAccessRegistry.app,
+    ): CaptureSessionRecoveryResult = requireSessionLease(
+        session.directory, CaptureSessionAccessRegistry.Access.READ_SNAPSHOT, accessRegistry,
+    ).use {
+        cancellationCheck()
         if (!CaptureSessionWriterPolicy.isValidBaseName(requestedBaseName)) {
             throw CaptureSessionRecoveryException.CannotCreate("invalid recovery session name")
         }
-        val sourceFiles = CaptureSessionRepository.expectedFiles(session.directory)
+        val sourceFiles = CaptureSessionRepository.expectedFiles(session.directory, cancellationCheck)
         if (!Files.isRegularFile(sourceFiles.raw)) {
             throw CaptureSessionRecoveryException.SourceRawMissing
         }
@@ -142,14 +157,28 @@ object CaptureSessionRecoveryService {
             throw CaptureSessionRecoveryException.SourceCsvMissing
         }
 
+        val sourceVersions = sourceFiles.allPaths.filter(Files::isRegularFile).map {
+            CaptureExportSource.freeze(it, it.fileName.toString(), cancellationCheck)
+        }
+        val sourceMetadata = if (Files.isRegularFile(sourceFiles.metadata)) {
+            try { CaptureSessionMetadataCodec.decode(sourceFiles.metadata, cancellationCheck) }
+            catch (_: IllegalArgumentException) { null }
+        } else null
+        val allowedIds = sourceMetadata.allowedRowSessionIds()
         val rawScan = try {
-            CupRawReader.scan(sourceFiles.raw)
+            CupRawReader.scan(sourceFiles.raw, cancellationCheck)
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
             throw CaptureSessionRecoveryException.CannotCreate("cannot scan source raw", error)
         }
         val csvScan = try {
-            CaptureSessionInspectionService.scanCsv(sourceFiles.csv)
+            CaptureSessionInspectionService.scanCsv(
+                sourceFiles.csv, allowedIds, sourceFiles.raw,
+                CupStreamProtocolMode.fromProtocolProfileIdentifier(sourceMetadata?.protocolProfile),
+                cancellationCheck,
+            )
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
             throw CaptureSessionRecoveryException.CannotCreate("cannot scan source CSV", error)
         }
         if (!csvScan.hasExpectedHeader) {
@@ -160,18 +189,19 @@ object CaptureSessionRecoveryService {
         if (Files.exists(destination)) {
             throw CaptureSessionRecoveryException.DestinationAlreadyExists(requestedBaseName)
         }
+        val destinationLease = requireSessionLease(destination, CaptureSessionAccessRegistry.Access.WRITE, accessRegistry)
         val staging = session.directory.resolveSibling(".recovery-$recoverySessionId")
         var committed = false
         try {
             Files.createDirectory(staging)
             val metricsScan = sourceFiles.metrics?.let { path ->
-                if (!Files.isRegularFile(path)) null else CaptureMetricSeries.scan(path)
+                if (!Files.isRegularFile(path)) null else CaptureMetricSeries.scan(path, allowedIds, cancellationCheck)
             }
             val bloodPressureScan = sourceFiles.bloodPressure?.let { path ->
-                if (!Files.isRegularFile(path)) null else CaptureBloodPressureSeries.scan(path)
+                if (!Files.isRegularFile(path)) null else CaptureBloodPressureSeries.scan(path, allowedIds, cancellationCheck)
             }
             val ecgScan = sourceFiles.ecg?.let { path ->
-                if (!Files.isRegularFile(path)) null else CaptureEcgCsv.scan(path)
+                if (!Files.isRegularFile(path)) null else CaptureEcgCsv.scan(path, allowedIds, cancellationCheck)
             }
             val destinationFiles = SessionFileSet(
                 raw = staging.resolve("$requestedBaseName.cupraw"),
@@ -187,56 +217,59 @@ object CaptureSessionRecoveryService {
                     staging.resolve("${requestedBaseName}_ecg.csv")
                 },
             )
-            copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw)
-            copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv)
+            copyPrefix(sourceFiles.raw, rawScan.validByteCount, destinationFiles.raw, cancellationCheck)
+            copyPrefix(sourceFiles.csv, csvScan.validByteCount, destinationFiles.csv, cancellationCheck)
             if (destinationFiles.metrics != null && metricsScan != null) {
-                copyPrefix(sourceFiles.metrics!!, metricsScan.validByteCount, destinationFiles.metrics)
+                copyPrefix(sourceFiles.metrics!!, metricsScan.validByteCount, destinationFiles.metrics, cancellationCheck)
             }
             if (destinationFiles.bloodPressure != null && bloodPressureScan != null) {
                 copyPrefix(
                     sourceFiles.bloodPressure!!,
                     bloodPressureScan.validByteCount,
-                    destinationFiles.bloodPressure,
+                    destinationFiles.bloodPressure, cancellationCheck,
                 )
             }
             if (destinationFiles.ecg != null && ecgScan != null) {
-                copyPrefix(sourceFiles.ecg!!, ecgScan.validByteCount, destinationFiles.ecg)
+                copyPrefix(sourceFiles.ecg!!, ecgScan.validByteCount, destinationFiles.ecg, cancellationCheck)
             }
 
             val sourceMetadataBytes = if (Files.isRegularFile(sourceFiles.metadata)) {
-                Files.readAllBytes(sourceFiles.metadata)
+                CaptureSessionMetadataCodec.readBytes(sourceFiles.metadata, cancellationCheck)
             } else {
                 null
-            }
-            val sourceMetadata = sourceMetadataBytes?.let {
-                runCatching { CaptureSessionMetadataCodec.decode(it) }.getOrNull()
             }
             val replay = CupRawReplayEngine.replay(
                 sourceFiles.raw,
                 CupStreamProtocolMode.fromProtocolProfileIdentifier(
                     sourceMetadata?.protocolProfile ?: session.metadata?.protocolProfile,
                 ),
-            )
+                cancellationCheck,
+            ) {}
             val recoveryMetadata = CaptureSessionRecoveryMetadata(
                 strategy = strategy,
                 recoveredUtc = recoveredAt,
                 recoverySoftVersion = recoverySoftVersion,
                 sourceDirectoryName = session.baseName,
-                sourceSessionId = sourceMetadata?.sessionId ?: session.metadata?.sessionId,
-                sourceRawSha256 = sha256File(sourceFiles.raw),
-                sourceCsvSha256 = sha256File(sourceFiles.csv),
+                sourceSessionId = if (sourceMetadata?.recovery != null) {
+                    sourceMetadata.recovery.sourceSessionId
+                } else sourceMetadata?.sessionId,
+                parentSessionId = sourceMetadata?.sessionId,
+                originalCanonicalPrefix = sourceMetadata?.recovery?.originalCanonicalPrefix
+                    ?: SessionNamePolicy.parseCanonical(session.baseName)?.prefix?.wireValue,
+                sourceRawSha256 = sha256File(sourceFiles.raw, cancellationCheck),
+                sourceCsvSha256 = sha256File(sourceFiles.csv, cancellationCheck),
                 sourceMetadataSha256 = sourceMetadataBytes?.let(::sha256Bytes),
                 sourceRawTotalBytes = Files.size(sourceFiles.raw),
                 sourceRawCopiedBytes = rawScan.validByteCount,
                 sourceCsvTotalBytes = Files.size(sourceFiles.csv),
                 sourceCsvCopiedBytes = csvScan.validByteCount,
                 csvPreservesSourceSessionId = true,
-                sourceMetricsSha256 = sourceFiles.metrics?.takeIf(Files::isRegularFile)?.let(::sha256File),
+                sourceMetricsSha256 = sourceFiles.metrics?.takeIf(Files::isRegularFile)?.let { sha256File(it, cancellationCheck) },
                 sourceMetricsTotalBytes = sourceFiles.metrics?.takeIf(Files::isRegularFile)
                     ?.let(Files::size) ?: 0L,
                 sourceMetricsCopiedBytes = metricsScan?.validByteCount ?: 0L,
                 sourceBloodPressureSha256 = sourceFiles.bloodPressure
-                    ?.takeIf(Files::isRegularFile)?.let(::sha256File),
+                    ?.takeIf(Files::isRegularFile)?.let { sha256File(it, cancellationCheck) },
                 sourceBloodPressureTotalBytes = sourceFiles.bloodPressure
                     ?.takeIf(Files::isRegularFile)?.let(Files::size) ?: 0L,
                 sourceBloodPressureCopiedBytes = bloodPressureScan?.validByteCount ?: 0L,
@@ -256,6 +289,8 @@ object CaptureSessionRecoveryService {
             )
             val copiedEcgBytes = destinationFiles.ecg?.let { Files.size(it) } ?: 0L
             writeMetadataAtomically(destinationFiles.metadata, recoveredMetadata)
+            sourceVersions.forEach { it.verify(cancellationCheck) }
+            cancellationCheck()
             moveStaging(staging, destination)
             committed = true
             return CaptureSessionRecoveryResult(
@@ -281,9 +316,11 @@ object CaptureSessionRecoveryService {
         } catch (error: CaptureSessionRecoveryException) {
             throw error
         } catch (error: Exception) {
+            if (error is java.util.concurrent.CancellationException) throw error
             throw CaptureSessionRecoveryException.CannotCreate("cannot create recovery copy", error)
         } finally {
             if (!committed) staging.toFile().deleteRecursively()
+            destinationLease.close()
         }
     }
 
@@ -332,19 +369,19 @@ object CaptureSessionRecoveryService {
         discardedBytes = replay.discardedBytes.toLong(),
         writer = CaptureSessionWriterMetadata(
             lastFlushUtc = source?.writer?.lastFlushUtc,
-                rawBytes = replay.validRawBytes,
-                csvRows = csv.completeDataRowCount,
-                error = "Recovered copy; source session was preserved unchanged.",
-                metricsRows = metrics?.completeDataRowCount ?: 0L,
-                bloodPressureRows = bloodPressure?.completeDataRowCount ?: 0L,
-            ),
-                files = CaptureSessionFilesMetadata(
-                    raw = "$baseName.cupraw",
-                    samples = "$baseName.csv",
-                    metrics = metrics?.let { "$baseName.metrics.csv" },
-                    bloodPressure = bloodPressure?.let { "$baseName.blood-pressure.csv" },
-                    ecg = ecg?.let { "$baseName" + "_ecg.csv" },
-                ),
+            rawBytes = replay.validRawBytes,
+            csvRows = csv.completeDataRowCount,
+            error = "Recovered copy; source session was preserved unchanged.",
+            metricsRows = metrics?.completeDataRowCount ?: 0L,
+            bloodPressureRows = bloodPressure?.completeDataRowCount ?: 0L,
+        ),
+        files = CaptureSessionFilesMetadata(
+            raw = "$baseName.cupraw",
+            samples = "$baseName.csv",
+            metrics = metrics?.let { "$baseName.metrics.csv" },
+            bloodPressure = bloodPressure?.let { "$baseName.blood-pressure.csv" },
+            ecg = ecg?.let { "${baseName}_ecg.csv" },
+        ),
         recovery = recovery,
         canonicalSubjectId = source?.canonicalSubjectId,
         canonicalSequence = source?.canonicalSequence,
@@ -357,23 +394,24 @@ object CaptureSessionRecoveryService {
         bloodPressureUpdatedUtc = source?.bloodPressureUpdatedUtc,
     )
 
-    private fun copyPrefix(source: Path, count: Long, destination: Path) {
+    private fun copyPrefix(source: Path, count: Long, destination: Path, cancellationCheck: () -> Unit) {
         Files.newInputStream(source, StandardOpenOption.READ).use { input ->
             FileChannel.open(
                 destination,
                 StandardOpenOption.CREATE_NEW,
                 StandardOpenOption.WRITE,
             ).use { output ->
-                copyExactly(input, output, count)
+                copyExactly(input, output, count, cancellationCheck)
                 output.force(true)
             }
         }
     }
 
-    private fun copyExactly(input: InputStream, output: FileChannel, count: Long) {
+    private fun copyExactly(input: InputStream, output: FileChannel, count: Long, cancellationCheck: () -> Unit) {
         val buffer = ByteArray(64 * 1024)
         var remaining = count
         while (remaining > 0) {
+            cancellationCheck()
             val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
             if (read < 0) throw IllegalStateException("source ended before safe prefix")
             if (read == 0) continue
@@ -411,17 +449,8 @@ object CaptureSessionRecoveryService {
         }
     }
 
-    private fun sha256File(path: Path): String =
-        Files.newInputStream(path, StandardOpenOption.READ).use { input ->
-            val digest = MessageDigest.getInstance("SHA-256")
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
-            }
-            digest.digest().joinToString("") { "%02x".format(it) }
-        }
+    private fun sha256File(path: Path, cancellationCheck: () -> Unit): String =
+        CaptureExportSource.hash(path, cancellationCheck)
 
     private fun sha256Bytes(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes)
